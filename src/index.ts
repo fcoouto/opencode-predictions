@@ -3,7 +3,7 @@ import { Predictions } from "./rpc.ts"
 import { createService, type Request } from "./service.ts"
 
 export default Plugin.define({
-  id: "fcoouto.predictions",
+  id: "opencode-predictions",
   async setup(ctx) {
     const service = createService({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),

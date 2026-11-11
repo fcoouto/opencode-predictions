@@ -16,6 +16,10 @@ test("packed contents include working entries and exclude local data and install
   // npm also prepares Git dependencies when a "build" script exists, even with prebuilt bundles.
   for (const hook of ["preinstall", "install", "postinstall", "prepare", "prepack", "build"]) assert.equal(pkg.scripts[hook], undefined)
   assert.equal(Object.values(pkg.dependencies).some(value => /git|github:|file:/.test(value)), false)
-  for (const entry of [".", "./tui"]) assert.equal(typeof (await import(pathToFileURL(resolve(pkg.exports[entry])).href)).default.setup, "function")
+  for (const [entry, id] of [[".", "opencode-predictions"], ["./tui", "opencode-predictions.tui"]]) {
+    const definition = (await import(pathToFileURL(resolve(pkg.exports[entry])).href)).default
+    assert.equal(typeof definition.setup, "function")
+    assert.equal(definition.id, id)
+  }
   assert.equal(typeof (await import(pathToFileURL(resolve(pkg.exports["./rpc"])).href)).Predictions.methods.predict, "object")
 })

@@ -69,9 +69,12 @@ Only enabled models supporting the requested variant are selected.
 When a call fails or times out, the next configured match is tried, with a notice:
 
 ```text
-Predictions failed with <model_display_name>, moving on with <next_model>...
+Predictions failed with [<model_display_name>], moving on with [<next_model>]...
+Reason: HTTP 429: Free usage limit reached.
 ```
 
+The popup includes a safe failure summary, such as a provider restriction, usage
+limit, invalid response, or timeout. Raw provider error contents are not displayed.
 Each candidate is attempted once. No unselected model is called. A valid
 no-suggestion response stops the chain; exhaustion shows a failure notice.
 

@@ -5,7 +5,7 @@ import { Predictions } from "./rpc.ts"
 import type { Reply, Status } from "./service.ts"
 
 export default Plugin.define({
-  id: "fcoouto.predictions.tui",
+  id: "opencode-predictions.tui",
   setup(ctx) {
     const adapter = createTerminalAdapter(ctx.renderer)
     const session = () => { const route = ctx.ui.router.current(); return route.type === "session" ? ctx.data.session.get(route.sessionID) : undefined }
