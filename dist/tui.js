@@ -115,8 +115,15 @@ function createController(io) {
   };
 }
 
+// src/log.ts
+var prefix = "[opencode-predictions]";
+function log(show, message) {
+  show(message.startsWith(prefix) ? message : `${prefix} ${message}`);
+}
+
 // src/client.ts
 function startClient(host) {
+  const show = (message) => log((message2) => host.show(message2), message);
   let current;
   let cache;
   let scope;
@@ -134,12 +141,12 @@ function startClient(host) {
       let reply;
       try {
         reply = await host.predict(state, id, signal, (message) => {
-          if (!signal.aborted && host.state()?.key === state.key) host.show(message);
+          if (!signal.aborted && host.state()?.key === state.key) show(message);
         });
       } catch {
         if (!signal.aborted && host.state()?.key === state.key) {
           error = "Prediction service unavailable";
-          host.show(error);
+          show(error);
         }
         return { reason: "service_unavailable" };
       } finally {
@@ -214,7 +221,7 @@ function startClient(host) {
         loading?.abort();
         await load(state);
       }
-      host.show(JSON.stringify({ ...host.diagnostics?.(), ...cache, ...!cache ? { reason: error || "No completed session" } : {}, ...preview ? { suggestion: preview } : {}, ...error ? { lastNotice: error } : {} }, null, 2));
+      show(JSON.stringify({ ...host.diagnostics?.(), ...cache, ...!cache ? { reason: error || "No completed session" } : {}, ...preview ? { suggestion: preview } : {}, ...error ? { lastNotice: error } : {} }, null, 2));
     },
     invalidate() {
       loading?.abort();
