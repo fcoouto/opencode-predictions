@@ -56,6 +56,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
   let groups: Candidate[][] | undefined
   const skipped = new Map<string, { until: number; reason: string }>()
   const outcomes = new Map<string, "working" | "failed">()
+  const owners = new Map<string, { group: number }>()
   const modelKey = (model: ModelRef) => JSON.stringify([model.providerID, model.id])
   const candidateKey = (model: ModelRef) => JSON.stringify([model.providerID, model.id, model.variant ?? null])
   const outcomeKey = (model: ModelRef, group: number) => JSON.stringify([group, candidateKey(model)])
@@ -76,6 +77,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         const key = candidateKey(model)
         if (seen.has(key)) return false
         seen.add(key)
+        if (owners.get(key)?.group !== index) owners.set(key, { group: index })
         currentOutcomes.add(outcomeKey(model, index))
         return true
       })
@@ -95,13 +97,17 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     const keys = new Set(resolved.flatMap(model => [modelKey(model), candidateKey(model)]))
     for (const key of skipped.keys()) if (!keys.has(key)) skipped.delete(key)
     for (const key of outcomes.keys()) if (!currentOutcomes.has(key)) outcomes.delete(key)
+    for (const key of owners.keys()) if (!seen.has(key)) owners.delete(key)
   }
-  const move = (model: ModelRef, first: boolean, group: number, modelWide = false) => {
+  const move = (model: ModelRef, first: boolean, group: number, ownership: ReadonlyMap<string, { group: number }>, modelWide = false) => {
+    // Owner records are replaced on transfer, including leave-and-return changes.
+    if (owners.get(candidateKey(model)) !== ownership.get(candidateKey(model))) return
     const key = modelWide ? modelKey : candidateKey
+    const matches = (candidate: Candidate) => key(candidate) === key(model) && owners.get(candidateKey(candidate)) === ownership.get(candidateKey(candidate))
     groups = groups?.map((queue, index) => {
       if (!modelWide && index !== group) return queue
-      const selected = queue.filter(candidate => key(candidate) === key(model))
-      const others = queue.filter(candidate => key(candidate) !== key(model))
+      const selected = queue.filter(matches)
+      const others = queue.filter(candidate => !matches(candidate))
       for (const candidate of selected) outcomes.set(outcomeKey(candidate, index), first ? "working" : "failed")
       return first ? [...selected, ...others] : [...others, ...selected]
     })
@@ -152,6 +158,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns)
         if (!prompt) return { reason: "context_unavailable" }
         const chain = groups!.flatMap((queue, group) => queue.map(model => ({ ...model, group })))
+        const ownership = new Map(owners)
         let failure = "no_models_eligible"
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted()
@@ -169,10 +176,10 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             if (changed) return { reason: changed }
             parent.throwIfAborted()
             const text = parseSuggestion(output)
-            if (text) { if (!skip(model)) move(model, true, group); return { text } }
+            if (text) { if (!skip(model)) move(model, true, group, ownership); return { text } }
             let abstained = false
             try { abstained = (JSON.parse(output) as { prompt?: unknown } | null)?.prompt === null } catch {}
-            if (abstained) { if (!skip(model)) move(model, true, group); return { reason: "no_suggestion" } }
+            if (abstained) { if (!skip(model)) move(model, true, group, ownership); return { reason: "no_suggestion" } }
             throw new Error("Invalid prediction response")
           } catch (error) {
             const timedOut = signal.aborted
@@ -185,7 +192,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             const key = policy.modelWide ? modelKey(model) : candidateKey(model)
             const until = Date.now() + policy.delayMs
             if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail })
-            move(model, false, group, policy.modelWide)
+            move(model, false, group, ownership, policy.modelWide)
             if (options.debug) {
               const next = chain.slice(index + 1).find(candidate => !skip(candidate))
               const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`

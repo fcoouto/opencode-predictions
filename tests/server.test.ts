@@ -780,3 +780,74 @@ test("debug progress crosses group boundaries without losing safe details", asyn
   assert.equal(notices[2], "No model worked at this time.")
   assert.equal(notices.join().includes("PRIVATE"), false)
 })
+
+test("an old model-wide failure preserves untried ranking after group ownership transfer", async () => {
+  const { api } = fixture()
+  let transferred = false
+  let reject!: (error: Error) => void
+  api.models = async () => ["x", ...(transferred ? ["y"] : [])].map(id => ({ providerID: "local", id, name: transferred ? "Free " + id : "Paid " + id, enabled: true, variants: [] }))
+  api.generate = async () => new Promise((_resolve, fail) => { reject = fail })
+  const service = createService(api, { models: ["local/Free*", "local/*"] }, "/project")
+  const pending = service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(typeof reject, "function")
+  transferred = true
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.[0].candidates.map(model => model.id), ["x", "y"])
+  reject(Object.assign(new Error("PRIVATE"), { status: 429 }))
+  await pending
+  assert.deepEqual(service.status().groups?.[0].candidates.map(model => model.id), ["x", "y"])
+  assert.equal(service.status().groups?.[0].candidates[0].state, "cooling")
+})
+
+test("an old success cannot promote a candidate after it leaves and returns to its group", async () => {
+  const { api } = fixture()
+  let moved = false
+  let addY = false
+  let finish!: (output: string) => void
+  const attempted: string[] = []
+  api.models = async () => ["x", ...(addY ? ["y"] : [])].map(id => ({ providerID: "local", id, name: id === "x" && moved ? "Paid x" : "Free " + id, enabled: true, variants: [] }))
+  api.generate = async model => {
+    attempted.push(model.id)
+    if (attempted.length === 1) return new Promise(resolve => { finish = resolve })
+    return '{"prompt":null}'
+  }
+  const service = createService(api, { models: ["local/Free*", "local/*"] }, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  const pending = service.predict(request, new AbortController().signal)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(typeof finish, "function")
+  moved = true
+  addY = true
+  await service.inspect(new AbortController().signal)
+  await service.predict(request, new AbortController().signal)
+  moved = false
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.[0].candidates.map(model => model.id), ["y", "x"])
+  finish('{"prompt":"Run tests."}')
+  await pending
+  assert.deepEqual(service.status().groups?.[0].candidates.map(model => model.id), ["y", "x"])
+  await service.predict(request, new AbortController().signal)
+  assert.deepEqual(attempted, ["x", "y", "y"])
+})
+
+test("model-wide failures retain health but do not demote transferred sibling variants", async () => {
+  const { api } = fixture()
+  let transferred = false
+  let reject!: (error: Error) => void
+  api.models = async () => ["model", "y"].map(id => ({ providerID: "local", id, name: id === "y" || transferred ? "Free " + id : "Paid model", enabled: true, variants: [{ id: "low" }, { id: "high" }] }))
+  api.generate = async () => new Promise((_resolve, fail) => { reject = fail })
+  const controller = new AbortController()
+  api.notice = () => { controller.abort() }
+  const service = createService(api, { models: ["local/model#low", "local/Free*#high", "local/model#high"], debug: true }, "/project")
+  const pending = service.predict({ sessionID: "ses_test", completion: 2 }, controller.signal)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(typeof reject, "function")
+  transferred = true
+  await service.inspect(new AbortController().signal)
+  reject(Object.assign(new Error("PRIVATE"), { status: 403 }))
+  // Stop after recording the failure so fallback cannot change y's ranking.
+  await pending
+  assert.deepEqual(service.status().groups?.[1].candidates.map(model => model.id), ["model", "y"])
+  assert.equal(service.status().groups?.[1].candidates[0].state, "blocked")
+})
