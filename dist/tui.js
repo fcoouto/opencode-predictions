@@ -343,7 +343,7 @@ function startClient(host) {
               legacyProgress.push(message);
               if (legacyProgress.length > 32) legacyProgress.shift();
             }
-          });
+          }, explicit);
         } catch {
           reply = { reason: "service_unavailable", notice: reasonNotice("service_unavailable") };
         }
@@ -419,7 +419,7 @@ function startClient(host) {
       requestingManual = true;
       void controller.request(true);
       requestingManual = false;
-    } else if (!manual && available && current?.eligible && !current.draft && cache?.automatic) void controller.request();
+    } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request();
   };
   const request = (fromShortcut = false) => {
     if (disposed) return;
@@ -493,7 +493,7 @@ var Predictions = Rpc.define({
     predict: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 } },
+        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" } },
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
@@ -528,12 +528,14 @@ var tui_default = Plugin.define({
       },
       state: () => {
         const value = session();
-        if (!value || value.parentID || !value.time.idle || ctx.data.session.status(value.id) !== "idle" || value.outcome === "interrupted") return;
+        if (!value || value.parentID || ctx.data.session.status(value.id) !== "idle" || value.outcome === "interrupted") return;
+        const completion = value.time.idle || value.time.updated;
+        if (!completion) return;
         const eligible = adapter.eligible() && !ctx.data.session.pending.list(value.id).length && !ctx.data.session.permission.list(value.id)?.length && !ctx.data.session.form.list(value.id, value.location)?.length;
-        return { key: value.id + "/" + value.location.directory + "/" + value.time.idle, sessionID: value.id, completion: value.time.idle, eligible, draft: adapter.read() };
+        return { key: value.id + "/" + value.location.directory + "/" + completion, sessionID: value.id, completion, eligible, draft: adapter.read(), automaticEligible: !!value.time.idle };
       },
       status: async (signal) => await ctx.client.rpc(Predictions).status({}, { location: location(), signal }),
-      predict: async (state, requestID, signal, notice2) => {
+      predict: async (state, requestID, signal, notice2, manual) => {
         const value = session();
         if (!value || value.id !== state.sessionID) return { reason: "stale" };
         const rpc = ctx.client.rpc(Predictions);
@@ -541,7 +543,7 @@ var tui_default = Plugin.define({
           if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice2(String(event.data.message), event.data.notice);
         });
         try {
-          return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID }, { location: value.location, signal });
+          return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...manual ? { manual: true } : {} }, { location: value.location, signal });
         } finally {
           stop();
         }

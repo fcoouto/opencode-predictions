@@ -15,7 +15,7 @@ var Predictions = Rpc.define({
     predict: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 } },
+        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" } },
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
@@ -351,7 +351,8 @@ function createService(api, rawOptions, directory) {
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) };
     let configured = [];
     const check = (session) => {
-      if (session.id !== request.sessionID || session.time.idle !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale";
+      const completion = session.time.idle || (request.manual === true && !session.time.busy ? session.time.updated : void 0);
+      if (session.id !== request.sessionID || completion !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale";
       if (session.location.directory !== directory) return "wrong_location";
       if (session.parentID || session.outcome === "interrupted") return "context_unavailable";
     };
@@ -366,8 +367,14 @@ function createService(api, rawOptions, directory) {
         if (!configured.length) return { reason: "model_unavailable" };
         parent.throwIfAborted();
         if (configured.every((model) => !!skip(model))) return { reason: "no_models_eligible" };
-        const messages = await api.context(request.sessionID, parent);
+        const messages = [...await api.context(request.sessionID, parent)];
         const records = messages.map((value) => value && typeof value === "object" ? value : {});
+        const last = records.findLast((value) => value.type === "user" || value.type === "assistant" || value.type === "idle" || value.type === "compaction" && value.status !== "failed");
+        if (request.manual === true && last?.type === "assistant" && last.time?.completed !== void 0) {
+          const boundary = { type: "idle", outcome: session.outcome };
+          messages.push(boundary);
+          records.push(boundary);
+        }
         const idle = records.findLastIndex((value) => value.type === "idle");
         const start = records.slice(0, idle).findLastIndex((value) => value.type === "idle" || value.type === "compaction" && value.status !== "failed");
         const response = records.slice(start + 1, idle).findLast((value) => value.type === "assistant");

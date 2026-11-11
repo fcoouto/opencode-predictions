@@ -15,17 +15,19 @@ export default Plugin.define({
       scope: () => { const value = location(); return value ? JSON.stringify(value) : undefined },
       state: () => {
         const value = session()
-        if (!value || value.parentID || !value.time.idle || ctx.data.session.status(value.id) !== "idle" || value.outcome === "interrupted") return
+        if (!value || value.parentID || ctx.data.session.status(value.id) !== "idle" || value.outcome === "interrupted") return
+        const completion = value.time.idle || value.time.updated
+        if (!completion) return
         const eligible = adapter.eligible() && !ctx.data.session.pending.list(value.id).length && !ctx.data.session.permission.list(value.id)?.length && !ctx.data.session.form.list(value.id, value.location)?.length
-        return { key: value.id + "/" + value.location.directory + "/" + value.time.idle, sessionID: value.id, completion: value.time.idle, eligible, draft: adapter.read() }
+        return { key: value.id + "/" + value.location.directory + "/" + completion, sessionID: value.id, completion, eligible, draft: adapter.read(), automaticEligible: !!value.time.idle }
       },
       status: async signal => await ctx.client.rpc(Predictions).status({}, { location: location(), signal }) as Status,
-      predict: async (state, requestID, signal, notice) => {
+      predict: async (state, requestID, signal, notice, manual) => {
         const value = session()
         if (!value || value.id !== state.sessionID) return { reason: "stale" }
         const rpc = ctx.client.rpc(Predictions)
         const stop = rpc.events.on("progress", event => { if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice(String(event.data.message), event.data.notice as Notice | undefined) })
-        try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID }, { location: value.location, signal }) as Reply } finally { stop() }
+        try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...(manual ? { manual: true } : {}) }, { location: value.location, signal }) as Reply } finally { stop() }
       },
       paint: adapter.paint,
       insert: adapter.insert,

@@ -2,12 +2,12 @@ import type { Reply, Status } from "./service.ts"
 import { createController } from "./controller.ts"
 import { log } from "./log.ts"
 import { statusNotice, reasonNotice, formatStatus, feedbackRevision, type Notice, type StatusView } from "./feedback.ts"
-export type ClientState = { key: string; sessionID: string; completion: number; eligible: boolean; draft: string }
+export type ClientState = { key: string; sessionID: string; completion: number; eligible: boolean; draft: string; automaticEligible?: boolean }
 export type ClientHost = {
   scope(): string | undefined
   state(): ClientState | undefined
   status(signal: AbortSignal): Promise<Status>
-  predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice) => void): Promise<Reply>
+  predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice) => void, manual?: boolean): Promise<Reply>
   paint(text: string | undefined): boolean
   insert(text: string): boolean
   focus(): void
@@ -94,7 +94,7 @@ export function startClient(host: ClientHost) {
             if (notice) { final = notice; return }
             if (modern) progress(message)
             else if (debug) { legacyProgress.push(message); if (legacyProgress.length > 32) legacyProgress.shift() }
-          })
+          }, explicit)
         } catch { reply = { reason: "service_unavailable", notice: reasonNotice("service_unavailable") } }
         if (!live()) return { reason: "stale" }
         if (reply.text || reply.reason === "no_suggestion") {
@@ -156,7 +156,7 @@ export function startClient(host: ClientHost) {
       requestingManual = true
       void controller.request(true)
       requestingManual = false
-    } else if (!manual && available && current?.eligible && !current.draft && cache?.automatic) void controller.request()
+    } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request()
   }
   const request = (fromShortcut = false) => {
     if (disposed) return
