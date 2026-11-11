@@ -5,8 +5,32 @@ Suggestions appear as ghost text after the assistant finishes. **Tab accepts a s
 
 ## How to install
 
-Add this entry to `plugins` in your global `~/.config/opencode/opencode.jsonc`,
-preserving any existing entries:
+Open your existing global `~/.config/opencode/opencode.json` or
+`~/.config/opencode/opencode.jsonc`. Use whichever file you already have; do not
+create a second configuration file.
+
+### If you already have a configuration file
+
+Append **only this object** inside the existing top-level `"plugins": [ ... ]`
+array. Add a comma after the preceding entry, if there is one. Preserve all other
+plugins and settings.
+
+```json
+{
+  "package": "github:fcoouto/opencode-predictions#main",
+  "options": {
+    "models": "opencode/*free*#low",
+    "timeoutMs": 20000,
+    "contextTurns": 3,
+    "automatic": true,
+    "enabled": true
+  }
+}
+```
+
+### If you do not have other pluing in your configuration file
+
+Your `~/.config/opencode/opencode.jsonc` should look like this:
 
 ```jsonc
 {
