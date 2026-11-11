@@ -77,23 +77,18 @@ function createController(io) {
       if (disposed) return;
       if (snapshot.key !== current.key || snapshot.draft) clear();
       current = snapshot;
-      if (snapshot.draft) {
-        const contextKey = snapshot.contextKey ?? snapshot.key;
-        for (const [key, result] of results) if (result.contextKey === contextKey && !result.accepted) results.delete(key);
-        if (snapshot.key) remember(snapshot.key);
-      }
+      if (snapshot.key && snapshot.draft) remember(snapshot.key);
       paint();
     },
     async request(manual = false) {
       const key = current.key;
       if (disposed || !key || !current.eligible || current.draft || pending || !manual && attempted.has(key)) return;
-      const contextKey = current.contextKey ?? key;
       remember(key);
       const request = new AbortController();
       pending = request;
       try {
         const reply = await io.predict(request.signal);
-        if (!disposed && !request.signal.aborted && current.key === key && !current.draft && reply.text) results.set(key, { text: reply.text, contextKey });
+        if (!disposed && !request.signal.aborted && current.key === key && !current.draft && reply.text) results.set(key, { text: reply.text });
       } catch {
       } finally {
         if (pending === request) {
@@ -102,23 +97,11 @@ function createController(io) {
         }
       }
     },
-    dismiss() {
-      const shown = visible;
-      if (current.key) {
-        results.delete(current.key);
-        remember(current.key);
-      }
-      ;
-      clear();
-      return shown;
-    },
     accept() {
       const result = current.key ? results.get(current.key) : void 0;
       if (disposed || !visible || !current.eligible || current.draft || !result) return false;
       clear();
-      if (!io.insert(result.text)) return false;
-      result.accepted = true;
-      return true;
+      return io.insert(result.text);
     },
     preview() {
       return current.key ? results.get(current.key)?.text : void 0;
@@ -404,7 +387,7 @@ function startClient(host) {
     if (scope && !loading && Date.now() - checked >= 2e3) void load();
     if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = void 0;
     const available = !!cache?.enabled && !cache.reason;
-    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, contextKey: current ? JSON.stringify([scope, current.key]) : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
+    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
     if (manual && !loading) {
       const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : void 0;
       manual = void 0;
@@ -438,10 +421,6 @@ function startClient(host) {
     accept() {
       tick();
       return controller.accept();
-    },
-    dismiss() {
-      tick();
-      return controller.dismiss();
     },
     request,
     requestFromShortcut() {
@@ -561,7 +540,6 @@ var tui_default = Plugin.define({
     });
     ctx.keymap.layer(() => ({ priority: 20, commands: [
       { id: "predictions.accept", bind: "tab", run: () => client.accept() ? void 0 : false },
-      { id: "predictions.dismiss", bind: "escape", run: () => client.dismiss() ? void 0 : false },
       { id: "predictions.request", title: "Predict next prompt", group: "Predictions", palette: true, run: () => client.request() },
       { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() }

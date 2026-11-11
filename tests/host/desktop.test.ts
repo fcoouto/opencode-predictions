@@ -40,7 +40,7 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
     if (!automatic) {
       assert.equal((await page.evaluate(() => (window as any).__predictionFixture.snapshot())).lastKey.matches, true)
       await editor.press("Escape")
-      await page.locator("[data-opencode-prediction]").waitFor({ state: "detached" })
+      assert.equal(await page.locator("[data-opencode-prediction]").textContent(), "Run the targeted tests.")
       await editor.dispatchEvent("keydown", { key: "∏", code: "KeyP", altKey: true, shiftKey: true, bubbles: true, cancelable: true })
       await page.locator("[data-opencode-prediction]").waitFor({ state: "visible" })
       assert.equal(await editor.innerText(), "")

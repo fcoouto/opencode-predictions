@@ -41,22 +41,19 @@ test("clearing accepted or edited text restores the original prediction without 
   }
 })
 
-test("Escape permanently dismisses a restored accepted prediction", async () => {
+test("unaccepted predictions survive edits and navigation without regenerating", async () => {
   const { controller, ghost, calls } = setup()
   await controller.request()
-  assert.equal(controller.accept(), true)
-  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
-  assert.equal(ghost(), "Run the tests.")
-  assert.equal(controller.dismiss(), true)
   controller.update({ key: "server/session/completion/config", eligible: true, draft: "more edits" })
+  assert.equal(ghost(), undefined)
   controller.update({ key: "other/session/completion/config", eligible: true, draft: "" })
   controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
   await controller.request()
-  assert.equal(ghost(), undefined)
+  assert.equal(ghost(), "Run the tests.")
   assert.equal(calls(), 1)
 })
 
-test("failed insertion does not preserve a prediction through typing", async () => {
+test("failed insertion keeps the prediction available after clearing typed text", async () => {
   let ghost: string | undefined
   const controller = createController({ predict: async () => ({ text: "Run the tests." }), paint: text => { ghost = text; return !!text }, insert: () => false })
   controller.update({ key: "first", eligible: true, draft: "" })
@@ -64,27 +61,28 @@ test("failed insertion does not preserve a prediction through typing", async () 
   assert.equal(controller.accept(), false)
   controller.update({ key: "first", eligible: true, draft: "my own text" })
   controller.update({ key: "first", eligible: true, draft: "" })
-  assert.equal(ghost, undefined)
+  assert.equal(ghost, "Run the tests.")
   assert.equal(controller.accept(), false)
 })
 
-test("typing invalidates a prediction and clearing does not start another paid request", async () => {
-  const { controller, inserted, calls } = setup()
+test("typing hides a prediction and clearing restores it without another paid request", async () => {
+  const { controller, inserted, ghost, calls } = setup()
   await controller.request()
   controller.update({ key: "server/session/completion/config", eligible: true, draft: "my text" })
+  assert.equal(ghost(), undefined)
   assert.equal(controller.accept(), false)
   controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
   await controller.request()
+  assert.equal(ghost(), "Run the tests.")
   assert.equal(calls(), 1)
   assert.deepEqual(inserted, [])
 })
 
-test("Escape dismisses automatic prediction but a deliberate manual request can refresh", async () => {
+test("automatic requests reuse a prediction but a deliberate manual request can refresh", async () => {
   const { controller, ghost, calls } = setup()
   await controller.request()
-  controller.dismiss()
   await controller.request()
-  assert.equal(ghost(), undefined)
+  assert.equal(ghost(), "Run the tests.")
   assert.equal(calls(), 1)
   await controller.request(true)
   assert.equal(calls(), 2)
@@ -116,18 +114,19 @@ test("switching chats restores each unaccepted prediction without another model 
   assert.equal(calls(), 2)
 })
 
-test("dismissed and unaccepted edited predictions never reappear after navigation", async () => {
-  for (const action of ["dismiss", "type"] as const) {
-    const { controller, ghost, calls } = setup()
-    await controller.request()
-    if (action === "type") controller.update({ key: "server/session/completion/config", eligible: true, draft: "my prompt" })
-    else controller[action]()
-    controller.update({ key: "other/session/completion/config", eligible: true, draft: "" })
-    controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
-    await controller.request()
-    assert.equal(ghost(), undefined, action)
-    assert.equal(calls(), 1, action)
-  }
+test("typing cancels an unfinished prediction without retrying after clearing", async () => {
+  let finish!: (reply: { text: string }) => void
+  let signal!: AbortSignal
+  const { controller, ghost, calls } = setup(async value => { signal = value; return new Promise(resolve => { finish = resolve }) })
+  const pending = controller.request()
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "my text" })
+  assert.equal(signal.aborted, true)
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  finish({ text: "late suggestion" })
+  await pending
+  await controller.request()
+  assert.equal(ghost(), undefined)
+  assert.equal(calls(), 1)
 })
 
 test("cached suggestions never appear for a newer completion or configuration", async () => {
