@@ -151,9 +151,13 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         parent.throwIfAborted()
         if (configured.every(model => !!skip(model))) return { reason: "no_models_eligible" }
         const messages = [...await api.context(request.sessionID, parent)]
-        const records = messages.map(value => value && typeof value === "object" ? value as { type?: string; status?: string; outcome?: string; time?: { completed?: unknown } } : {})
+        const records = messages.map(value => value && typeof value === "object" ? value as { type?: string; status?: string; outcome?: string; finish?: string; content?: unknown; time?: { completed?: unknown } } : {})
         const last = records.findLast(value => value.type === "user" || value.type === "assistant" || value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
         if (request.manual === true && last?.type === "assistant" && last.time?.completed !== undefined) {
+          const content = Array.isArray(last.content) ? last.content : []
+          const start = records.findLastIndex(value => value.type === "user" || value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
+          const pending = records.slice(start + 1).some(value => Array.isArray(value.content) && value.content.some(part => part?.type === "tool" && !["completed", "error"].includes(part.state?.status)))
+          if (last.finish === "tool-calls" || pending || !content.some(part => part?.type === "text" && typeof part.text === "string" && part.text.trim())) return { reason: "context_unavailable" }
           // Historical completed turns may lack an idle record; close only this local copy.
           const boundary = { type: "idle", outcome: session.outcome }
           messages.push(boundary); records.push(boundary)

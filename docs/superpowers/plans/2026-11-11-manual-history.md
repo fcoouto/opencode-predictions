@@ -49,7 +49,8 @@
 
 **Interfaces:** Branch `fix/manual-historical-predictions`, base `main`, repository `fcoouto/opencode-predictions`.
 
-- [ ] Obtain one read-only whole-branch review against the spec. Fix important findings with RED-to-GREEN regressions and rerun relevant/full checks.
+- [x] Obtain one read-only whole-branch review against the spec. Fix important findings with RED-to-GREEN regressions and rerun relevant/full checks.
+- [x] Review follow-up: reject unusable latest replies even without intervening idle records, unfinished tools in the latest user turn, and a latest `tool-calls` finish. Verify reported cases fail first and pass after the fix; keep terminal completed/error tool states supported when the assistant response is finished.
 - [ ] Push without force and create the PR, stating verified coverage and any untested real-chat limits.
 - [ ] Watch current-head GitHub checks. Merge only after nonempty successful checks and use `--match-head-commit` for the verified head.
 - [ ] Verify merged state and commit on `origin/main`; preserve the worktree and installed plugin state.

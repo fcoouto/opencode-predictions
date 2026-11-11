@@ -371,6 +371,10 @@ function createService(api, rawOptions, directory) {
         const records = messages.map((value) => value && typeof value === "object" ? value : {});
         const last = records.findLast((value) => value.type === "user" || value.type === "assistant" || value.type === "idle" || value.type === "compaction" && value.status !== "failed");
         if (request.manual === true && last?.type === "assistant" && last.time?.completed !== void 0) {
+          const content = Array.isArray(last.content) ? last.content : [];
+          const start2 = records.findLastIndex((value) => value.type === "user" || value.type === "idle" || value.type === "compaction" && value.status !== "failed");
+          const pending = records.slice(start2 + 1).some((value) => Array.isArray(value.content) && value.content.some((part) => part?.type === "tool" && !["completed", "error"].includes(part.state?.status)));
+          if (last.finish === "tool-calls" || pending || !content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim())) return { reason: "context_unavailable" };
           const boundary = { type: "idle", outcome: session.outcome };
           messages.push(boundary);
           records.push(boundary);

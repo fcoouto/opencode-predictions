@@ -9,6 +9,7 @@ Allow the shortcut and command-palette request to predict from the latest comple
 - Pass an optional `manual` boolean from explicit client requests through the Desktop/CLI RPC contract. Omitted or false means existing automatic behavior.
 - For manual requests only, infer a local turn boundary when the latest meaningful history record is a completed assistant response without a following idle record. Do not write that boundary or anything else into chat history.
 - Do not fall back to an older conclusion when the latest turn is incomplete, interrupted, empty, reasoning/tool-only, or followed by an unanswered user prompt or successful compaction.
+- Require usable text in the latest assistant itself, even when earlier exchanges also lack idle records. Unfinished tools in that user turn, or a latest `tool-calls` finish awaiting continuation, cannot establish a completion.
 - A historical session may also lack `time.idle`. Expose its `time.updated` as the stable request revision, but mark it ineligible for automatic generation. The service accepts this revision only for an explicit manual request with no recorded busy execution.
 - Keep existing project, parent-session, busy/interrupted, composer, cancellation, and stale-revision checks. Recheck session revision before and after generation. Do not change automatic turn collection.
 - Reuse existing prediction retention and dismissal behavior. No new dependency, configuration option, persistence, or installed-plugin modification.
