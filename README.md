@@ -62,21 +62,51 @@ Use `provider/model` or `provider/model#variant`. Omit `#variant` to use the mod
 default reasoning. The plugin never changes your main session model.
 
 `*` matches model IDs or display names case-insensitively. Separate selectors with
-commas to set preference order. Matches within each wildcard group use stable
+commas to set initial preference order. Matches within each wildcard group use stable
 provider/model-ID order, not speed or price. Duplicate candidates are removed.
 Only enabled models supporting the requested variant are selected.
 
-When a call fails or times out, the next configured match is tried, with a notice:
+When a call fails or times out, the next eligible configured match is tried, with a notice:
 
 ```text
 Predictions failed with [<model_display_name>], moving on with [<next_model>]...
 Reason: HTTP 429: Free usage limit reached.
+Queue: Paused for 60 minutes.
 ```
 
 The popup includes a safe failure summary, such as a provider restriction, usage
 limit, invalid response, or timeout. Raw provider error contents are not displayed.
 Each candidate is attempted once. No unselected model is called. A valid
 no-suggestion response stops the chain; exhaustion shows a failure notice.
+
+### Ranking queue
+
+A valid response, including “no suggestion,” moves its candidate first. A failure
+moves it last. Untried candidates keep their relative order. Only your configured
+models and reasoning variants can be used.
+
+- **Access, payment, or unavailable model** (`401`/`402`/`403`/`404` or equivalent
+  structured errors): blocked until the server-side plugin instance is recreated.
+- **Explicit budget exhaustion** (daily/monthly budgets, depleted credits, or a
+  reached free-usage limit): paused for **one hour**.
+- **Temporary or unknown failure** (ordinary `429`, `5xx`, timeout, network error,
+  or invalid output): paused for **60 seconds**. “Quota” or “limit” alone does not
+  imply an exhausted daily budget.
+
+For retryable failures, a valid provider `retryAfterMs` replaces the default pause,
+with a 60-second minimum and no cap that would shorten longer provider delays.
+Access, availability, budget, and rate-limit skips cover that model's reasoning
+variants; other failures affect only the candidate that failed.
+
+Cooldown expiry makes a candidate eligible at its learned position; it does not
+schedule a call. If none are eligible, no generation occurs. Check **Prediction
+status and preview** for current order, safe skip reasons, and retry timestamps.
+Already-skipped models do not produce repeated failure popups.
+
+Queue state stays in memory and is shared across sessions using the same server/location
+plugin instance. Recreating that instance clears it; reloading only the Desktop UI
+does not necessarily do so. Models that leave the available catalog lose their queue
+history. Cancellation and stale requests do not change rankings.
 
 ## Cost and privacy
 

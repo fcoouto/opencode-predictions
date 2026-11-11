@@ -149,7 +149,7 @@ async function abortable(work, signal) {
     signal.removeEventListener("abort", onAbort);
   }
 }
-function failureDetail(error) {
+function failurePolicy(error) {
   const value = error && typeof error === "object" ? error : {};
   const message = typeof value.message === "string" ? value.message.slice(0, 1e3) : "";
   const status = typeof value.status === "number" && Number.isInteger(value.status) && value.status >= 400 && value.status <= 599 ? value.status : void 0;
@@ -163,7 +163,10 @@ function failureDetail(error) {
   };
   const fallback = typeof value.reason === "string" && Object.hasOwn(reasons, value.reason) ? reasons[value.reason] : "Model request failed.";
   const detail = status === 403 && /not available in your country/i.test(message) ? "This model is not available in your country." : status === 429 && /free usage limit reached/i.test(message) ? "Free usage limit reached." : message === "Invalid prediction response" ? "Model returned an invalid prediction response." : fallback;
-  return status === void 0 ? detail : `HTTP ${status}: ${detail}`;
+  const blocked = [401, 402, 403, 404].includes(status ?? 0) || value.reason === "authentication" || value._tag === "ModelNotFoundError" || value._tag === "ProviderNotFoundError" || value._tag === "UnsupportedModelError";
+  const budget = value.reason !== "invalid_request" && value.reason !== "content_filter" && /\b(?:exhausted|exceeded|reached|depleted|insufficient)\b/i.test(message) && /\b(?:daily|monthly|budget|credits?)\b|\bfree usage\b|\binsufficient quota\b/i.test(message);
+  const delay = typeof value.retryAfterMs === "number" && Number.isFinite(value.retryAfterMs) && value.retryAfterMs > 0 ? Math.max(6e4, value.retryAfterMs) : budget ? 36e5 : 6e4;
+  return { detail: status === void 0 ? detail : `HTTP ${status}: ${detail}`, delayMs: blocked ? Infinity : delay, modelWide: blocked || budget || status === 429 || value.reason === "rate_limit" };
 }
 function createService(api, rawOptions, directory) {
   const parsed = parseOptions(rawOptions);
@@ -172,16 +175,56 @@ function createService(api, rawOptions, directory) {
   let lastOutcome;
   let lastLatencyMs;
   let candidates;
+  const skipped = /* @__PURE__ */ new Map();
+  const outcomes = /* @__PURE__ */ new Map();
+  const modelKey = (model) => JSON.stringify([model.providerID, model.id]);
+  const candidateKey = (model) => JSON.stringify([model.providerID, model.id, model.variant ?? null]);
+  const skip = (model) => {
+    let active;
+    for (const key of [modelKey(model), candidateKey(model)]) {
+      const entry = skipped.get(key);
+      if (entry && entry.until <= Date.now()) skipped.delete(key);
+      else if (entry && (!active || entry.until > active.until)) active = entry;
+    }
+    return active;
+  };
+  const refresh = (resolved) => {
+    const available = new Map(resolved.map((model) => [candidateKey(model), model]));
+    const ordered = [];
+    for (const previous of candidates ?? []) {
+      const key = candidateKey(previous);
+      const current = available.get(key);
+      if (current) ordered.push(current);
+    }
+    candidates = [
+      ...ordered.filter((model) => outcomes.get(candidateKey(model)) === "working"),
+      ...resolved.filter((model) => !outcomes.has(candidateKey(model))),
+      ...ordered.filter((model) => outcomes.get(candidateKey(model)) === "failed")
+    ];
+    const keys = new Set(resolved.flatMap((model) => [modelKey(model), candidateKey(model)]));
+    for (const key of skipped.keys()) if (!keys.has(key)) skipped.delete(key);
+    for (const key of outcomes.keys()) if (!keys.has(key)) outcomes.delete(key);
+  };
+  const move = (model, first, modelWide = false) => {
+    const key = modelWide ? modelKey : candidateKey;
+    const selected = candidates?.filter((candidate) => key(candidate) === key(model)) ?? [];
+    const others = candidates?.filter((candidate) => key(candidate) !== key(model)) ?? [];
+    for (const candidate of selected) outcomes.set(candidateKey(candidate), first ? "working" : "failed");
+    candidates = first ? [...selected, ...others] : [...others, ...selected];
+  };
   const status = () => ({
     enabled: !!options?.enabled && !!options.models && (candidates === void 0 || candidates.length > 0),
     ...options?.models ? { models: options.models } : {},
-    ...candidates ? { candidates } : {},
+    ...candidates ? { candidates: candidates.map((model) => {
+      const entry = skip(model);
+      return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...Number.isFinite(entry.until) ? { retryAt: entry.until } : {} } : { ...model, state: "ready" };
+    }) } : {},
     automatic: options?.automatic ?? true,
     timeoutMs: options?.timeoutMs ?? 8e3,
     contextTurns: options?.contextTurns ?? 3,
     version,
     warnings: parsed.warnings,
-    ...!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : {},
+    ...!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every((model) => !!skip(model)) ? { reason: "no_models_eligible" } : {},
     ...lastOutcome ? { lastOutcome, lastLatencyMs } : {}
   });
   const predict = async (request, parent) => {
@@ -198,8 +241,10 @@ function createService(api, rawOptions, directory) {
         const session = await api.session(request.sessionID, parent);
         const reason = check(session);
         if (reason) return { reason };
-        candidates = resolveModels(options.models, await api.models(parent));
+        refresh(resolveModels(options.models, await api.models(parent)));
         if (!candidates.length) return { reason: "model_unavailable" };
+        parent.throwIfAborted();
+        if (candidates.every((model) => !!skip(model))) return { reason: "no_models_eligible" };
         const messages = await api.context(request.sessionID, parent);
         const records = messages.map((value) => value && typeof value === "object" ? value : {});
         const idle = records.findLastIndex((value) => value.type === "idle");
@@ -209,36 +254,58 @@ function createService(api, rawOptions, directory) {
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" };
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns);
         if (!prompt) return { reason: "context_unavailable" };
-        const chain = candidates;
-        let failure = "generation_failed";
+        const chain = [...candidates];
+        let failure = "no_models_eligible";
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted();
           const changed = check(await api.session(request.sessionID, parent));
           if (changed) return { reason: changed };
-          const { name, ...model } = chain[index];
+          parent.throwIfAborted();
+          const candidate = chain[index];
+          if (skip(candidate)) continue;
+          const { name, ...model } = candidate;
           const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)]);
           try {
             const output = await abortable(() => api.generate(model, prompt, signal), signal);
             parent.throwIfAborted();
             const changed2 = check(await api.session(request.sessionID, parent));
             if (changed2) return { reason: changed2 };
+            parent.throwIfAborted();
             const text = parseSuggestion(output);
-            if (text) return { text };
+            if (text) {
+              if (!skip(model)) move(model, true);
+              return { text };
+            }
             let abstained = false;
             try {
               abstained = JSON.parse(output)?.prompt === null;
             } catch {
             }
-            if (abstained) return { reason: "no_suggestion" };
+            if (abstained) {
+              if (!skip(model)) move(model, true);
+              return { reason: "no_suggestion" };
+            }
             throw new Error("Invalid prediction response");
           } catch (error) {
+            const timedOut = signal.aborted;
             parent.throwIfAborted();
-            failure = signal.aborted ? "timeout" : "generation_failed";
-            const next = chain[index + 1];
-            const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no configured models remain.`;
-            const detail = signal.aborted ? `Timed out after ${options.timeoutMs} ms.` : failureDetail(error);
+            const changed2 = check(await api.session(request.sessionID, parent));
+            if (changed2) return { reason: changed2 };
+            parent.throwIfAborted();
+            failure = timedOut ? "timeout" : "generation_failed";
+            const policy = timedOut ? { detail: `Timed out after ${options.timeoutMs} ms.`, delayMs: 6e4, modelWide: false } : failurePolicy(error);
+            const key = policy.modelWide ? modelKey(model) : candidateKey(model);
+            const until = Date.now() + policy.delayMs;
+            if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail });
+            move(model, false, policy.modelWide);
+            const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
+            const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
+            const entry = skip(model);
+            const minutes = Math.ceil((entry.until - Date.now()) / 6e4);
+            const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`;
             await api.notice?.(`${message}
-Reason: ${detail}`, request);
+Reason: ${policy.detail}
+Queue: ${queue}`, request);
           }
         }
         return { reason: failure };
@@ -254,7 +321,7 @@ Reason: ${detail}`, request);
     }
   };
   const inspect = async (signal) => {
-    if (options?.enabled && options.models) candidates = resolveModels(options.models, await api.models(signal));
+    if (options?.enabled && options.models) refresh(resolveModels(options.models, await api.models(signal)));
     return status();
   };
   return { predict, status, inspect };
