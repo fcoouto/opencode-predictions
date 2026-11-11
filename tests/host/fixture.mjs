@@ -1,6 +1,5 @@
 import { createServer } from "node:http"
-import { spawn, execFile } from "node:child_process"
-import { promisify } from "node:util"
+import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
@@ -49,13 +48,15 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   }
   const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: process.env.TMPDIR ?? root, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
+  // Desktop's managed service needs its own nonzero port, not the user's shared default.
   const probe = createServer()
   probe.listen(0, "127.0.0.1")
   await once(probe, "listening")
-  const servicePort = probe.address().port
-  await new Promise(resolveClose => probe.close(resolveClose))
-  try { await promisify(execFile)(process.env.OPENCODE_BIN ?? "opencode", ["service", "set", "port", String(servicePort)], { env, cwd: directory }) }
-  catch (error) { provider.close(); throw error }
+  const port = probe.address().port
+  // shortcut: releasing the probe can race with another bind; retry allocation if test collisions recur.
+  await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()))
+  await mkdir(join(root, "config", "opencode"), { recursive: true })
+  await writeFile(join(root, "config", "opencode", "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
   const child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd: directory, env, stdio: ["ignore", "pipe", "pipe"] })
   let output = ""
   child.stdout.on("data", chunk => { output = (output + chunk).slice(-64000) })

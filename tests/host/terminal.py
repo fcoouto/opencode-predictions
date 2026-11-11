@@ -32,7 +32,8 @@ def pump_until(predicate, seconds=25):
             # Answer terminal capability probes; no keypresses are sent as prompts.
             if b"\x1b[6n" in chunk:
                 os.write(master, b"\x1b[1;1R")
-    raise AssertionError("Timed out: " + output.decode(errors="replace")[-6000:])
+    observed = pathlib.Path(observation)
+    raise AssertionError("Observed: " + (observed.read_text() if observed.exists() else "none") + "\nTimed out: " + output.decode(errors="replace")[-6000:])
 
 def observe(expected):
     path = pathlib.Path(observation)
@@ -56,6 +57,13 @@ try:
         pump_until(lambda: b"Prediction status snapshot" in output)
         print(json.dumps({"statusReopened": True}))
     else:
+        if os.environ.get("PREDICTIONS_MANUAL_TEST") == "1":
+            pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Fix the assertion." in output)
+            observe("")
+            assert b"Run the targeted tests." not in output
+            # CSI-u distinguishes Alt+Shift+P from the legacy ESC P DCS introducer.
+            os.write(master, b"\x1b[112;4u")
+            observe("")
         pump_until(lambda: b"Run the targeted tests." in output)
         observe("")
         os.write(master, b"\t")

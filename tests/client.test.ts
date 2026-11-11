@@ -43,6 +43,97 @@ test("manual-only client makes no generation calls until requested", async () =>
   } finally { client.dispose() }
 })
 
+test("manual shortcut falls through outside an enabled empty eligible session", async () => {
+  let state: ClientState | undefined = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  const status: Status = { enabled: true, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  let calls = 0
+  let focused = 0
+  const client = startClient({ state: () => state, status: async () => status, predict: async () => { calls++; return { text: "Run tests." } }, paint: text => !!text, insert: () => true, focus() { focused++ }, show() {} })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(typeof client.requestFromShortcut, "function")
+    state!.draft = "my own prompt"
+    assert.equal(client.requestFromShortcut(), false)
+    state!.draft = ""
+    state!.eligible = false
+    assert.equal(client.requestFromShortcut(), false)
+    state!.eligible = true
+    status.enabled = false
+    client.invalidate()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(client.requestFromShortcut(), false)
+    assert.equal(calls, 0)
+    assert.equal(focused, 0)
+    status.enabled = true
+    client.invalidate()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.notEqual(client.requestFromShortcut(), false)
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    assert.equal(focused, 1)
+    assert.equal(client.accept(), true)
+    state = undefined
+    assert.equal(client.requestFromShortcut(), false)
+  } finally { client.dispose() }
+})
+
+test("manual shortcut waits for initial status without losing the first keypress", async () => {
+  const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  for (const enabled of [false, true]) {
+    let finish!: (status: Status) => void
+    let calls = 0
+    const client = startClient({ state: () => state, status: () => new Promise(resolve => { finish = resolve }), predict: async () => { calls++; return { reason: "no_suggestion" } }, paint: () => false, insert: () => true, focus() {}, show() {} })
+    try {
+      assert.equal(typeof client.requestFromShortcut, "function")
+      assert.notEqual(client.requestFromShortcut(), false)
+      assert.equal(calls, 0)
+      finish({ enabled, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] })
+      await new Promise(resolve => setImmediate(resolve))
+      assert.equal(calls, enabled ? 1 : 0)
+    } finally { client.dispose() }
+  }
+})
+
+test("typing cancels a shortcut queued during status loading", async () => {
+  const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  let finish!: (status: Status) => void
+  let calls = 0
+  const client = startClient({ state: () => state, status: () => new Promise(resolve => { finish = resolve }), predict: async () => { calls++; return { reason: "no_suggestion" } }, paint: () => false, insert: () => true, focus() {}, show() {} })
+  try {
+    client.requestFromShortcut()
+    state.draft = "my own prompt"
+    finish({ enabled: true, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] })
+    await new Promise(resolve => setImmediate(resolve))
+    state.draft = ""
+    client.accept()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 0)
+    client.requestFromShortcut()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+  } finally { client.dispose() }
+})
+
+test("disabled validation cancels a queued shortcut instead of replaying it after re-enable", async () => {
+  const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  let finish!: (status: Status) => void
+  let calls = 0
+  const client = startClient({ state: () => state, status: () => new Promise(resolve => { finish = resolve }), predict: async () => { calls++; return { reason: "no_suggestion" } }, paint: () => false, insert: () => true, focus() {}, show() {} })
+  const status: Status = { enabled: false, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  try {
+    client.requestFromShortcut()
+    finish(status)
+    await new Promise(resolve => setImmediate(resolve))
+    client.invalidate()
+    finish({ ...status, enabled: true, version: "two" })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 0)
+    client.requestFromShortcut()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+  } finally { client.dispose() }
+})
+
 test("a manual request waiting for focus cannot move to another session", async () => {
   let state: ClientState = { key: "local/first/2", sessionID: "ses_first", completion: 2, eligible: false, draft: "" }
   let calls = 0

@@ -385,6 +385,7 @@ function startClient(host) {
     if (disposed) return;
     sync();
     if (scope && !loading && Date.now() - checked >= 2e3) void load();
+    if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = void 0;
     const available = !!cache?.enabled && !cache.reason;
     controller.update({ key: current && cache ? current.key + "/" + cache.version : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
     if (manual && !loading) {
@@ -403,14 +404,14 @@ function startClient(host) {
       requestingManual = false;
     } else if (!manual && available && current?.eligible && !current.draft && cache?.automatic) void controller.request();
   };
-  const request = () => {
+  const request = (fromShortcut = false) => {
     if (disposed) return;
     sync();
     if (!scope) {
       announce(reasonNotice("location_unavailable"), true);
       return;
     }
-    manual = { scope, key: host.state()?.key };
+    manual = { scope, key: host.state()?.key, fromShortcut };
     host.focus();
     tick();
   };
@@ -426,6 +427,11 @@ function startClient(host) {
       return controller.dismiss();
     },
     request,
+    requestFromShortcut() {
+      tick();
+      if (!current?.eligible || current.draft || cache?.enabled === false) return false;
+      request(true);
+    },
     async status() {
       if (disposed) return;
       sync();
@@ -538,6 +544,7 @@ var tui_default = Plugin.define({
       { id: "predictions.accept", bind: "tab", run: () => client.accept() ? void 0 : false },
       { id: "predictions.dismiss", bind: "escape", run: () => client.dismiss() ? void 0 : false },
       { id: "predictions.request", title: "Predict next prompt", group: "Predictions", palette: true, run: () => client.request() },
+      { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() }
     ] }));
     const stopConfig = ctx.data.on("config.updated", () => client.invalidate());

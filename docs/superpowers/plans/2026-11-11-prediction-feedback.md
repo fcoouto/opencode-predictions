@@ -108,4 +108,10 @@ No review findings were deferred. Existing Desktop shortcut work remains a separ
 
 The user requested merge through a PR after implementation. The original checkout also contains unrelated, uncommitted shortcut work with its own PR #7. Integration therefore uses a separate `feat/prediction-feedback` worktree based on `main`, transplanting only notification/status changes. Shortcut code, shortcut-only tests, and shortcut diagnostics are excluded from this PR; original files and PR #7 remain untouched. The earlier shortcut failure is not claimed fixed.
 
-The isolated feature tree passed 124 unit tests, typecheck, bundle, package exports, server integration, all three Desktop host cases, and both CLI host cases. The count differs from the combined checkout because its two shortcut-only unit tests are outside this PR. No installed plugin cache was changed. Commit/push/PR merge are authorized by the user's integration request.
+The isolated feature tree passed 124 unit tests, typecheck, bundle, package exports, server integration, all three Desktop host cases, and both CLI host cases. The count differs from the combined checkout because its two shortcut-only unit tests were outside the original PR. No installed plugin cache was changed. Commit/push/PR merge are authorized by the user's integration request.
+
+### Conflict resolution after PR #7 merged
+
+PR #7 subsequently merged into `main` as `69e14a0`. PR #8 merges that updated base without rewriting shared history. Conflict resolution preserves location-scoped notification ownership, manual/automatic request coordination, and the shortcut's cancellation-on-typing/disabled-validation rules. Native fixtures retain both shortcut readiness helpers and status-view controls. Generated bundles are rebuilt rather than merged by hand.
+
+The combined tree passes 128 unit tests, typecheck, bundle, package exports, server integration, all four Desktop host cases, and all three CLI host cases. Desktop Alt+Shift+P now passes with upstream's synchronous readiness predicate, superseding the earlier recorded shortcut-verification limitation. The original checkout remains untouched.

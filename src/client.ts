@@ -26,7 +26,7 @@ export function startClient(host: ClientHost) {
   let epoch = 0
   let loading: { abort: AbortController; done: Promise<void> } | undefined
   let disposed = false
-  let manual: { scope: string; key?: string } | undefined
+  let manual: { scope: string; key?: string; fromShortcut: boolean } | undefined
   let requestingManual = false
   let predicting: { signal: AbortSignal; scope: string | undefined; epoch: number; explicit: boolean } | undefined
   const activePrediction = () => predicting && !predicting.signal.aborted && predicting.scope === scope && predicting.epoch === epoch ? predicting : undefined
@@ -145,6 +145,7 @@ export function startClient(host: ClientHost) {
     if (disposed) return
     sync()
     if (scope && !loading && Date.now() - checked >= 2000) void load()
+    if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = undefined
     const available = !!cache?.enabled && !cache.reason
     controller.update({ key: current && cache ? current.key + "/" + cache.version : undefined, eligible: !!current?.eligible && available, draft: current?.draft ?? "" })
     if (manual && !loading) {
@@ -157,11 +158,11 @@ export function startClient(host: ClientHost) {
       requestingManual = false
     } else if (!manual && available && current?.eligible && !current.draft && cache?.automatic) void controller.request()
   }
-  const request = () => {
+  const request = (fromShortcut = false) => {
     if (disposed) return
     sync()
     if (!scope) { announce(reasonNotice("location_unavailable")!, true); return }
-    manual = { scope, key: host.state()?.key }
+    manual = { scope, key: host.state()?.key, fromShortcut }
     host.focus()
     tick()
   }
@@ -171,6 +172,11 @@ export function startClient(host: ClientHost) {
     accept() { tick(); return controller.accept() },
     dismiss() { tick(); return controller.dismiss() },
     request,
+    requestFromShortcut() {
+      tick()
+      if (!current?.eligible || current.draft || cache?.enabled === false) return false
+      request(true)
+    },
     async status() {
       if (disposed) return
       sync()

@@ -36,4 +36,4 @@ Pin each previously silent failure path, unchanged-issue deduplication, recovery
 
 ## Integration boundary
 
-Merge this feature separately from the concurrent manual-shortcut work in PR #7. Preserve that work in its original checkout; do not add its shortcut API, bindings, or shortcut-only tests to the notification PR. The isolated notification branch must pass its complete unit and native-host suites before merge.
+Merge this feature separately from the concurrent manual-shortcut work in PR #7. Preserve that work in its original checkout; do not claim it as new notification functionality. Once PR #7 merges into `main`, integrate its existing API, bindings, and tests without weakening their guards. The notification branch must pass its complete unit and native-host suites before merge.
