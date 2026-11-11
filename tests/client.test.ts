@@ -164,6 +164,83 @@ test("a response resolved between polling ticks never paints into a different li
   } finally { client.dispose() }
 })
 
+test("navigation invalidation restores the original chat's exact prediction without regeneration", async () => {
+  const first: ClientState = { key: "local/first/2", sessionID: "ses_first", completion: 2, eligible: true, draft: "" }
+  const second: ClientState = { ...first, key: "local/second/3", sessionID: "ses_second", completion: 3 }
+  let state = first
+  let ghost: string | undefined
+  let calls = 0
+  const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  const client = startClient({ state: () => state, status: async () => status, predict: async current => { calls++; return { text: current.sessionID === "ses_first" ? "First chat suggestion" : "Second chat suggestion" } }, paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show() {} })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "First chat suggestion")
+    state = second; client.invalidate()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "Second chat suggestion")
+    state = first; client.invalidate()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "First chat suggestion")
+    assert.equal(calls, 2)
+  } finally { client.dispose() }
+})
+
+test("typing while a returning chat's status loads clears only that chat's cached suggestion", async () => {
+  const first: ClientState = { key: "local/first/2", sessionID: "ses_first", completion: 2, eligible: true, draft: "" }
+  const second: ClientState = { ...first, key: "local/second/3", sessionID: "ses_second", completion: 3 }
+  const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  let state = first
+  let ghost: string | undefined
+  let predictions = 0
+  let lookups = 0
+  let finish!: (value: Status) => void
+  const client = startClient({ state: () => state, status: () => ++lookups === 3 ? new Promise(resolve => { finish = resolve }) : Promise.resolve(status), predict: async current => { predictions++; return { text: current.sessionID === "ses_first" ? "First chat suggestion" : "Second chat suggestion" } }, paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show() {} })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    state = second; client.invalidate(); await new Promise(resolve => setImmediate(resolve))
+    state = first; client.invalidate()
+    first.draft = "typed while status was loading"; client.accept()
+    first.draft = ""; client.accept()
+    finish(status); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, undefined)
+    assert.equal(predictions, 2)
+    state = second; client.invalidate(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "Second chat suggestion")
+    assert.equal(predictions, 2)
+  } finally { client.dispose() }
+})
+
+test("accepted edits survive navigation and clearing while status reloads without regeneration", async () => {
+  const first: ClientState = { key: "local/first/2", sessionID: "ses_first", completion: 2, eligible: true, draft: "" }
+  const second: ClientState = { ...first, key: "local/second/3", sessionID: "ses_second", completion: 3 }
+  const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  let state = first
+  let ghost: string | undefined
+  let predictions = 0
+  let lookups = 0
+  let finish!: (value: Status) => void
+  const client = startClient({ state: () => state, status: () => ++lookups === 3 ? new Promise(resolve => { finish = resolve }) : Promise.resolve(status), predict: async current => { predictions++; return { text: current.sessionID === "ses_first" ? "First chat suggestion" : "Second chat suggestion" } }, paint: text => { ghost = text; return !!text }, insert: text => { state.draft = text; return true }, focus() {}, show() {} })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(client.accept(), true)
+    assert.equal(first.draft, "First chat suggestion")
+    first.draft = "edited accepted text"
+    assert.equal(client.accept(), false)
+    state = second; client.invalidate(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "Second chat suggestion")
+    state = first; client.invalidate()
+    first.draft = "edited again during status loading"
+    assert.equal(client.accept(), false)
+    first.draft = ""
+    assert.equal(client.accept(), false)
+    finish(status); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "First chat suggestion")
+    assert.equal(client.accept(), true)
+    assert.equal(first.draft, "First chat suggestion")
+    assert.equal(predictions, 2)
+  } finally { client.dispose() }
+})
+
 test("Escape passes through when a cached suggestion loses input eligibility before the next tick", async () => {
   const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
   let ghost: string | undefined

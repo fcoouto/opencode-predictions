@@ -22,6 +22,52 @@ test("Tab accepts visible current text once, leaves it editable, and otherwise p
   assert.equal(ghost(), undefined)
 })
 
+test("clearing accepted or edited text restores the original prediction without regenerating", async () => {
+  for (const draft of ["Run the tests.", "My edited accepted text"]) {
+    const { controller, inserted, ghost, calls } = setup()
+    await controller.request()
+    assert.equal(controller.accept(), true)
+    controller.update({ key: "server/session/completion/config", eligible: true, draft: "Run the tests." })
+    controller.update({ key: "server/session/completion/config", eligible: true, draft })
+    assert.equal(ghost(), undefined)
+    assert.equal(controller.accept(), false)
+    controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+    assert.equal(ghost(), "Run the tests.")
+    await controller.request()
+    assert.equal(calls(), 1)
+    assert.equal(controller.accept(), true)
+    assert.equal(controller.accept(), false)
+    assert.deepEqual(inserted, ["Run the tests.", "Run the tests."])
+  }
+})
+
+test("Escape permanently dismisses a restored accepted prediction", async () => {
+  const { controller, ghost, calls } = setup()
+  await controller.request()
+  assert.equal(controller.accept(), true)
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), "Run the tests.")
+  assert.equal(controller.dismiss(), true)
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "more edits" })
+  controller.update({ key: "other/session/completion/config", eligible: true, draft: "" })
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  await controller.request()
+  assert.equal(ghost(), undefined)
+  assert.equal(calls(), 1)
+})
+
+test("failed insertion does not preserve a prediction through typing", async () => {
+  let ghost: string | undefined
+  const controller = createController({ predict: async () => ({ text: "Run the tests." }), paint: text => { ghost = text; return !!text }, insert: () => false })
+  controller.update({ key: "first", eligible: true, draft: "" })
+  await controller.request()
+  assert.equal(controller.accept(), false)
+  controller.update({ key: "first", eligible: true, draft: "my own text" })
+  controller.update({ key: "first", eligible: true, draft: "" })
+  assert.equal(ghost, undefined)
+  assert.equal(controller.accept(), false)
+})
+
 test("typing invalidates a prediction and clearing does not start another paid request", async () => {
   const { controller, inserted, calls } = setup()
   await controller.request()
@@ -54,6 +100,76 @@ test("shell/menu/focus ineligibility hides suggestions and prevents acceptance",
   assert.deepEqual(inserted, [])
   controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
   assert.equal(ghost(), "Run the tests.")
+})
+
+test("switching chats restores each unaccepted prediction without another model call", async () => {
+  const { controller, ghost, calls } = setup()
+  await controller.request()
+  controller.update({ key: "other/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), undefined)
+  await controller.request()
+  controller.update({ eligible: false, draft: "" })
+  assert.equal(ghost(), undefined)
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), "Run the tests.")
+  await controller.request()
+  assert.equal(calls(), 2)
+})
+
+test("dismissed and unaccepted edited predictions never reappear after navigation", async () => {
+  for (const action of ["dismiss", "type"] as const) {
+    const { controller, ghost, calls } = setup()
+    await controller.request()
+    if (action === "type") controller.update({ key: "server/session/completion/config", eligible: true, draft: "my prompt" })
+    else controller[action]()
+    controller.update({ key: "other/session/completion/config", eligible: true, draft: "" })
+    controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+    await controller.request()
+    assert.equal(ghost(), undefined, action)
+    assert.equal(calls(), 1, action)
+  }
+})
+
+test("cached suggestions never appear for a newer completion or configuration", async () => {
+  const { controller, ghost } = setup()
+  await controller.request()
+  assert.equal(controller.accept(), true)
+  for (const key of ["server/session/new-completion/config", "server/session/completion/new-config"]) {
+    controller.update({ key, eligible: true, draft: "" })
+    assert.equal(ghost(), undefined)
+    assert.equal(controller.preview(), undefined)
+  }
+})
+
+test("accepted predictions share the 128-attempt cache bound", async () => {
+  const { controller, ghost, calls } = setup()
+  await controller.request()
+  assert.equal(controller.accept(), true)
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), "Run the tests.")
+  for (let index = 1; index <= 128; index++) {
+    controller.update({ key: "completion/" + index, eligible: true, draft: "" })
+    await controller.request()
+  }
+  controller.update({ key: "completion/1", eligible: true, draft: "" })
+  assert.equal(ghost(), "Run the tests.")
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), undefined)
+  assert.equal(controller.preview(), undefined)
+  assert.equal(calls(), 129)
+})
+
+test("disposal removes accepted predictions and blocks restoration", async () => {
+  const { controller, ghost } = setup()
+  await controller.request()
+  assert.equal(controller.accept(), true)
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), "Run the tests.")
+  controller.dispose()
+  controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
+  assert.equal(ghost(), undefined)
+  assert.equal(controller.preview(), undefined)
+  assert.equal(controller.accept(), false)
 })
 
 test("late responses after session/config changes are aborted and never painted", async () => {

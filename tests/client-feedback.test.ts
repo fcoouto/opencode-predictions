@@ -297,3 +297,20 @@ test("disabled configurations emit one warning for ignored options and never gen
     assert.equal(f.calls, 0)
   } finally { f.client.dispose() }
 })
+
+test("accepted cached predictions stay isolated when locations share session and service version keys", async () => {
+  let location = "server/first"
+  let calls = 0
+  let ghost: string | undefined
+  const f = fixture({ scope: () => location, status: async () => ({ ...ready(), automatic: true }), predict: async () => { calls++; return { text: location === "server/first" ? "First location suggestion" : "Second location suggestion" } }, paint: text => { ghost = text; return !!text }, insert: () => true })
+  try {
+    await settle()
+    assert.equal(ghost, "First location suggestion")
+    assert.equal(f.client.accept(), true)
+    location = "server/second"; f.client.invalidate(); await settle()
+    assert.equal(ghost, "Second location suggestion")
+    location = "server/first"; f.client.invalidate(); await settle()
+    assert.equal(ghost, "First location suggestion")
+    assert.equal(calls, 2)
+  } finally { f.client.dispose() }
+})

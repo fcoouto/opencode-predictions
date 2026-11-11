@@ -71,6 +71,13 @@ Typing hides the suggestion. Tab keeps its native behavior when no valid suggest
 is visible. Suggestions do not appear in shell mode, during IME composition, in
 menus/dialogs, or while permission/form input is pending.
 
+Switching chats hides a suggestion without discarding it. Returning to the same
+completed response and configuration restores it without another model call.
+After accepting a suggestion, you can edit it freely; clearing the entire draft
+restores the original suggestion. Escape dismisses it, and typing before acceptance
+invalidates it. This bounded cache stays in memory and does not survive a plugin
+reload or restart.
+
 Avoid using another plugin that also consumes Tab for ghost text in the same prompt.
 
 The prediction shortcut also works with `"automatic": false`. In the CLI, your
