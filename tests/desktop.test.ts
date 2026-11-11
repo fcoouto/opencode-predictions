@@ -105,3 +105,60 @@ test("Desktop owning-server config and plugin events invalidate suggestions befo
     } finally { await page.close() }
   }
 })
+
+test("Desktop error toasts offer persistent status actions and reopen readable status before completion", async () => {
+  const page = await fixture()
+  try {
+    await page.addScriptTag({ content: guiSource })
+    await page.evaluate(() => {
+      const w = window as any
+      w.notices = []; w.dialogs = []; w.commands = new Map(); w.dismissed = 0
+      let failing = true
+      const data = { on: () => () => {}, session: { get: () => undefined } }
+      const session = { id: "ses_test", key: "server/ses_test", directory: "/project", location: { directory: "/project" }, server: { id: "fixture", connected: true, data, client: { rpc: () => ({ status: async () => {
+        if (!failing) throw new Error("PRIVATE")
+        return { enabled: false, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], reason: "models_required" }
+      } }) } } }
+      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => session }, screen: { current: () => undefined }, add: (_registry: unknown, command: any) => w.commands.set(command.id, command), app: { version: "test" }, toast: { show: (notice: unknown) => { w.notices.push(notice); return { dismiss: () => { w.dismissed++ } } } }, dialogs: { open: (render: any) => render({ close() {} }), confirm: async (options: any) => { w.dialogs.push({ description: options.description, whiteSpace: "normal" }); return false }, alert: async () => {} }, ui: { Dialog: (props: any) => { w.dialogs.push({ description: props.children.textContent, whiteSpace: props.children.style.whiteSpace }); return props.children }, Button: () => document.createElement("button") } })
+      w.disconnect = () => { failing = false }
+    })
+    await page.waitForFunction(() => (window as any).notices.length === 1)
+    const first = await page.evaluate(async () => {
+      const w = window as any
+      const notice = w.notices[0]
+      await notice.actions[0].run()
+      await w.commands.get("status").run()
+      return { variant: notice.variant, persistent: notice.persistent, action: notice.actions[0].label, descriptions: w.dialogs.map((dialog: any) => dialog.description), whitespaces: w.dialogs.map((dialog: any) => dialog.whiteSpace), notices: w.notices.length }
+    })
+    assert.equal(first.variant, "error")
+    assert.equal(first.persistent, true)
+    assert.equal(first.action, "Open prediction status")
+    assert.equal(first.descriptions.length, 2)
+    assert.deepEqual(first.whitespaces, ["pre-wrap", "pre-wrap"])
+    assert.ok(first.descriptions.every((text: string) => /snapshot.*Predictions need a model/s.test(text)))
+    assert.equal(first.notices, 1)
+    const after = await page.evaluate(async () => { const w = window as any; w.disconnect(); await w.commands.get("status").run(); return { notices: w.notices.map((notice: any) => ({ variant: notice.variant, persistent: notice.persistent, description: notice.description })), dismissed: w.dismissed } })
+    assert.equal(after.notices.at(-1)!.variant, "error")
+    assert.equal(after.notices.at(-1)!.persistent, false)
+    assert.doesNotMatch(after.notices.at(-1)!.description, /PRIVATE/)
+    assert.ok(after.dismissed >= 1)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
+test("Desktop inspects default server location health on a draft with no mounted session", async () => {
+  const page = await fixture()
+  try {
+    await page.addScriptTag({ content: guiSource })
+    await page.evaluate(() => {
+      const w = window as any
+      w.notices = []
+      const data = { location: { default: () => ({ directory: "/draft" }) }, on: () => () => {} }
+      const server = { id: "sidecar", connected: true, data, client: { rpc: () => ({ status: async () => ({ enabled: false, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], reason: "models_required" }) }) } }
+      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => undefined }, servers: { get: () => server }, screen: { current: () => undefined }, add() {}, app: { version: "test" }, toast: { show: (notice: unknown) => { w.notices.push(notice); return { dismiss() {} } } } })
+    })
+    await page.waitForFunction(() => (window as any).notices.length === 1, undefined, { timeout: 2000 })
+    assert.equal(await page.evaluate(() => (window as any).notices[0].title), "Predictions need a model")
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})

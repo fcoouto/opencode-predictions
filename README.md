@@ -64,7 +64,7 @@ to inspect matches. If none match, choose another selector or omit `#low`.
 - **Tab:** insert the visible suggestion into the editable prompt.
 - **Escape:** dismiss the suggestion.
 - **Predict next prompt:** command-palette action to request or refresh a suggestion.
-- **Prediction status and preview:** inspect settings, resolved models, errors, and the current suggestion.
+- **Prediction status and preview:** reopen a readable status snapshot with settings, resolved models, safe errors, and the current suggestion. Choose **Technical details** for host/plugin versions, feedback capabilities, and timing.
 
 Typing hides the suggestion. Tab keeps its native behavior when no valid suggestion
 is visible. Suggestions do not appear in shell mode, during IME composition, in
@@ -145,24 +145,35 @@ ranked candidates. Existing flat `models` and `candidates` fields remain availab
 
 ### Failure notifications
 
-When a call fails or times out, the next eligible configured match is tried silently.
-With multiple configured candidates, only final unavailability produces a notice:
+Invalid settings, missing model selectors, zero matches, and service connection
+failures produce actionable notices even with debug off and before a completed
+assistant response. Notices explain the effect on predictions and the next step.
+Unknown options produce a warning rather than disappearing silently.
 
-```text
-[opencode-predictions] No model worked at this time. Activate `debug` mode for details.
-```
+Desktop error toasts offer **Open prediction status**. Configuration and access
+blockers stay until dismissed, replaced, or resolved. CLI notices use error/warning
+variants and name the **Prediction status and preview** command. Neither host opens
+a dialog automatically or interrupts typing.
 
-With one configured candidate, its safe failure reason appears even with debug off:
+An unchanged background issue is announced once per connected server/location,
+not once per status poll or completed response. A changed issue or recovery followed
+by recurrence can notify again. Explicit **Predict next prompt** requests explain
+their outcome even when the same background issue was already announced, including
+disabled predictions, an occupied prompt, missing context, and “no suggestion.”
 
-```text
-[opencode-predictions] Model [<name>] failed with message: <message>
-```
+When a model fails, the next eligible configured match is tried silently. If the
+whole queue is unavailable, the notice includes safe causes and recovery guidance
+without requiring debug mode. Cooldown notices give the earliest retry eligibility;
+they do not schedule an automatic retry. Successful fallback, cancellation, stale
+requests, and automatic “no suggestion” responses remain silent.
 
-The wording uses configured selectors and resolved candidates, not attempted calls.
-An already blocked or cooling queue also produces one final notice per prediction
-request, without calling a model. Successful predictions, valid “no suggestion”
-responses, cancellations, stale requests, and background status checks stay silent
-with debug off. Explicit status remains available in either mode.
+**Prediction status and preview** opens a native dialog, not an expiring JSON toast.
+It shows a snapshot of current health, settings warnings, ordered model groups and
+matches, queue restrictions, retry eligibility, the last meaningful failure, and
+the current suggestion. Reopen it to refresh. Healthy polls do not erase the last
+failure. Technical details include package versions and feedback revision metadata;
+missing metadata means unknown/legacy compatibility, not proof of an outdated install.
+Status and failure memory stay in this client's memory; they are not a persistent log.
 
 Set `"debug": true` in plugin options to show detailed progress:
 
@@ -175,8 +186,8 @@ Queue: Paused for 60 minutes.
 Debug popups include safe failure summaries, such as a provider restriction, usage
 limit, invalid response, or timeout. Raw provider errors, credentials, and conversation
 contents are never included in failure notices. Debug final summaries omit the
-activation hint. All plugin notifications share the `[opencode-predictions]` prefix;
-no log files are created.
+activation hint. Debug progress keeps the `[opencode-predictions]` prefix;
+actionable notices use descriptive titles. No log files are created.
 Each candidate is attempted once. No unselected model is called. A valid
 no-suggestion response stops the chain; exhaustion shows a failure notice.
 
@@ -203,8 +214,8 @@ variants across all groups; other failures affect only the candidate that failed
 Cooldown expiry makes a candidate eligible at its learned position; it does not
 schedule a call. If none are eligible, no generation occurs. Check **Prediction
 status and preview** for current order, safe skip reasons, and retry timestamps.
-Already-skipped models do not produce individual failure popups; only the final
-unavailability summary appears when the whole queue is unavailable.
+Already-skipped models do not produce individual failure popups. The whole-queue
+issue is deduplicated until it changes or recovers; manual requests still explain it.
 
 Queue state stays in memory and is shared across sessions using the same server/location
 plugin instance. Recreating that instance clears it; reloading only the Desktop UI

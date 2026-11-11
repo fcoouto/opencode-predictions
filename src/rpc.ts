@@ -1,5 +1,11 @@
 import { Rpc } from "@opencode/plugin/rpc"
 
+const notice = {
+  type: "object",
+  properties: { code: { type: "string" }, severity: { type: "string", enum: ["info", "warning", "error"] }, title: { type: "string" }, message: { type: "string" }, persistent: { type: "boolean" } },
+  required: ["code", "severity", "title", "message"], additionalProperties: false,
+} as const
+
 export const Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
@@ -9,7 +15,7 @@ export const Predictions = Rpc.define({
         properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 } },
         required: ["sessionID", "completion", "requestID"], additionalProperties: false,
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" } }, additionalProperties: false },
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice }, additionalProperties: false },
     },
     status: {
       input: { type: "object", additionalProperties: false },
@@ -18,7 +24,7 @@ export const Predictions = Rpc.define({
   },
   events: {
     progress: {
-      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" } }, required: ["requestID", "sessionID", "message"], additionalProperties: false },
+      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" }, notice }, required: ["requestID", "sessionID", "message"], additionalProperties: false },
     },
   },
 })

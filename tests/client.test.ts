@@ -1,7 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { startClient, type ClientState } from "../src/client.ts"
+import { startClient as createClient, type ClientState, type ClientHost } from "../src/client.ts"
 import type { Status } from "../src/service.ts"
+
+function startClient(host: Omit<ClientHost, "scope" | "openStatus" | "show"> & { show(message: string): void }) {
+  return createClient({ ...host, scope: () => "local/project", openStatus() {}, show: notice => host.show(notice.message) })
+}
 
 test("automatic client uses one prediction, rechecks input on Tab, and exposes scoped progress", async () => {
   let state: ClientState | undefined = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
@@ -9,7 +13,7 @@ test("automatic client uses one prediction, rechecks input on Tab, and exposes s
   let calls = 0
   const messages: string[] = []
   const inserted: string[] = []
-  const status: Status = { enabled: true, automatic: true, debug: false, models: "local/*", timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  const status: Status = { enabled: true, automatic: true, debug: false, models: "local/*", timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], feedbackRevision: 1 }
   const client = startClient({ state: () => state, status: async () => status, predict: async (_state, id, _signal, notice) => { assert.ok(id); calls++; notice("moving on"); return { text: "Run tests." } }, paint: text => { ghost = text; return !!text }, insert: text => { inserted.push(text); return true }, focus() {}, show: message => { messages.push(message) } })
   try {
     await new Promise(resolve => setImmediate(resolve))

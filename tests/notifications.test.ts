@@ -7,31 +7,32 @@ test("all client notifications get exactly one prefix and background status stay
   const messages: string[] = []
   let fail = false
   const client = startClient({
+    scope: () => "server/project",
     state: () => ({ key: "session/2", sessionID: "session", completion: 2, eligible: true, draft: "" }),
-    status: async () => ({ enabled: true, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    status: async () => ({ enabled: true, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], feedbackRevision: 1 }),
     predict: async (_state, _id, _signal, notice) => {
       if (fail) throw new Error("PRIVATE")
       notice("[opencode-predictions] Already prefixed")
       return { reason: "no_suggestion" }
     },
-    paint: () => false, insert: () => false, focus() {}, show: message => { messages.push(message) },
+    paint: () => false, insert: () => false, focus() {}, show: notice => { messages.push(notice.message) }, openStatus: view => { messages.push(view.summary) },
   })
   try {
     await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(messages, [])
     client.request()
     await new Promise(resolve => setImmediate(resolve))
-    assert.deepEqual(messages, ["[opencode-predictions] Already prefixed"])
+    assert.deepEqual(messages, ["[opencode-predictions] Already prefixed", "Continue typing your next prompt."])
     await client.status()
-    assert.match(messages[1], /^\[opencode-predictions\] \{/)
+    assert.match(messages.at(-1)!, /Prediction status snapshot/)
     fail = true
     client.request()
     await new Promise(resolve => setImmediate(resolve))
-    assert.equal(messages.at(-1), "[opencode-predictions] Prediction service unavailable")
+    assert.match(messages.at(-1)!, /Check the OpenCode service connection/)
   } finally { client.dispose() }
 })
 
-test("unmatched configurations notify through automatic and manual clients without generation", async () => {
+test("unmatched configurations notify from health inspection without generation", async () => {
   for (const automatic of [false, true]) for (const models of ["local/missing", ["local/missing"], ["local/missing", "local/other"]]) {
     const messages: string[] = []
     const service = createService({
@@ -42,19 +43,21 @@ test("unmatched configurations notify through automatic and manual clients witho
       notice: message => { messages.push(message) },
     }, { models, automatic }, "/project")
     const client = startClient({
+      scope: () => "server/project",
       state: () => ({ key: "session/2", sessionID: "session", completion: 2, eligible: true, draft: "" }),
-      status: (_state, signal) => service.inspect(signal),
+      status: signal => service.inspect(signal),
       predict: (state, _id, signal) => service.predict(state, signal),
-      paint: () => false, insert: () => false, focus() {}, show() {},
+      paint: () => false, insert: () => false, focus() {}, show: notice => { messages.push(notice.message) }, openStatus() {},
     })
     try {
       await new Promise(resolve => setImmediate(resolve))
       if (!automatic) {
-        assert.equal(messages.length, 0)
+        assert.equal(messages.length, 1)
         client.request()
         await new Promise(resolve => setImmediate(resolve))
       }
-      assert.deepEqual(messages, [Array.isArray(models) && models.length > 1 ? "No model worked at this time. Activate `debug` mode for details." : "Model [local/missing] failed with message: No configured model is available."])
+      assert.equal(messages.length, automatic ? 1 : 2)
+      assert.ok(messages.every(message => message.includes("No model was called.")))
     } finally { client.dispose() }
   }
 })

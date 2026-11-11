@@ -5,6 +5,7 @@ export default Plugin.define({
     const fixture = {
       ready: () => ctx.layout.ready() && !!ctx.servers.get("sidecar")?.connected,
       launch: () => ctx.layout.draft({ server: "sidecar", directory: String(ctx.options.directory), prompt: "Fix the assertion." }),
+      status: () => ctx.commands.run("opencode-predictions.status"),
       users: () => { const session = ctx.sessions.current(); return session?.server.data.session.message.list(session.id).filter((message: { type: string }) => message.type === "user").length },
       snapshot: async () => {
         const session = ctx.sessions.current()
