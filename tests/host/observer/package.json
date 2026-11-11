@@ -1,0 +1,5 @@
+{
+  "name": "prediction-test-observer",
+  "type": "module",
+  "exports": { ".": "./index.ts", "./tui": "./tui.ts", "./gui-experimental": "./gui-experimental.cjs" }
+}

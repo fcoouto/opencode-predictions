@@ -1,0 +1,40 @@
+{
+  "name": "opencode-predictions",
+  "version": "0.1.0",
+  "description": "Next-prompt predictions for OpenCode Desktop and CLI",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/fcoouto/opencode-predictions.git" },
+  "engines": { "node": ">=26.4.0" },
+  "files": ["dist", "README.md", "LICENSE"],
+  "exports": {
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js",
+    "./gui-experimental": "./dist/gui-experimental.cjs",
+    "./rpc": "./dist/rpc.js"
+  },
+  "bin": { "opencode-predictions-pilot": "./dist/pilot.js" },
+  "scripts": {
+    "test": "node --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "pilot": "node src/pilot.ts",
+    "test:host:server": "node --test tests/host/server.test.ts",
+    "test:host:desktop": "node --test tests/host/desktop.test.ts",
+    "test:host:terminal": "node --test tests/host/terminal.test.ts",
+    "test:package": "node --test tests/package.test.mjs",
+    "test:installed": "node scripts/test-installed.mjs",
+    "check": "npm test && npm run typecheck && npm run build"
+  },
+  "dependencies": { "@opencode/plugin": "2.2.6", "@opencode/client": "2.2.6" },
+  "devDependencies": {
+    "@opentui/core": "0.8.4",
+    "@types/node": "26.6.6",
+    "esbuild": "0.27.0",
+    "playwright": "1.65.0",
+    "solid-js": "1.9.19",
+    "typescript": "5.9.3",
+    "vite": "7.3.1",
+    "vite-plugin-solid": "2.11.16"
+  }
+}
