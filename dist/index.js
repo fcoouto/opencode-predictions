@@ -149,6 +149,22 @@ async function abortable(work, signal) {
     signal.removeEventListener("abort", onAbort);
   }
 }
+function failureDetail(error) {
+  const value = error && typeof error === "object" ? error : {};
+  const message = typeof value.message === "string" ? value.message.slice(0, 1e3) : "";
+  const status = typeof value.status === "number" && Number.isInteger(value.status) && value.status >= 400 && value.status <= 599 ? value.status : void 0;
+  const reasons = {
+    authentication: "Provider authentication failed.",
+    rate_limit: "Provider rate limit or usage quota reached.",
+    content_filter: "Provider rejected the content.",
+    invalid_request: "Provider rejected the request.",
+    overloaded: "Provider is overloaded.",
+    provider: "Provider request failed."
+  };
+  const fallback = typeof value.reason === "string" && Object.hasOwn(reasons, value.reason) ? reasons[value.reason] : "Model request failed.";
+  const detail = status === 403 && /not available in your country/i.test(message) ? "This model is not available in your country." : status === 429 && /free usage limit reached/i.test(message) ? "Free usage limit reached." : message === "Invalid prediction response" ? "Model returned an invalid prediction response." : fallback;
+  return status === void 0 ? detail : `HTTP ${status}: ${detail}`;
+}
 function createService(api, rawOptions, directory) {
   const parsed = parseOptions(rawOptions);
   const options = parsed.ok ? parsed.value : void 0;
@@ -208,14 +224,21 @@ function createService(api, rawOptions, directory) {
             if (changed2) return { reason: changed2 };
             const text = parseSuggestion(output);
             if (text) return { text };
-            if (JSON.parse(output)?.prompt === null) return { reason: "no_suggestion" };
+            let abstained = false;
+            try {
+              abstained = JSON.parse(output)?.prompt === null;
+            } catch {
+            }
+            if (abstained) return { reason: "no_suggestion" };
             throw new Error("Invalid prediction response");
-          } catch {
+          } catch (error) {
             parent.throwIfAborted();
             failure = signal.aborted ? "timeout" : "generation_failed";
             const next = chain[index + 1];
-            const message = next ? `Predictions failed with ${name}, moving on with ${next.name}...` : `Predictions failed with ${name}; no configured models remain.`;
-            await api.notice?.(message, request);
+            const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no configured models remain.`;
+            const detail = signal.aborted ? `Timed out after ${options.timeoutMs} ms.` : failureDetail(error);
+            await api.notice?.(`${message}
+Reason: ${detail}`, request);
           }
         }
         return { reason: failure };
@@ -239,7 +262,7 @@ function createService(api, rawOptions, directory) {
 
 // src/index.ts
 var index_default = Plugin.define({
-  id: "fcoouto.predictions",
+  id: "opencode-predictions",
   async setup(ctx) {
     const service = createService({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),

@@ -261,7 +261,7 @@ var Predictions = Rpc.define({
 
 // src/tui.ts
 var tui_default = Plugin.define({
-  id: "fcoouto.predictions.tui",
+  id: "opencode-predictions.tui",
   setup(ctx) {
     const adapter = createTerminalAdapter(ctx.renderer);
     const session = () => {

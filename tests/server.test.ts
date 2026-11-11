@@ -82,11 +82,14 @@ test("a completed current response without usable conversation text cannot fall 
 test("timeout returns even when provider ignores abort, and errors do not retry", async () => {
   const { api } = fixture()
   let attempts = 0
+  const notices: string[] = []
+  api.notice = message => { notices.push(message) }
   api.generate = async () => { attempts++; return await new Promise<string>(() => {}) }
   const service = createService(api, { models: "local/model", timeoutMs: 10 }, "/project")
   const keepAlive = setTimeout(() => {}, 1000)
   try { assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "timeout") } finally { clearTimeout(keepAlive) }
   assert.equal(attempts, 1)
+  assert.equal(notices[0], "Predictions failed with [model]; no configured models remain.\nReason: Timed out after 10 ms.")
   api.generate = async () => { attempts++; throw new Error("provider secret") }
   assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "generation_failed")
   assert.equal(attempts, 2)
@@ -104,12 +107,30 @@ test("failed model calls advance only through configured matches and announce bo
   const notices: string[] = []
   const attempted: string[] = []
   api.models = async () => ["a", "b", "unselected"].map(id => ({ providerID: "local", id, name: id === "a" ? "First Free" : "Next Flash", enabled: true, variants: [] }))
-  api.generate = async model => { attempted.push(model.id); if (model.id === "a") throw new Error("429 quota exhausted"); return '{"prompt":"Run the tests."}' }
+  api.generate = async model => { attempted.push(model.id); if (model.id === "a") throw Object.assign(new Error("Free usage limit reached."), { _tag: "ProviderRequestError", status: 429, reason: "rate_limit" }); return '{"prompt":"Run the tests."}' }
   api.notice = message => { notices.push(message) }
   const service = createService(api, { models: "local/a, local/b" }, "/project")
   assert.deepEqual(await service.predict({ sessionID: "ses_test", completion: 2, requestID: "request-one" }, new AbortController().signal), { text: "Run the tests." })
   assert.deepEqual(attempted, ["a", "b"])
-  assert.deepEqual(notices, ["Predictions failed with First Free, moving on with Next Flash..."])
+  assert.deepEqual(notices, ["Predictions failed with [First Free], moving on with [Next Flash]...\nReason: HTTP 429: Free usage limit reached."])
+})
+
+test("failure popups explain provider restrictions and invalid output without exposing private error contents", async () => {
+  for (const [error, expected] of [
+    [Object.assign(new Error("This model is not available in your country. PRIVATE"), { _tag: "ProviderRequestError", status: 403, reason: "provider" }), "HTTP 403: This model is not available in your country."],
+    [Object.assign(new Error("PRIVATE api_key=SECRET"), { _tag: "ProviderRequestError", status: 401, reason: "authentication" }), "HTTP 401: Provider authentication failed."],
+    [Object.assign(new Error("PRIVATE request body"), { _tag: "ProviderRequestError", status: 429, reason: "rate_limit" }), "HTTP 429: Provider rate limit or usage quota reached."],
+    [new Error("PRIVATE exception"), "Model request failed."],
+    [undefined, "Model returned an invalid prediction response."],
+  ] as const) {
+    const { api } = fixture()
+    const notices: string[] = []
+    api.generate = async () => { if (error) throw error; return "PRIVATE invalid output" }
+    api.notice = message => { notices.push(message) }
+    const result = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    assert.equal(result.reason, "generation_failed")
+    assert.deepEqual(notices, [`Predictions failed with [model]; no configured models remain.\nReason: ${expected}`])
+  }
 })
 
 test("cancellation stops the fallback chain rather than spending on the next model", async () => {
