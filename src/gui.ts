@@ -1,16 +1,26 @@
 import { Command, Plugin, createKeyed } from "@opencode/plugin/gui"
-import { onCleanup } from "solid-js"
+import { onCleanup, createComponent, createSignal } from "solid-js"
 import type { Data } from "@opencode/client/solid"
 import { createDesktopAdapter } from "./adapters/desktop.ts"
 import { startClient } from "./client.ts"
 import { Predictions } from "./rpc.ts"
 import type { Reply, Status } from "./service.ts"
+import { pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
 
 export default Plugin.define({
   setup(ctx) {
     const adapter = createDesktopAdapter(document, () => ctx.screen.current()?.composer)
     const session = () => ctx.sessions.current()
+    const connection = () => {
+      const value = session()
+      if (value?.location) return { server: value.server, location: value.location }
+      const server = ctx.servers.get("sidecar")
+      const location = server?.data.location.default()
+      return server && location ? { server, location } : undefined
+    }
+    let errorToast: { dismiss(): void } | undefined
     const client = startClient({
+      scope: () => { const value = connection(); return value ? JSON.stringify([value.server.id, value.location]) : undefined },
       state: () => {
         const value = session()
         if (!value || !value.server.connected || !value.location || value.pending) return
@@ -20,25 +30,46 @@ export default Plugin.define({
         const eligible = adapter.eligible() && !data.session.pending.list(value.id).length && !data.session.permission.list(value.id)?.length && !data.session.form.list(value.id, value.location)?.length
         return { key: value.key + "/" + value.directory + "/" + info.time.idle, sessionID: value.id, completion: info.time.idle, eligible, draft: adapter.read() }
       },
-      status: async (state, signal) => {
-        const value = session()
-        if (!value || value.id !== state.sessionID || !value.location) throw new Error("Session changed")
+      status: async signal => {
+        const value = connection()
+        if (!value?.location) throw new Error("No location selected")
         return await value.server.client.rpc(Predictions).status({}, { location: value.location, signal }) as Status
       },
       predict: async (state, requestID, signal, notice) => {
         const value = session()
         if (!value || value.id !== state.sessionID || !value.location) return { reason: "stale" }
         const rpc = value.server.client.rpc(Predictions)
-        const stop = rpc.events.on("progress", event => { if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice(String(event.data.message)) })
+        const stop = rpc.events.on("progress", event => { if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice(String(event.data.message), event.data.notice as Notice | undefined) })
         try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID }, { location: value.location, signal }) as Reply } finally { stop() }
       },
       paint: adapter.paint,
       insert: adapter.insert,
       focus: () => ctx.screen.current()?.composer.focus(),
-      show: message => { ctx.toast.show({ title: "Prompt predictions", description: message, duration: 8000 }) },
-      diagnostics: () => ({ host: "Desktop", hostVersion: ctx.app.version, composerEligible: adapter.eligible() }),
+      show: notice => {
+        const toast = ctx.toast.show({ title: notice.title, description: notice.message, variant: notice.severity === "error" ? "error" : "default", persistent: !!notice.persistent, duration: 8000, ...(notice.severity !== "info" ? { actions: [{ label: "Open prediction status", run: () => client.status() }] } : {}) })
+        if (notice.severity !== "info") errorToast = toast
+      },
+      clearNotice: () => { errorToast?.dismiss(); errorToast = undefined },
+      openStatus: view => {
+        ctx.dialogs.open(dialog => {
+          const [technical, setTechnical] = createSignal(false)
+          const content = document.createElement("div")
+          content.setAttribute("data-prediction-status", "")
+          content.style.whiteSpace = "pre-wrap"
+          content.style.overflowWrap = "anywhere"
+          content.textContent = view.summary
+          return createComponent(ctx.ui.Dialog, {
+            title: "Prediction status and preview", size: "large", children: content,
+            footer: [
+              createComponent(ctx.ui.Button, { children: "Close", onClick: () => dialog.close() }),
+              createComponent(ctx.ui.Button, { get children() { return technical() ? "Status summary" : "Technical details" }, variant: "contrast", onClick: () => { setTechnical(!technical()); content.textContent = technical() ? view.details : view.summary } }),
+            ],
+          })
+        })
+      },
+      diagnostics: () => ({ host: "Desktop", hostVersion: ctx.app.version, clientVersion: pluginVersion, feedbackRevision, composerEligible: adapter.eligible() }),
     })
-    const serverData = (): Data | undefined => session()?.server.data
+    const serverData = (): Data | undefined => connection()?.server.data
     createKeyed(serverData, data => {
       client.invalidate()
       onCleanup(data.on("config.updated", () => client.invalidate()))

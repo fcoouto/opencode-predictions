@@ -44,20 +44,33 @@ def observe(expected):
     assert actual == expected, (actual, expected)
 
 try:
-    if os.environ.get("PREDICTIONS_MANUAL_TEST") == "1":
-        pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Fix the assertion." in output)
-        observe("")
+    if os.environ.get("PREDICTIONS_FEEDBACK_TEST") == "1":
+        pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Prediction settings are invalid" in output)
         assert b"Run the targeted tests." not in output
-        # CSI-u distinguishes Alt+Shift+P from the legacy ESC P DCS introducer.
-        os.write(master, b"\x1b[112;4u")
+        os.write(master, b"\x1b[20~")
+        pump_until(lambda: b"Prediction status snapshot" in output)
+        assert b"PRIVATE" not in output
+        os.write(master, b"\x1b[21~")
         observe("")
-    pump_until(lambda: b"Run the targeted tests." in output)
-    observe("")
-    os.write(master, b"\t")
-    observe("Run the targeted tests.")
-    os.write(master, b"\x01\x0bmy own prompt\t")
-    observe("my own prompt")
-    print(json.dumps({"ghost": True, "tabDraft": "Run the targeted tests.", "typedInputPreserved": True}))
+        output.clear()
+        os.write(master, b"\x1b[20~")
+        pump_until(lambda: b"Prediction status snapshot" in output)
+        print(json.dumps({"statusReopened": True}))
+    else:
+        if os.environ.get("PREDICTIONS_MANUAL_TEST") == "1":
+            pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Fix the assertion." in output)
+            observe("")
+            assert b"Run the targeted tests." not in output
+            # CSI-u distinguishes Alt+Shift+P from the legacy ESC P DCS introducer.
+            os.write(master, b"\x1b[112;4u")
+            observe("")
+        pump_until(lambda: b"Run the targeted tests." in output)
+        observe("")
+        os.write(master, b"\t")
+        observe("Run the targeted tests.")
+        os.write(master, b"\x01\x0bmy own prompt\t")
+        observe("my own prompt")
+        print(json.dumps({"ghost": True, "tabDraft": "Run the targeted tests.", "typedInputPreserved": True}))
 finally:
     child.terminate()
     try:

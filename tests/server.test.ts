@@ -102,6 +102,31 @@ test("unknown options appear in diagnostics without disabling prediction", () =>
   assert.deepEqual(status.warnings, ["Unknown option ignored: obsolete"])
 })
 
+test("unexpected service failures return actionable safe notices instead of only a reason", async () => {
+  for (const boundary of ["session", "context", "models"] as const) {
+    const { api } = fixture()
+    api[boundary] = async () => { throw new Error("PRIVATE api_key=SECRET") }
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    assert.equal(reply.reason, "generation_failed")
+    assert.equal(reply.notice?.severity, "error")
+    assert.match(reply.notice!.message, /Check.*service connection/s)
+    assert.doesNotMatch(JSON.stringify(reply), /PRIVATE|SECRET/)
+  }
+})
+
+test("final structured notices preserve safe failure detail and compatibility metadata", async () => {
+  const { api } = fixture()
+  api.generate = async () => { throw Object.assign(new Error("PRIVATE"), { status: 401, reason: "authentication" }) }
+  let final: unknown
+  api.notice = (_message, _request, notice) => { final = notice }
+  const service = createService(api, { models: "local/model" }, "/project")
+  const reply = await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  assert.match(reply.notice!.message, /authentication.*Check.*provider connection/s)
+  assert.deepEqual(final, reply.notice)
+  assert.equal(service.status().pluginVersion, "0.1.0")
+  assert.equal(service.status().feedbackRevision, 1)
+})
+
 test("failed model calls advance only through configured matches and announce both display names", async () => {
   const { api } = fixture()
   const notices: string[] = []

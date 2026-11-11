@@ -1,18 +1,19 @@
 import { parseOptions, type ModelRef } from "./options.ts"
 import { buildPrompt, collectTurns, parseSuggestion } from "./predict.ts"
 import { resolveModels, type Candidate, type CatalogModel } from "./models.ts"
+import { statusNotice, reasonNotice, pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
 export type Request = { sessionID: string; completion: number; requestID?: string }
-export type Reply = { text?: string; reason?: string }
+export type Reply = { text?: string; reason?: string; notice?: Notice }
 export type Session = { id: string; parentID?: string; outcome?: string; time: { idle?: number; busy?: number }; location: { directory: string } }
 export type ServiceAPI = {
   session(id: string, signal: AbortSignal): Promise<Session>
   context(id: string, signal: AbortSignal): Promise<readonly unknown[]>
   models(signal: AbortSignal): Promise<readonly CatalogModel[]>
   generate(model: ModelRef, prompt: string, signal: AbortSignal): Promise<string>
-  notice?(message: string, request: Request): void | Promise<void>
+  notice?(message: string, request: Request, notice?: Notice): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
-export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number }
+export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
 
 async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
@@ -123,14 +124,14 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
       ...(options?.models ? { models: options.models.join(", ") } : {}),
       ...(groups ? { groups: groups.map((queue, index) => ({ selectors: options!.models![index], candidates: queue.map(queueEntry) })), candidates: candidates!.map(queueEntry) } : {}),
       automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
-      version, warnings: parsed.warnings,
+      version, warnings: parsed.warnings, pluginVersion, feedbackRevision,
       ...(!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every(model => !!skip(model)) ? { reason: "no_models_eligible" } : {}),
       ...(lastOutcome ? { lastOutcome, lastLatencyMs } : {}),
     }
   }
   const predict = async (request: Request, parent: AbortSignal): Promise<Reply> => {
     const started = performance.now()
-    if (!options || !options.enabled || !options.models) return { reason: status().reason }
+    if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) }
     let configured: Candidate[] = []
     const check = (session: Session): string | undefined => {
       if (session.id !== request.sessionID || session.time.idle !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale"
@@ -217,7 +218,8 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
           const message = Math.max(configured.length, selectors.size) > 1
             ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.")
             : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`
-          await api.notice?.(message, request)
+          reply.notice = statusNotice(status()) ?? reasonNotice(reply.reason)
+          await api.notice?.(message, request, reply.notice)
         }
         return reply
       }, parent)
@@ -225,7 +227,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
       return reply
     } catch {
       lastOutcome = parent.aborted ? "cancelled" : "generation_failed"
-      return { reason: lastOutcome }
+      return { reason: lastOutcome, ...(!parent.aborted ? { notice: reasonNotice("service_unavailable") } : {}) }
     } finally {
       lastLatencyMs = Math.round(performance.now() - started)
     }

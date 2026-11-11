@@ -10,6 +10,7 @@ export default Plugin.define({
     const fixture = {
       ready: () => ctx.layout.ready() && !!ctx.servers.get("sidecar")?.connected,
       launch: () => ctx.layout.draft({ server: "sidecar", directory: String(ctx.options.directory), prompt: "Fix the assertion." }),
+      status: () => ctx.commands.run("opencode-predictions.status"),
       predictionReady: (submittedAt: number) => {
         const session = ctx.sessions.current()
         if (!session || !session.server.connected || !session.location || session.pending) return false

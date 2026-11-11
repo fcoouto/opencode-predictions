@@ -6,7 +6,7 @@ import { resolve, join } from "node:path"
 import { OpenCode } from "@opencode/client"
 import { Service } from "@opencode/client/service"
 
-export async function createFixture(packagePath = resolve("."), options = {}) {
+export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}) {
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
   const directory = join(root, "project")
@@ -20,6 +20,11 @@ export async function createFixture(packagePath = resolve("."), options = {}) {
       const input = JSON.parse(raw || "{}")
       calls.push(input)
       const prediction = JSON.stringify(input).includes("Predict the user's next complete prompt")
+      if (prediction && behavior.predictionStatus) {
+        res.writeHead(behavior.predictionStatus, { "Content-Type": "application/json" })
+        res.end(JSON.stringify({ error: { message: "PRIVATE fixture provider failure", type: "server_error" } }))
+        return
+      }
       const content = prediction ? '{"prompt":"Run the targeted tests."}' : "I fixed the assertion. The tests have not been run yet."
       const base = { id: "chatcmpl-fixture", created: Math.floor(Date.now() / 1000), model: "fixture" }
       if (input.stream) {

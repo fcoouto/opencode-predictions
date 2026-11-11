@@ -3,6 +3,12 @@ import { Plugin } from "@opencode/plugin";
 
 // src/rpc.ts
 import { Rpc } from "@opencode/plugin/rpc";
+var notice = {
+  type: "object",
+  properties: { code: { type: "string" }, severity: { type: "string", enum: ["info", "warning", "error"] }, title: { type: "string" }, message: { type: "string" }, persistent: { type: "boolean" } },
+  required: ["code", "severity", "title", "message"],
+  additionalProperties: false
+};
 var Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
@@ -13,7 +19,7 @@ var Predictions = Rpc.define({
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" } }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },
@@ -22,7 +28,7 @@ var Predictions = Rpc.define({
   },
   events: {
     progress: {
-      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" } }, required: ["requestID", "sessionID", "message"], additionalProperties: false }
+      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" }, notice }, required: ["requestID", "sessionID", "message"], additionalProperties: false }
     }
   }
 });
@@ -142,6 +148,84 @@ function resolveModels(selectors, catalog) {
   return candidates;
 }
 
+// package.json
+var package_default = {
+  name: "opencode-predictions",
+  version: "0.1.0",
+  description: "Next-prompt predictions for OpenCode Desktop and CLI",
+  type: "module",
+  license: "MIT",
+  repository: { type: "git", url: "https://github.com/fcoouto/opencode-predictions.git" },
+  engines: { node: ">=26.4.0" },
+  files: ["dist", "README.md", "LICENSE"],
+  exports: {
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js",
+    "./gui-experimental": "./dist/gui-experimental.cjs",
+    "./rpc": "./dist/rpc.js"
+  },
+  bin: { "opencode-predictions-pilot": "./dist/pilot.js" },
+  scripts: {
+    test: "node --test tests/*.test.ts",
+    typecheck: "tsc --noEmit",
+    bundle: "node scripts/build.mjs",
+    pilot: "node src/pilot.ts",
+    "test:host:server": "node --test tests/host/server.test.ts",
+    "test:host:desktop": "node --test tests/host/desktop.test.ts",
+    "test:host:terminal": "node --test tests/host/terminal.test.ts",
+    "test:host:git": "node --test tests/host/git.test.ts",
+    "test:package": "node --test tests/package.test.mjs",
+    "test:installed": "node scripts/test-installed.mjs",
+    check: "npm test && npm run typecheck && npm run bundle"
+  },
+  dependencies: { "@opencode/plugin": "2.2.6", "@opencode/client": "2.2.6" },
+  devDependencies: {
+    "@opentui/core": "0.8.4",
+    "@types/node": "26.6.6",
+    esbuild: "0.27.0",
+    playwright: "1.65.0",
+    "solid-js": "1.9.19",
+    typescript: "5.9.3",
+    vite: "7.3.1",
+    "vite-plugin-solid": "2.11.16"
+  }
+};
+
+// src/feedback.ts
+var pluginVersion = package_default.version;
+var feedbackRevision = 1;
+function reasonNotice(reason) {
+  if (!reason || ["cancelled", "stale"].includes(reason)) return;
+  const info = {
+    disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
+    no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
+    context_unavailable: ["No completed response to predict from", "Finish an assistant response with usable conversation text, then request a prediction."],
+    composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
+    location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
+  };
+  if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] };
+  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true };
+  if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true };
+  if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." };
+  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The model did not respond within the configured timeout. Check model availability in Prediction status and preview before requesting again." };
+  return { code: "service_unavailable", severity: "error", title: "Prediction service unavailable", message: "Predictions could not complete. Check the OpenCode service connection, then request a prediction again. Open Prediction status and preview for details." };
+}
+function statusNotice(status) {
+  if (status.reason === "no_models_eligible") {
+    const candidates = status.candidates ?? [];
+    const retryAt = candidates.filter((model) => model.state === "cooling" && Number.isFinite(model.retryAt)).map((model) => model.retryAt);
+    const causes = [...new Set(candidates.map((model) => model.reason).filter(Boolean))].slice(0, 3).join(" ");
+    const recovery = retryAt.length ? `Earliest retry eligibility: ${new Date(Math.min(...retryAt)).toISOString()}. A new prediction request can try again afterward.` : "Check your provider connection, model access, and configuration. Blocked models remain blocked until the server plugin reloads.";
+    return { code: "models_unavailable", severity: "error", title: retryAt.length ? "Prediction models are temporarily paused" : "Prediction models are blocked", message: [causes, recovery].filter(Boolean).join(" "), persistent: !retryAt.length };
+  }
+  if (status.reason && status.reason !== "disabled") {
+    if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
+    const validation = /^(Plugin options|enabled|automatic|debug|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
+  }
+  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
+}
+
 // src/service.ts
 async function abortable(work, signal) {
   signal.throwIfAborted();
@@ -256,13 +340,15 @@ function createService(api, rawOptions, directory) {
       contextTurns: options?.contextTurns ?? 3,
       version,
       warnings: parsed.warnings,
+      pluginVersion,
+      feedbackRevision,
       ...!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every((model) => !!skip(model)) ? { reason: "no_models_eligible" } : {},
       ...lastOutcome ? { lastOutcome, lastLatencyMs } : {}
     };
   };
   const predict = async (request, parent) => {
     const started = performance.now();
-    if (!options || !options.enabled || !options.models) return { reason: status().reason };
+    if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) };
     let configured = [];
     const check = (session) => {
       if (session.id !== request.sessionID || session.time.idle !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale";
@@ -358,7 +444,8 @@ Queue: ${queue}`, request);
           const selectors = new Set(options.models.flatMap((group) => group.split(",").map((value) => value.trim())));
           const single = configured[0];
           const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
-          await api.notice?.(message, request);
+          reply2.notice = statusNotice(status()) ?? reasonNotice(reply2.reason);
+          await api.notice?.(message, request, reply2.notice);
         }
         return reply2;
       }, parent);
@@ -366,7 +453,7 @@ Queue: ${queue}`, request);
       return reply;
     } catch {
       lastOutcome = parent.aborted ? "cancelled" : "generation_failed";
-      return { reason: lastOutcome };
+      return { reason: lastOutcome, ...!parent.aborted ? { notice: reasonNotice("service_unavailable") } : {} };
     } finally {
       lastLatencyMs = Math.round(performance.now() - started);
     }
@@ -387,8 +474,8 @@ var index_default = Plugin.define({
       context: (sessionID, signal) => ctx.session.context({ sessionID }, { signal }),
       models: async (signal) => (await ctx.model.list(void 0, { signal })).data,
       generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
-      notice: async (message, request) => {
-        if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID });
+      notice: async (message, request, notice2) => {
+        if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...notice2 ? { notice: notice2 } : {} });
       }
     }, ctx.options, ctx.location.directory);
     const registration = await ctx.rpc.register(Predictions, {
