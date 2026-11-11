@@ -92,7 +92,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     candidates = first ? [...selected, ...others] : [...others, ...selected]
   }
   const status = (): Status => ({
-    enabled: !!options?.enabled && !!options.models && (candidates === undefined || candidates.length > 0),
+    enabled: !!options?.enabled && !!options.models,
     ...(options?.models ? { models: options.models } : {}),
     ...(candidates ? { candidates: candidates.map((model): QueueEntry => {
       const entry = skip(model)
@@ -179,19 +179,22 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         }
         return { reason: failure }
       }
-      const reply = await abortable(work, parent)
-      if (reply.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply.reason)) {
-        parent.throwIfAborted()
-        const changed = check(await api.session(request.sessionID, parent))
-        if (changed) return { reason: changed }
-        parent.throwIfAborted()
-        const selectors = new Set(options.models.split(",").map(value => value.trim()))
-        const single = configured[0]
-        const message = Math.max(configured.length, selectors.size) > 1
-          ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.")
-          : `Model [${single?.name ?? options.models}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`
-        await api.notice?.(message, request)
-      }
+      const reply = await abortable(async (): Promise<Reply> => {
+        const reply = await work()
+        if (reply.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply.reason)) {
+          parent.throwIfAborted()
+          const changed = check(await api.session(request.sessionID, parent))
+          if (changed) return { reason: changed }
+          parent.throwIfAborted()
+          const selectors = new Set(options.models!.split(",").map(value => value.trim()))
+          const single = configured[0]
+          const message = Math.max(configured.length, selectors.size) > 1
+            ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.")
+            : `Model [${single?.name ?? options.models}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`
+          await api.notice?.(message, request)
+        }
+        return reply
+      }, parent)
       lastOutcome = reply.text ? "suggestion" : reply.reason
       return reply
     } catch {

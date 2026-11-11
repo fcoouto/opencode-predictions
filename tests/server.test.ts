@@ -220,6 +220,31 @@ test("cancelled and stale failures stay silent even with debug", async () => {
   }
 })
 
+test("cancellation settles while final session validation or notification ignores abort", async () => {
+  for (const stalled of ["session", "notice"]) {
+    const { api } = fixture()
+    api.models = async () => []
+    const session = api.session
+    let checks = 0
+    let entered!: () => void
+    const ready = new Promise<void>(resolve => { entered = resolve })
+    api.session = async (id, signal) => {
+      if (++checks === 2 && stalled === "session") { entered(); return new Promise(() => {}) }
+      return session(id, signal)
+    }
+    api.notice = async () => { entered(); await new Promise(() => {}) }
+    const controller = new AbortController()
+    const pending = createService(api, { models: "local/missing" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, controller.signal)
+    await ready
+    controller.abort()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const reply = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(() => resolve("stalled"), 100) })])
+      assert.deepEqual(reply, { reason: "cancelled" })
+    } finally { clearTimeout(timer) }
+  }
+})
+
 test("cancellation stops the fallback chain rather than spending on the next model", async () => {
   const { api } = fixture()
   const controller = new AbortController()
