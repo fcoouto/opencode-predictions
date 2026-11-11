@@ -41,15 +41,21 @@ function parseOptions(input = {}) {
   const contextTurns = raw.contextTurns ?? 3;
   if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return invalid("timeoutMs must be a positive integer within the timer limit");
   if (typeof contextTurns !== "number" || !Number.isInteger(contextTurns) || contextTurns < 1 || contextTurns > 5) return invalid("contextTurns must be an integer from 1 to 5");
+  const models = [];
   if (raw.models !== void 0) {
-    if (typeof raw.models !== "string") return invalid("models must be a provider/model-pattern#variant text field");
-    for (const entry of raw.models.split(",")) {
-      const [selector, variant, extra] = entry.trim().split("#");
-      const slash = selector.indexOf("/");
-      if (slash <= 0 || !selector.slice(slash + 1).trim() || /\s/.test(selector.slice(0, slash)) || variant === "" || variant !== void 0 && /\s/.test(variant) || extra !== void 0) return invalid("models must contain provider/model-pattern selectors with optional #variant");
+    const groups = typeof raw.models === "string" ? [raw.models] : raw.models;
+    if (!Array.isArray(groups) || !groups.length) return invalid("models must be selector text or a nonempty array of selector groups");
+    for (const group of groups) {
+      if (typeof group !== "string") return invalid("each models group must be selector text");
+      for (const entry of group.split(",")) {
+        const [selector, variant, extra] = entry.trim().split("#");
+        const slash = selector.indexOf("/");
+        if (slash <= 0 || !selector.slice(slash + 1).trim() || /\s/.test(selector.slice(0, slash)) || variant === "" || variant !== void 0 && /\s/.test(variant) || extra !== void 0) return invalid("models must contain provider/model-pattern selectors with optional #variant");
+      }
+      models.push(group.trim());
     }
   }
-  return { ok: true, value: { enabled: raw.enabled ?? true, ...typeof raw.models === "string" ? { models: raw.models.trim() } : {}, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false }, warnings };
+  return { ok: true, value: { enabled: raw.enabled ?? true, ...raw.models === void 0 ? {} : { models }, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false }, warnings };
 }
 
 // src/predict.ts
@@ -174,11 +180,13 @@ function createService(api, rawOptions, directory) {
   const version = crypto.randomUUID();
   let lastOutcome;
   let lastLatencyMs;
-  let candidates;
+  let groups;
   const skipped = /* @__PURE__ */ new Map();
   const outcomes = /* @__PURE__ */ new Map();
+  const owners = /* @__PURE__ */ new Map();
   const modelKey = (model) => JSON.stringify([model.providerID, model.id]);
   const candidateKey = (model) => JSON.stringify([model.providerID, model.id, model.variant ?? null]);
+  const outcomeKey = (model, group) => JSON.stringify([group, candidateKey(model)]);
   const skip = (model) => {
     let active;
     for (const key of [modelKey(model), candidateKey(model)]) {
@@ -188,46 +196,68 @@ function createService(api, rawOptions, directory) {
     }
     return active;
   };
-  const refresh = (resolved) => {
-    const available = new Map(resolved.map((model) => [candidateKey(model), model]));
-    const ordered = [];
-    for (const previous of candidates ?? []) {
-      const key = candidateKey(previous);
-      const current = available.get(key);
-      if (current) ordered.push(current);
-    }
-    candidates = [
-      ...ordered.filter((model) => outcomes.get(candidateKey(model)) === "working"),
-      ...resolved.filter((model) => !outcomes.has(candidateKey(model))),
-      ...ordered.filter((model) => outcomes.get(candidateKey(model)) === "failed")
-    ];
+  const refresh = (catalog) => {
+    const seen = /* @__PURE__ */ new Set();
+    const currentOutcomes = /* @__PURE__ */ new Set();
+    groups = options.models.map((selectors, index) => {
+      const resolved2 = resolveModels(selectors, catalog).filter((model) => {
+        const key = candidateKey(model);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        if (owners.get(key)?.group !== index) owners.set(key, { group: index });
+        currentOutcomes.add(outcomeKey(model, index));
+        return true;
+      });
+      const available = new Map(resolved2.map((model) => [candidateKey(model), model]));
+      const ordered = [];
+      for (const previous of groups?.[index] ?? []) {
+        const current = available.get(candidateKey(previous));
+        if (current) ordered.push(current);
+      }
+      return [
+        ...ordered.filter((model) => outcomes.get(outcomeKey(model, index)) === "working"),
+        ...resolved2.filter((model) => !outcomes.has(outcomeKey(model, index))),
+        ...ordered.filter((model) => outcomes.get(outcomeKey(model, index)) === "failed")
+      ];
+    });
+    const resolved = groups.flat();
     const keys = new Set(resolved.flatMap((model) => [modelKey(model), candidateKey(model)]));
     for (const key of skipped.keys()) if (!keys.has(key)) skipped.delete(key);
-    for (const key of outcomes.keys()) if (!keys.has(key)) outcomes.delete(key);
+    for (const key of outcomes.keys()) if (!currentOutcomes.has(key)) outcomes.delete(key);
+    for (const key of owners.keys()) if (!seen.has(key)) owners.delete(key);
   };
-  const move = (model, first, modelWide = false) => {
+  const move = (model, first, group, ownership, modelWide = false) => {
+    if (owners.get(candidateKey(model)) !== ownership.get(candidateKey(model))) return;
     const key = modelWide ? modelKey : candidateKey;
-    const selected = candidates?.filter((candidate) => key(candidate) === key(model)) ?? [];
-    const others = candidates?.filter((candidate) => key(candidate) !== key(model)) ?? [];
-    for (const candidate of selected) outcomes.set(candidateKey(candidate), first ? "working" : "failed");
-    candidates = first ? [...selected, ...others] : [...others, ...selected];
+    const matches = (candidate) => key(candidate) === key(model) && owners.get(candidateKey(candidate)) === ownership.get(candidateKey(candidate));
+    groups = groups?.map((queue, index) => {
+      if (!modelWide && index !== group) return queue;
+      const selected = queue.filter(matches);
+      const others = queue.filter((candidate) => !matches(candidate));
+      for (const candidate of selected) outcomes.set(outcomeKey(candidate, index), first ? "working" : "failed");
+      return first ? [...selected, ...others] : [...others, ...selected];
+    });
   };
-  const status = () => ({
-    enabled: !!options?.enabled && !!options.models,
-    ...options?.models ? { models: options.models } : {},
-    ...candidates ? { candidates: candidates.map((model) => {
-      const entry = skip(model);
-      return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...Number.isFinite(entry.until) ? { retryAt: entry.until } : {} } : { ...model, state: "ready" };
-    }) } : {},
-    automatic: options?.automatic ?? true,
-    debug: options?.debug ?? false,
-    timeoutMs: options?.timeoutMs ?? 8e3,
-    contextTurns: options?.contextTurns ?? 3,
-    version,
-    warnings: parsed.warnings,
-    ...!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every((model) => !!skip(model)) ? { reason: "no_models_eligible" } : {},
-    ...lastOutcome ? { lastOutcome, lastLatencyMs } : {}
-  });
+  const queueEntry = (model) => {
+    const entry = skip(model);
+    return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...Number.isFinite(entry.until) ? { retryAt: entry.until } : {} } : { ...model, state: "ready" };
+  };
+  const status = () => {
+    const candidates = groups?.flat();
+    return {
+      enabled: !!options?.enabled && !!options.models,
+      ...options?.models ? { models: options.models.join(", ") } : {},
+      ...groups ? { groups: groups.map((queue, index) => ({ selectors: options.models[index], candidates: queue.map(queueEntry) })), candidates: candidates.map(queueEntry) } : {},
+      automatic: options?.automatic ?? true,
+      debug: options?.debug ?? false,
+      timeoutMs: options?.timeoutMs ?? 8e3,
+      contextTurns: options?.contextTurns ?? 3,
+      version,
+      warnings: parsed.warnings,
+      ...!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every((model) => !!skip(model)) ? { reason: "no_models_eligible" } : {},
+      ...lastOutcome ? { lastOutcome, lastLatencyMs } : {}
+    };
+  };
   const predict = async (request, parent) => {
     const started = performance.now();
     if (!options || !options.enabled || !options.models) return { reason: status().reason };
@@ -243,11 +273,11 @@ function createService(api, rawOptions, directory) {
         const session = await api.session(request.sessionID, parent);
         const reason = check(session);
         if (reason) return { reason };
-        refresh(resolveModels(options.models, await api.models(parent)));
-        configured = [...candidates];
-        if (!candidates.length) return { reason: "model_unavailable" };
+        refresh(await api.models(parent));
+        configured = groups.flat();
+        if (!configured.length) return { reason: "model_unavailable" };
         parent.throwIfAborted();
-        if (candidates.every((model) => !!skip(model))) return { reason: "no_models_eligible" };
+        if (configured.every((model) => !!skip(model))) return { reason: "no_models_eligible" };
         const messages = await api.context(request.sessionID, parent);
         const records = messages.map((value) => value && typeof value === "object" ? value : {});
         const idle = records.findLastIndex((value) => value.type === "idle");
@@ -257,7 +287,8 @@ function createService(api, rawOptions, directory) {
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" };
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns);
         if (!prompt) return { reason: "context_unavailable" };
-        const chain = [...candidates];
+        const chain = groups.flatMap((queue, group) => queue.map((model) => ({ ...model, group })));
+        const ownership = new Map(owners);
         let failure = "no_models_eligible";
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted();
@@ -266,7 +297,7 @@ function createService(api, rawOptions, directory) {
           parent.throwIfAborted();
           const candidate = chain[index];
           if (skip(candidate)) continue;
-          const { name, ...model } = candidate;
+          const { name, group, ...model } = candidate;
           const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)]);
           try {
             const output = await abortable(() => api.generate(model, prompt, signal), signal);
@@ -276,7 +307,7 @@ function createService(api, rawOptions, directory) {
             parent.throwIfAborted();
             const text = parseSuggestion(output);
             if (text) {
-              if (!skip(model)) move(model, true);
+              if (!skip(model)) move(model, true, group, ownership);
               return { text };
             }
             let abstained = false;
@@ -285,7 +316,7 @@ function createService(api, rawOptions, directory) {
             } catch {
             }
             if (abstained) {
-              if (!skip(model)) move(model, true);
+              if (!skip(model)) move(model, true, group, ownership);
               return { reason: "no_suggestion" };
             }
             throw new Error("Invalid prediction response");
@@ -300,7 +331,7 @@ function createService(api, rawOptions, directory) {
             const key = policy.modelWide ? modelKey(model) : candidateKey(model);
             const until = Date.now() + policy.delayMs;
             if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail });
-            move(model, false, policy.modelWide);
+            move(model, false, group, ownership, policy.modelWide);
             if (options.debug) {
               const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
               const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
@@ -322,9 +353,9 @@ Queue: ${queue}`, request);
           const changed = check(await api.session(request.sessionID, parent));
           if (changed) return { reason: changed };
           parent.throwIfAborted();
-          const selectors = new Set(options.models.split(",").map((value) => value.trim()));
+          const selectors = new Set(options.models.flatMap((group) => group.split(",").map((value) => value.trim())));
           const single = configured[0];
-          const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? options.models}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
+          const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
           await api.notice?.(message, request);
         }
         return reply2;
@@ -339,7 +370,7 @@ Queue: ${queue}`, request);
     }
   };
   const inspect = async (signal) => {
-    if (options?.enabled && options.models) refresh(resolveModels(options.models, await api.models(signal)));
+    if (options?.enabled && options.models) refresh(await api.models(signal));
     return status();
   };
   return { predict, status, inspect };
