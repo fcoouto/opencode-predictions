@@ -16,6 +16,7 @@ test("CLI shows actionable error variants and reopens native status before a com
   } as any)
   try {
     await new Promise(resolve => setImmediate(resolve))
+    assert.equal([...commands.values()].some(command => command.bind === "escape"), false, "predictions must not intercept Escape")
     assert.equal(toasts.length, 1)
     assert.equal(toasts[0].variant, "error")
     assert.match(toasts[0].message, /Prediction status and preview/)

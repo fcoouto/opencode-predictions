@@ -147,7 +147,7 @@ export function startClient(host: ClientHost) {
     if (scope && !loading && Date.now() - checked >= 2000) void load()
     if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = undefined
     const available = !!cache?.enabled && !cache.reason
-    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : undefined, contextKey: current ? JSON.stringify([scope, current.key]) : undefined, eligible: !!current?.eligible && available, draft: current?.draft ?? "" })
+    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : undefined, eligible: !!current?.eligible && available, draft: current?.draft ?? "" })
     if (manual && !loading) {
       const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : undefined
       manual = undefined
@@ -170,7 +170,6 @@ export function startClient(host: ClientHost) {
   tick()
   return {
     accept() { tick(); return controller.accept() },
-    dismiss() { tick(); return controller.dismiss() },
     request,
     requestFromShortcut() {
       tick()

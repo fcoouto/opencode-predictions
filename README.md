@@ -66,21 +66,20 @@ to inspect matches. If none match, choose another selector or omit `#low`.
 ## Controls
 
 - **Tab:** insert the visible suggestion into the editable prompt.
-- **Escape:** dismiss the suggestion.
 - **Alt+Shift+P** (**Option+Shift+P** on macOS): request a prediction after a completed response, with the empty prompt focused. It never inserts or submits text.
 - **Predict next prompt:** command-palette action to request or refresh a suggestion.
 - **Prediction status and preview:** reopen a readable status snapshot with settings, resolved models, safe errors, and the current suggestion. Choose **Technical details** for host/plugin versions, feedback capabilities, and timing.
 
-Typing hides the suggestion. Tab keeps its native behavior when no valid suggestion
+Typing hides the suggestion without discarding it. Escape keeps its normal host
+behavior. Tab keeps its native behavior when no valid suggestion
 is visible. Suggestions do not appear in shell mode, during IME composition, in
 menus/dialogs, or while permission/form input is pending.
 
 Switching chats hides a suggestion without discarding it. Returning to the same
 completed response and configuration restores it without another model call.
-After accepting a suggestion, you can edit it freely; clearing the entire draft
-restores the original suggestion. Escape dismisses it, and typing before acceptance
-invalidates it. This bounded cache stays in memory and does not survive a plugin
-reload or restart.
+Typing or accepting a suggestion leaves it cached; clearing the entire draft
+restores the original suggestion. This bounded cache stays in memory and does not
+survive a plugin reload or restart.
 
 Avoid using another plugin that also consumes Tab for ghost text in the same prompt.
 

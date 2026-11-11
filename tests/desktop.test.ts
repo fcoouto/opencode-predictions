@@ -119,11 +119,13 @@ test("Desktop navigation and clearing accepted edits restore the original ghost 
       const server = { id: "fixture", connected: true, data, client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }), predict: async ({ sessionID }: { sessionID: string }) => { w.predictionCalls++; return { text: sessionID === "first" ? "First chat suggestion" : "Second chat suggestion" } }, events: { on: () => () => {} } }) } }
       const sessions = Object.fromEntries(["first", "second"].map(id => [id, { id, key: "fixture/" + id, directory: "/project", location: { directory: "/project" }, server }]))
       w.switchChat = setCurrent
+      w.predictionCommands = commands
       w.acceptPrediction = () => commands.get("accept").run()
       w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => sessions[current()] }, screen: { current: () => ({ composer: { text: () => w.editor.textContent, focused: () => document.activeElement === w.editor, quotable: () => true, setText: (text: string) => { w.editor.textContent = text }, focus: () => w.editor.focus() } }) }, add: (_registry: unknown, command: any) => commands.set(command.id, command), app: { version: "test" }, toast: { show() {} } })
     })
     const ghost = page.locator("[data-opencode-prediction]")
     await ghost.filter({ hasText: "First chat suggestion" }).waitFor({ state: "visible" })
+    assert.equal(await page.evaluate(() => [...(window as any).predictionCommands.values()].some((command: any) => command.bind === "escape")), false, "predictions must not intercept Escape")
     await page.evaluate(() => (window as any).switchChat("second"))
     await ghost.filter({ hasText: "Second chat suggestion" }).waitFor({ state: "visible" })
     await page.evaluate(() => (window as any).switchChat("first"))

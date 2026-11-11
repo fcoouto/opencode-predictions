@@ -28,6 +28,32 @@ test("automatic client uses one prediction, rechecks input on Tab, and exposes s
   } finally { client.dispose() }
 })
 
+test("clearing an accepted prediction restores it in automatic and manual-only clients", async () => {
+  for (const automatic of [true, false]) {
+    const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+    let ghost: string | undefined
+    let calls = 0
+    const status: Status = { enabled: true, automatic, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+    const client = startClient({ state: () => state, status: async () => status, predict: async () => { calls++; return { text: "Run tests." } }, paint: text => { ghost = text; return !!text }, insert: text => { state.draft = text; state.eligible = false; return true }, focus() {}, show() {} })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      if (!automatic) { client.request(); await new Promise(resolve => setImmediate(resolve)) }
+      assert.equal(ghost, "Run tests.")
+      assert.equal(client.accept(), true)
+      assert.equal(state.draft, "Run tests.")
+      assert.equal(client.accept(), false)
+      assert.equal(ghost, undefined)
+      state.draft = ""
+      state.eligible = true
+      // Status refresh runs the same update as the polling tick, without generating a new prediction.
+      await client.status()
+      assert.equal(ghost, "Run tests.")
+      assert.equal(calls, 1)
+      assert.equal(client.accept(), true)
+    } finally { client.dispose() }
+  }
+})
+
 test("manual-only client makes no generation calls until requested", async () => {
   const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
   let calls = 0
@@ -222,7 +248,7 @@ test("navigation invalidation restores the original chat's exact prediction with
   } finally { client.dispose() }
 })
 
-test("typing while a returning chat's status loads clears only that chat's cached suggestion", async () => {
+test("typing while a returning chat's status loads preserves both chats' cached suggestions", async () => {
   const first: ClientState = { key: "local/first/2", sessionID: "ses_first", completion: 2, eligible: true, draft: "" }
   const second: ClientState = { ...first, key: "local/second/3", sessionID: "ses_second", completion: 3 }
   const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
@@ -239,7 +265,7 @@ test("typing while a returning chat's status loads clears only that chat's cache
     first.draft = "typed while status was loading"; client.accept()
     first.draft = ""; client.accept()
     finish(status); await new Promise(resolve => setImmediate(resolve))
-    assert.equal(ghost, undefined)
+    assert.equal(ghost, "First chat suggestion")
     assert.equal(predictions, 2)
     state = second; client.invalidate(); await new Promise(resolve => setImmediate(resolve))
     assert.equal(ghost, "Second chat suggestion")
@@ -304,7 +330,7 @@ test("an aborted request cannot repaint a retained prediction in a new location 
   } finally { client.dispose() }
 })
 
-test("Escape passes through when a cached suggestion loses input eligibility before the next tick", async () => {
+test("Tab passes through when a cached suggestion loses input eligibility before the next tick", async () => {
   const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
   let ghost: string | undefined
   const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
@@ -313,7 +339,7 @@ test("Escape passes through when a cached suggestion loses input eligibility bef
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(ghost, "Run tests.")
     state.eligible = false
-    assert.equal(client.dismiss(), false)
+    assert.equal(client.accept(), false)
     assert.equal(ghost, undefined)
   } finally { client.dispose() }
 })
