@@ -76,7 +76,7 @@ Avoid using another plugin that also consumes Tab for ghost text in the same pro
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `models` | unset | Required. Model selectors with optional wildcards and reasoning variants. |
+| `models` | unset | Required. Selector text for one ranking group, or an ordered array of selector groups. |
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
@@ -86,10 +86,58 @@ Avoid using another plugin that also consumes Tab for ghost text in the same pro
 Use `provider/model` or `provider/model#variant`. Omit `#variant` to use the model's
 default reasoning. The plugin never changes your main session model.
 
-`*` matches model IDs or display names case-insensitively. Separate selectors with
-commas to set initial preference order. Matches within each wildcard group use stable
-provider/model-ID order, not speed or price. Duplicate candidates are removed.
+`*` matches model IDs or display names case-insensitively. Matches within each
+wildcard selector use stable provider/model-ID order, not speed or price.
 Only enabled models supporting the requested variant are selected.
+
+### Model groups
+
+Text defines one group. Both exact and wildcard selectors work:
+
+- `"models": "opencode/*free*#low"`
+- `"models": "opencode/beam-free#low"`
+
+An array defines groups in fixed priority order. Each entry can select one exact
+model or expand a wildcard into several models. Single-entry arrays such as
+`"models": ["opencode/*free*#low"]` or
+`"models": ["opencode/beam-free#low"]` are also valid.
+
+For two exact-model groups:
+
+```json
+"models": ["opencode/beam-free#low", "opencode/deepseek-v4.1-flash#low"]
+```
+
+Use commas **inside an entry** to combine selectors into one independently ranked
+group. For example, try a free-model group before a paid fallback group:
+
+```json
+"models": [
+  "opencode/*free*#low, opencode-go/*free*#low",
+  "opencode-go/deepseek*flash*#low"
+]
+```
+
+Every request starts with the first group and skips blocked or cooling candidates.
+Only after a group's eligible candidates fail or none are available does the next
+group run. A valid “no suggestion” response stops the entire request; it does not
+trigger paid fallback. The plugin does not infer pricing: choose and check your
+selectors yourself.
+
+Group order never changes. A paid-model success cannot promote the paid group
+ahead of the free group. Recovered free models take precedence on later requests.
+Within a group, comma-separated selectors set initial preference order; the ranking
+queue then learns from outcomes. Legacy comma-separated text remains one group.
+
+Overlapping provider/model/variant candidates belong to the earliest matching
+group and are attempted at most once per request. Different reasoning variants
+remain distinct candidates, with shared model-wide restrictions as described below.
+Empty arrays, empty groups, and non-string entries are rejected.
+
+**Prediction status and preview** includes ordered `groups` and each group's
+ranked candidates. Existing flat `models` and `candidates` fields remain available.
+
+### Failure notifications
 
 When a call fails or times out, the next eligible configured match is tried silently.
 With multiple configured candidates, only final unavailability produces a notice:
@@ -128,9 +176,10 @@ no-suggestion response stops the chain; exhaustion shows a failure notice.
 
 ### Ranking queue
 
-A valid response, including “no suggestion,” moves its candidate first. A failure
-moves it last. Untried candidates keep their relative order. Only your configured
-models and reasoning variants can be used.
+Each group has its own ranking queue. A valid response, including “no suggestion,”
+moves its candidate first **within that group**. A failure moves it last within its
+group. Untried candidates keep their relative order. Only your configured models
+and reasoning variants can be used.
 
 - **Access, payment, or unavailable model** (`401`/`402`/`403`/`404` or equivalent
   structured errors): blocked until the server-side plugin instance is recreated.
@@ -143,7 +192,7 @@ models and reasoning variants can be used.
 For retryable failures, a valid provider `retryAfterMs` replaces the default pause,
 with a 60-second minimum and no cap that would shorten longer provider delays.
 Access, availability, budget, and rate-limit skips cover that model's reasoning
-variants; other failures affect only the candidate that failed.
+variants across all groups; other failures affect only the candidate that failed.
 
 Cooldown expiry makes a candidate eligible at its learned position; it does not
 schedule a call. If none are eligible, no generation occurs. Check **Prediction
@@ -154,7 +203,9 @@ unavailability summary appears when the whole queue is unavailable.
 Queue state stays in memory and is shared across sessions using the same server/location
 plugin instance. Recreating that instance clears it; reloading only the Desktop UI
 does not necessarily do so. Models that leave the available catalog lose their queue
-history. Cancellation and stale requests do not change rankings.
+history. If a catalog change moves a candidate into a different owning group, it
+starts untried there while retaining any active cooldown or block. Cancellation
+and stale requests do not change rankings.
 
 ## Cost and privacy
 

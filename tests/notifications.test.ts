@@ -32,7 +32,7 @@ test("all client notifications get exactly one prefix and background status stay
 })
 
 test("unmatched configurations notify through automatic and manual clients without generation", async () => {
-  for (const automatic of [false, true]) {
+  for (const automatic of [false, true]) for (const models of ["local/missing", ["local/missing"], ["local/missing", "local/other"]]) {
     const messages: string[] = []
     const service = createService({
       session: async () => ({ id: "session", time: { idle: 2 }, location: { directory: "/project" } }),
@@ -40,7 +40,7 @@ test("unmatched configurations notify through automatic and manual clients witho
       context: async () => { assert.fail("No context needed without candidates") },
       generate: async () => { assert.fail("No unmatched model may be called") },
       notice: message => { messages.push(message) },
-    }, { models: "local/missing", automatic }, "/project")
+    }, { models, automatic }, "/project")
     const client = startClient({
       state: () => ({ key: "session/2", sessionID: "session", completion: 2, eligible: true, draft: "" }),
       status: (_state, signal) => service.inspect(signal),
@@ -54,7 +54,7 @@ test("unmatched configurations notify through automatic and manual clients witho
         client.request()
         await new Promise(resolve => setImmediate(resolve))
       }
-      assert.deepEqual(messages, ["Model [local/missing] failed with message: No configured model is available."])
+      assert.deepEqual(messages, [Array.isArray(models) && models.length > 1 ? "No model worked at this time. Activate `debug` mode for details." : "Model [local/missing] failed with message: No configured model is available."])
     } finally { client.dispose() }
   }
 })

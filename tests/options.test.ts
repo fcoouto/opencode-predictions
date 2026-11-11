@@ -5,7 +5,7 @@ import { parseOptions } from "../src/options.ts"
 test("model selector preserves nested model IDs and explicit reasoning", () => {
   assert.deepEqual(parseOptions({ models: "openai/team/model#high" }), {
     ok: true,
-    value: { enabled: true, models: "openai/team/model#high", timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false },
+    value: { enabled: true, models: ["openai/team/model#high"], timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false },
     warnings: [],
   })
 })
@@ -13,7 +13,7 @@ test("model selector preserves nested model IDs and explicit reasoning", () => {
 test("omitted reasoning stays omitted rather than overriding the model default", () => {
   const result = parseOptions({ models: "local/model" })
   assert.ok(result.ok)
-  assert.equal(result.value.models, "local/model")
+  assert.deepEqual(result.value.models, ["local/model"])
 })
 
 test("unknown options warn without disabling supported options", () => {
@@ -50,6 +50,29 @@ test("wildcard selectors support spaces and ordered alternatives in one text fie
   for (const models of ["opencode-go/deepseek-*-flash#low", "opencode-go/*flash*#low", "opencode-go/* free*#low", "opencode-go/*flash*, opencode/* free*"]) {
     const result = parseOptions({ models })
     assert.ok(result.ok)
-    assert.equal(result.value.models, models)
+    assert.deepEqual(result.value.models, [models])
+  }
+})
+
+test("text and single-entry arrays normalize exact and wildcard selectors into one group", () => {
+  for (const models of ["opencode/*free*#low", "opencode/beam-free#low", "opencode/a, opencode/b"]) {
+    assert.deepEqual(parseOptions({ models: [models] }), parseOptions({ models }))
+    const parsed = parseOptions({ models: [" " + models + " "] })
+    assert.ok(parsed.ok)
+    assert.deepEqual(parsed.value.models, [models])
+  }
+})
+
+test("array entries retain group boundaries even when each group contains several selectors", () => {
+  const models = ["free/*#low, local/*free*#low", "paid/exact#high"]
+  const parsed = parseOptions({ models })
+  assert.ok(parsed.ok)
+  assert.deepEqual(parsed.value.models, models)
+  assert.deepEqual(parsed.warnings, [])
+})
+
+test("invalid model arrays reject the entire configuration", () => {
+  for (const models of [[], [""], ["  "], ["local/a", 7], [["local/a"]], null, ["local/a", null], ["local/a", "paid/"], ["local/a,"], [",local/a"], ["local/a,,local/b"], ["local/a#"]]) {
+    assert.equal(parseOptions({ models }).ok, false, JSON.stringify(models))
   }
 })
