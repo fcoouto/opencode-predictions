@@ -5,7 +5,7 @@ import { parseOptions } from "../src/options.ts"
 test("model selector preserves nested model IDs and explicit reasoning", () => {
   assert.deepEqual(parseOptions({ models: "openai/team/model#high" }), {
     ok: true,
-    value: { enabled: true, models: "openai/team/model#high", timeoutMs: 8000, contextTurns: 3, automatic: true },
+    value: { enabled: true, models: "openai/team/model#high", timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false },
     warnings: [],
   })
 })
@@ -27,7 +27,17 @@ test("unknown options warn without disabling supported options", () => {
 test("missing model remains unselected, and disabling/manual controls survive parsing", () => {
   const result = parseOptions({ enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1 })
   assert.ok(result.ok)
-  assert.deepEqual(result.value, { enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1 })
+  assert.deepEqual(result.value, { enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1, debug: false })
+})
+
+test("debug defaults false and accepts only booleans", () => {
+  for (const debug of [false, true]) {
+    const result = parseOptions({ debug })
+    assert.ok(result.ok)
+    assert.equal(result.value.debug, debug)
+    assert.deepEqual(result.warnings, [])
+  }
+  for (const debug of [null, 0, 1, "true", "false", {}]) assert.equal(parseOptions({ debug }).ok, false)
 })
 
 test("invalid supported options cannot silently select a different paid model", () => {

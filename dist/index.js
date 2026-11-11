@@ -31,10 +31,10 @@ var Predictions = Rpc.define({
 function parseOptions(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] };
   const raw = input;
-  const fields = ["enabled", "models", "timeoutMs", "contextTurns", "automatic"];
+  const fields = ["enabled", "models", "timeoutMs", "contextTurns", "automatic", "debug"];
   const warnings = Object.keys(raw).filter((key) => !fields.includes(key)).map((key) => `Unknown option ignored: ${key}`);
   const invalid = (reason) => ({ ok: false, reason, warnings });
-  for (const name of ["enabled", "automatic"]) {
+  for (const name of ["enabled", "automatic", "debug"]) {
     if (raw[name] !== void 0 && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`);
   }
   const timeoutMs = raw.timeoutMs ?? 8e3;
@@ -49,7 +49,7 @@ function parseOptions(input = {}) {
       if (slash <= 0 || !selector.slice(slash + 1).trim() || /\s/.test(selector.slice(0, slash)) || variant === "" || variant !== void 0 && /\s/.test(variant) || extra !== void 0) return invalid("models must contain provider/model-pattern selectors with optional #variant");
     }
   }
-  return { ok: true, value: { enabled: raw.enabled ?? true, ...typeof raw.models === "string" ? { models: raw.models.trim() } : {}, timeoutMs, contextTurns, automatic: raw.automatic ?? true }, warnings };
+  return { ok: true, value: { enabled: raw.enabled ?? true, ...typeof raw.models === "string" ? { models: raw.models.trim() } : {}, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false }, warnings };
 }
 
 // src/predict.ts
@@ -213,13 +213,14 @@ function createService(api, rawOptions, directory) {
     candidates = first ? [...selected, ...others] : [...others, ...selected];
   };
   const status = () => ({
-    enabled: !!options?.enabled && !!options.models && (candidates === void 0 || candidates.length > 0),
+    enabled: !!options?.enabled && !!options.models,
     ...options?.models ? { models: options.models } : {},
     ...candidates ? { candidates: candidates.map((model) => {
       const entry = skip(model);
       return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...Number.isFinite(entry.until) ? { retryAt: entry.until } : {} } : { ...model, state: "ready" };
     }) } : {},
     automatic: options?.automatic ?? true,
+    debug: options?.debug ?? false,
     timeoutMs: options?.timeoutMs ?? 8e3,
     contextTurns: options?.contextTurns ?? 3,
     version,
@@ -230,6 +231,7 @@ function createService(api, rawOptions, directory) {
   const predict = async (request, parent) => {
     const started = performance.now();
     if (!options || !options.enabled || !options.models) return { reason: status().reason };
+    let configured = [];
     const check = (session) => {
       if (session.id !== request.sessionID || session.time.idle !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale";
       if (session.location.directory !== directory) return "wrong_location";
@@ -242,6 +244,7 @@ function createService(api, rawOptions, directory) {
         const reason = check(session);
         if (reason) return { reason };
         refresh(resolveModels(options.models, await api.models(parent)));
+        configured = [...candidates];
         if (!candidates.length) return { reason: "model_unavailable" };
         parent.throwIfAborted();
         if (candidates.every((model) => !!skip(model))) return { reason: "no_models_eligible" };
@@ -298,19 +301,34 @@ function createService(api, rawOptions, directory) {
             const until = Date.now() + policy.delayMs;
             if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail });
             move(model, false, policy.modelWide);
-            const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
-            const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
-            const entry = skip(model);
-            const minutes = Math.ceil((entry.until - Date.now()) / 6e4);
-            const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`;
-            await api.notice?.(`${message}
+            if (options.debug) {
+              const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
+              const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
+              const entry = skip(model);
+              const minutes = Math.ceil((entry.until - Date.now()) / 6e4);
+              const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+              await api.notice?.(`${message}
 Reason: ${policy.detail}
 Queue: ${queue}`, request);
+            }
           }
         }
         return { reason: failure };
       };
-      const reply = await abortable(work, parent);
+      const reply = await abortable(async () => {
+        const reply2 = await work();
+        if (reply2.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply2.reason)) {
+          parent.throwIfAborted();
+          const changed = check(await api.session(request.sessionID, parent));
+          if (changed) return { reason: changed };
+          parent.throwIfAborted();
+          const selectors = new Set(options.models.split(",").map((value) => value.trim()));
+          const single = configured[0];
+          const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? options.models}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
+          await api.notice?.(message, request);
+        }
+        return reply2;
+      }, parent);
       lastOutcome = reply.text ? "suggestion" : reply.reason;
       return reply;
     } catch {

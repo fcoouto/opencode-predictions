@@ -89,7 +89,7 @@ test("timeout returns even when provider ignores abort, and errors do not retry"
   const keepAlive = setTimeout(() => {}, 1000)
   try { assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "timeout") } finally { clearTimeout(keepAlive) }
   assert.equal(attempts, 1)
-  assert.equal(notices[0], "Predictions failed with [model]; no eligible configured models remain.\nReason: Timed out after 10 ms.\nQueue: Paused for 1 minute.")
+  assert.equal(notices[0], "Model [model] failed with message: Timed out after 10 ms.")
   api.generate = async () => { attempts++; throw new Error("provider secret") }
   assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "no_models_eligible")
   assert.equal(attempts, 1)
@@ -109,7 +109,7 @@ test("failed model calls advance only through configured matches and announce bo
   api.models = async () => ["a", "b", "unselected"].map(id => ({ providerID: "local", id, name: id === "a" ? "First Free" : "Next Flash", enabled: true, variants: [] }))
   api.generate = async model => { attempted.push(model.id); if (model.id === "a") throw Object.assign(new Error("Free usage limit reached."), { _tag: "ProviderRequestError", status: 429, reason: "rate_limit" }); return '{"prompt":"Run the tests."}' }
   api.notice = message => { notices.push(message) }
-  const service = createService(api, { models: "local/a, local/b" }, "/project")
+  const service = createService(api, { models: "local/a, local/b", debug: true }, "/project")
   assert.deepEqual(await service.predict({ sessionID: "ses_test", completion: 2, requestID: "request-one" }, new AbortController().signal), { text: "Run the tests." })
   assert.deepEqual(attempted, ["a", "b"])
   assert.deepEqual(notices, ["Predictions failed with [First Free], moving on with [Next Flash]...\nReason: HTTP 429: Free usage limit reached.\nQueue: Paused for 60 minutes."])
@@ -129,8 +129,119 @@ test("failure popups explain provider restrictions and invalid output without ex
     api.notice = message => { notices.push(message) }
     const result = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
     assert.equal(result.reason, "generation_failed")
-    const queue = expected.startsWith("HTTP 403") || expected.startsWith("HTTP 401") ? "Blocked until the server plugin reloads." : "Paused for 1 minute."
-    assert.deepEqual(notices, [`Predictions failed with [model]; no eligible configured models remain.\nReason: ${expected}\nQueue: ${queue}`])
+    assert.deepEqual(notices, [`Model [model] failed with message: ${expected}`])
+  }
+})
+
+test("quiet mode hides fallback failures when another configured candidate works or abstains", async () => {
+  for (const output of ['{"prompt":"Run tests."}', '{"prompt":null}']) {
+    const { api } = fixture()
+    const notices: string[] = []
+    api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+    api.generate = async model => { if (model.id === "a") throw new Error("PRIVATE"); return output }
+    api.notice = message => { notices.push(message) }
+    const service = createService(api, { models: "local/*" }, "/project")
+    await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    assert.deepEqual(notices, [])
+    assert.equal(service.status().debug, false)
+  }
+})
+
+test("quiet exhaustion reports once per request including an already skipped queue", async () => {
+  for (const models of ["local/*", "local/a, local/b", "local/missing, local/a"]) {
+    const { api } = fixture()
+    const notices: string[] = []
+    let calls = 0
+    api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+    api.generate = async () => { calls++; throw Object.assign(new Error("PRIVATE"), { status: 403 }) }
+    api.notice = message => { notices.push(message) }
+    const service = createService(api, { models }, "/project")
+    for (let i = 0; i < 2; i++) {
+      await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+      assert.equal(notices.length, i + 1)
+      assert.equal(notices[i], "No model worked at this time. Activate `debug` mode for details.")
+    }
+    assert.equal(calls, models.includes("missing") ? 1 : 2)
+    await service.inspect(new AbortController().signal)
+    assert.equal(notices.length, 2)
+  }
+})
+
+test("single skipped model retains its safe failure reason without debug", async () => {
+  const { api } = fixture()
+  const notices: string[] = []
+  api.generate = async () => { throw Object.assign(new Error("PRIVATE"), { status: 401, reason: "authentication" }) }
+  api.notice = message => { notices.push(message) }
+  const service = createService(api, { models: "local/model" }, "/project")
+  for (let i = 0; i < 2; i++) await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  assert.deepEqual(notices, Array(2).fill("Model [model] failed with message: HTTP 401: Provider authentication failed."))
+})
+
+test("unmatched configured models produce one unavailable summary without generation", async () => {
+  for (const [models, message] of [
+    ["local/missing", "Model [local/missing] failed with message: No configured model is available."],
+    ["local/missing, local/other", "No model worked at this time. Activate `debug` mode for details."],
+  ]) {
+    const { api, calls } = fixture()
+    const notices: string[] = []
+    api.notice = message => { notices.push(message) }
+    await createService(api, { models }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    assert.deepEqual(notices, [message])
+    assert.equal(calls.length, 0)
+  }
+})
+
+test("debug exhaustion keeps safe details and adds a final summary without activation hint", async () => {
+  const { api } = fixture()
+  const notices: string[] = []
+  api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  api.generate = async () => { throw Object.assign(new Error("PRIVATE"), { status: 503, reason: "overloaded" }) }
+  api.notice = message => { notices.push(message) }
+  const service = createService(api, { models: "local/*", debug: true }, "/project")
+  await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  assert.equal(service.status().debug, true)
+  assert.equal(notices.length, 3)
+  assert.match(notices[0], /moving on with \[b\]/)
+  assert.match(notices[1], /Queue: Paused for 1 minute/)
+  assert.equal(notices[2], "No model worked at this time.")
+  assert.equal(notices.join().includes("PRIVATE"), false)
+})
+
+test("cancelled and stale failures stay silent even with debug", async () => {
+  for (const debug of [false, true]) for (const cancel of [false, true]) {
+    const { api, advance } = fixture()
+    const controller = new AbortController()
+    const notices: string[] = []
+    api.generate = async () => { if (cancel) controller.abort(); else advance(); throw new Error("PRIVATE") }
+    api.notice = message => { notices.push(message) }
+    const reply = await createService(api, { models: "local/model", debug }, "/project").predict({ sessionID: "ses_test", completion: 2 }, controller.signal)
+    assert.equal(reply.reason, cancel ? "cancelled" : "stale")
+    assert.deepEqual(notices, [])
+  }
+})
+
+test("cancellation settles while final session validation or notification ignores abort", async () => {
+  for (const stalled of ["session", "notice"]) {
+    const { api } = fixture()
+    api.models = async () => []
+    const session = api.session
+    let checks = 0
+    let entered!: () => void
+    const ready = new Promise<void>(resolve => { entered = resolve })
+    api.session = async (id, signal) => {
+      if (++checks === 2 && stalled === "session") { entered(); return new Promise(() => {}) }
+      return session(id, signal)
+    }
+    api.notice = async () => { entered(); await new Promise(() => {}) }
+    const controller = new AbortController()
+    const pending = createService(api, { models: "local/missing" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, controller.signal)
+    await ready
+    controller.abort()
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      const reply = await Promise.race([pending, new Promise(resolve => { timer = setTimeout(() => resolve("stalled"), 100) })])
+      assert.deepEqual(reply, { reason: "cancelled" })
+    } finally { clearTimeout(timer) }
   }
 })
 
@@ -313,7 +424,7 @@ test("model-level skips neither spill into other providers nor hide the next eli
   api.models = async () => ["first", "second"].map(providerID => ({ providerID, id: "model", enabled: true, variants: [{ id: "low" }, { id: "high" }] }))
   api.generate = async model => { attempted.push(model.providerID + "#" + model.variant); if (model.providerID === "first") throw Object.assign(new Error("Too many requests"), { status: 429 }); return '{"prompt":null}' }
   api.notice = message => { notices.push(message) }
-  const service = createService(api, { models: "first/model#low, first/model#high, second/model#low" }, "/project")
+  const service = createService(api, { models: "first/model#low, first/model#high, second/model#low", debug: true }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   await service.predict(request, new AbortController().signal)
   assert.deepEqual(attempted, ["first#low", "second#low"])

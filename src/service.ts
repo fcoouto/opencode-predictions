@@ -12,7 +12,7 @@ export type ServiceAPI = {
   notice?(message: string, request: Request): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
-export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; automatic: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number }
+export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; automatic: boolean; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number }
 
 async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
@@ -92,13 +92,13 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     candidates = first ? [...selected, ...others] : [...others, ...selected]
   }
   const status = (): Status => ({
-    enabled: !!options?.enabled && !!options.models && (candidates === undefined || candidates.length > 0),
+    enabled: !!options?.enabled && !!options.models,
     ...(options?.models ? { models: options.models } : {}),
     ...(candidates ? { candidates: candidates.map((model): QueueEntry => {
       const entry = skip(model)
       return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...(Number.isFinite(entry.until) ? { retryAt: entry.until } : {}) } : { ...model, state: "ready" }
     }) } : {}),
-    automatic: options?.automatic ?? true, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
+    automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
     version, warnings: parsed.warnings,
     ...(!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every(model => !!skip(model)) ? { reason: "no_models_eligible" } : {}),
     ...(lastOutcome ? { lastOutcome, lastLatencyMs } : {}),
@@ -106,6 +106,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
   const predict = async (request: Request, parent: AbortSignal): Promise<Reply> => {
     const started = performance.now()
     if (!options || !options.enabled || !options.models) return { reason: status().reason }
+    let configured: Candidate[] = []
     const check = (session: Session): string | undefined => {
       if (session.id !== request.sessionID || session.time.idle !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale"
       if (session.location.directory !== directory) return "wrong_location"
@@ -118,6 +119,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         const reason = check(session)
         if (reason) return { reason }
         refresh(resolveModels(options.models!, await api.models(parent)))
+        configured = [...candidates!]
         if (!candidates!.length) return { reason: "model_unavailable" }
         parent.throwIfAborted()
         if (candidates!.every(model => !!skip(model))) return { reason: "no_models_eligible" }
@@ -165,17 +167,34 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             const until = Date.now() + policy.delayMs
             if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail })
             move(model, false, policy.modelWide)
-            const next = chain.slice(index + 1).find(candidate => !skip(candidate))
-            const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`
-            const entry = skip(model)!
-            const minutes = Math.ceil((entry.until - Date.now()) / 60000)
-            const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`
-            await api.notice?.(`${message}\nReason: ${policy.detail}\nQueue: ${queue}`, request)
+            if (options.debug) {
+              const next = chain.slice(index + 1).find(candidate => !skip(candidate))
+              const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`
+              const entry = skip(model)!
+              const minutes = Math.ceil((entry.until - Date.now()) / 60000)
+              const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`
+              await api.notice?.(`${message}\nReason: ${policy.detail}\nQueue: ${queue}`, request)
+            }
           }
         }
         return { reason: failure }
       }
-      const reply = await abortable(work, parent)
+      const reply = await abortable(async (): Promise<Reply> => {
+        const reply = await work()
+        if (reply.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply.reason)) {
+          parent.throwIfAborted()
+          const changed = check(await api.session(request.sessionID, parent))
+          if (changed) return { reason: changed }
+          parent.throwIfAborted()
+          const selectors = new Set(options.models!.split(",").map(value => value.trim()))
+          const single = configured[0]
+          const message = Math.max(configured.length, selectors.size) > 1
+            ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.")
+            : `Model [${single?.name ?? options.models}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`
+          await api.notice?.(message, request)
+        }
+        return reply
+      }, parent)
       lastOutcome = reply.text ? "suggestion" : reply.reason
       return reply
     } catch {

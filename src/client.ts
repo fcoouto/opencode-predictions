@@ -1,5 +1,6 @@
 import type { Reply, Status } from "./service.ts"
 import { createController } from "./controller.ts"
+import { log } from "./log.ts"
 export type ClientState = { key: string; sessionID: string; completion: number; eligible: boolean; draft: string }
 export type ClientHost = {
   state(): ClientState | undefined
@@ -12,6 +13,7 @@ export type ClientHost = {
   diagnostics?(): Record<string, unknown>
 }
 export function startClient(host: ClientHost) {
+  const show = (message: string) => log(message => host.show(message), message)
   let current: ClientState | undefined
   let cache: Status | undefined
   let scope: string | undefined
@@ -28,9 +30,9 @@ export function startClient(host: ClientHost) {
       const id = crypto.randomUUID()
       let reply: Reply
       try {
-        reply = await host.predict(state, id, signal, message => { if (!signal.aborted && host.state()?.key === state.key) host.show(message) })
+        reply = await host.predict(state, id, signal, message => { if (!signal.aborted && host.state()?.key === state.key) show(message) })
       } catch {
-        if (!signal.aborted && host.state()?.key === state.key) { error = "Prediction service unavailable"; host.show(error) }
+        if (!signal.aborted && host.state()?.key === state.key) { error = "Prediction service unavailable"; show(error) }
         return { reason: "service_unavailable" }
       } finally { tick() }
       if (reply.reason && !["no_suggestion", "cancelled", "stale"].includes(reply.reason)) error = reply.reason
@@ -74,7 +76,7 @@ export function startClient(host: ClientHost) {
       const preview = controller.preview()
       const state = host.state()
       if (state) { loading?.abort(); await load(state) }
-      host.show(JSON.stringify({ ...host.diagnostics?.(), ...cache, ...(!cache ? { reason: error || "No completed session" } : {}), ...(preview ? { suggestion: preview } : {}), ...(error ? { lastNotice: error } : {}) }, null, 2))
+      show(JSON.stringify({ ...host.diagnostics?.(), ...cache, ...(!cache ? { reason: error || "No completed session" } : {}), ...(preview ? { suggestion: preview } : {}), ...(error ? { lastNotice: error } : {}) }, null, 2))
     },
     invalidate() { loading?.abort(); loading = undefined; cache = undefined; checked = 0; controller.update({ eligible: false, draft: "" }); tick() },
     dispose() { disposed = true; clearInterval(interval); loading?.abort(); controller.dispose() },

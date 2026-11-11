@@ -57,6 +57,7 @@ Avoid using another plugin that also consumes Tab for ghost text in the same pro
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
 | `enabled` | `true` | Enable predictions. |
+| `debug` | `false` | Show safe per-model failures, fallback progress, and queue decisions. |
 
 Use `provider/model` or `provider/model#variant`. Omit `#variant` to use the model's
 default reasoning. The plugin never changes your main session model.
@@ -66,16 +67,38 @@ commas to set initial preference order. Matches within each wildcard group use s
 provider/model-ID order, not speed or price. Duplicate candidates are removed.
 Only enabled models supporting the requested variant are selected.
 
-When a call fails or times out, the next eligible configured match is tried, with a notice:
+When a call fails or times out, the next eligible configured match is tried silently.
+With multiple configured candidates, only final unavailability produces a notice:
 
 ```text
-Predictions failed with [<model_display_name>], moving on with [<next_model>]...
+[opencode-predictions] No model worked at this time. Activate `debug` mode for details.
+```
+
+With one configured candidate, its safe failure reason appears even with debug off:
+
+```text
+[opencode-predictions] Model [<name>] failed with message: <message>
+```
+
+The wording uses configured selectors and resolved candidates, not attempted calls.
+An already blocked or cooling queue also produces one final notice per prediction
+request, without calling a model. Successful predictions, valid “no suggestion”
+responses, cancellations, stale requests, and background status checks stay silent
+with debug off. Explicit status remains available in either mode.
+
+Set `"debug": true` in plugin options to show detailed progress:
+
+```text
+[opencode-predictions] Predictions failed with [<model_display_name>], moving on with [<next_model>]...
 Reason: HTTP 429: Free usage limit reached.
 Queue: Paused for 60 minutes.
 ```
 
-The popup includes a safe failure summary, such as a provider restriction, usage
-limit, invalid response, or timeout. Raw provider error contents are not displayed.
+Debug popups include safe failure summaries, such as a provider restriction, usage
+limit, invalid response, or timeout. Raw provider errors, credentials, and conversation
+contents are never included in failure notices. Debug final summaries omit the
+activation hint. All plugin notifications share the `[opencode-predictions]` prefix;
+no log files are created.
 Each candidate is attempted once. No unselected model is called. A valid
 no-suggestion response stops the chain; exhaustion shows a failure notice.
 
@@ -101,7 +124,8 @@ variants; other failures affect only the candidate that failed.
 Cooldown expiry makes a candidate eligible at its learned position; it does not
 schedule a call. If none are eligible, no generation occurs. Check **Prediction
 status and preview** for current order, safe skip reasons, and retry timestamps.
-Already-skipped models do not produce repeated failure popups.
+Already-skipped models do not produce individual failure popups; only the final
+unavailability summary appears when the whole queue is unavailable.
 
 Queue state stays in memory and is shared across sessions using the same server/location
 plugin instance. Recreating that instance clears it; reloading only the Desktop UI
