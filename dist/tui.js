@@ -51,21 +51,24 @@ function createTerminalAdapter(renderer) {
 function createController(io) {
   let current = { eligible: false, draft: "" };
   let pending;
-  let result;
+  const results = /* @__PURE__ */ new Map();
   let visible = false;
   let disposed = false;
   const attempted = /* @__PURE__ */ new Set();
   const remember = (key) => {
     attempted.add(key);
-    if (attempted.size > 128) attempted.delete(attempted.values().next().value);
+    if (attempted.size > 128) {
+      const oldest = attempted.values().next().value;
+      attempted.delete(oldest);
+      results.delete(oldest);
+    }
   };
   const paint = () => {
-    visible = io.paint(!disposed && current.eligible && !current.draft && result?.key === current.key ? result?.text : void 0);
+    visible = io.paint(!disposed && current.eligible && !current.draft && current.key ? results.get(current.key)?.text : void 0);
   };
   const clear = () => {
     pending?.abort();
     pending = void 0;
-    result = void 0;
     visible = false;
     io.paint(void 0);
   };
@@ -74,42 +77,56 @@ function createController(io) {
       if (disposed) return;
       if (snapshot.key !== current.key || snapshot.draft) clear();
       current = snapshot;
-      if (snapshot.key && snapshot.draft) remember(snapshot.key);
+      if (snapshot.draft) {
+        const contextKey = snapshot.contextKey ?? snapshot.key;
+        for (const [key, result] of results) if (result.contextKey === contextKey && !result.accepted) results.delete(key);
+        if (snapshot.key) remember(snapshot.key);
+      }
       paint();
     },
     async request(manual = false) {
       const key = current.key;
       if (disposed || !key || !current.eligible || current.draft || pending || !manual && attempted.has(key)) return;
+      const contextKey = current.contextKey ?? key;
       remember(key);
       const request = new AbortController();
       pending = request;
       try {
         const reply = await io.predict(request.signal);
-        if (!disposed && !request.signal.aborted && current.key === key && !current.draft && reply.text) result = { key, text: reply.text };
+        if (!disposed && !request.signal.aborted && current.key === key && !current.draft && reply.text) results.set(key, { text: reply.text, contextKey });
       } catch {
       } finally {
-        if (pending === request) pending = void 0;
-        paint();
+        if (pending === request) {
+          pending = void 0;
+          paint();
+        }
       }
     },
     dismiss() {
       const shown = visible;
-      if (current.key) remember(current.key);
+      if (current.key) {
+        results.delete(current.key);
+        remember(current.key);
+      }
+      ;
       clear();
       return shown;
     },
     accept() {
-      if (disposed || !visible || !current.eligible || current.draft || !result || result.key !== current.key) return false;
-      const text = result.text;
+      const result = current.key ? results.get(current.key) : void 0;
+      if (disposed || !visible || !current.eligible || current.draft || !result) return false;
       clear();
-      return io.insert(text);
+      if (!io.insert(result.text)) return false;
+      result.accepted = true;
+      return true;
     },
     preview() {
-      return result?.key === current.key ? result?.text : void 0;
+      return current.key ? results.get(current.key)?.text : void 0;
     },
     dispose() {
       disposed = true;
       clear();
+      results.clear();
       attempted.clear();
     }
   };
@@ -387,7 +404,7 @@ function startClient(host) {
     if (scope && !loading && Date.now() - checked >= 2e3) void load();
     if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = void 0;
     const available = !!cache?.enabled && !cache.reason;
-    controller.update({ key: current && cache ? current.key + "/" + cache.version : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
+    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, contextKey: current ? JSON.stringify([scope, current.key]) : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
     if (manual && !loading) {
       const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : void 0;
       manual = void 0;

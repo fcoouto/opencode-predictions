@@ -8,7 +8,7 @@ let source: string
 let guiSource: string
 before(async () => {
   source = (await build({ entryPoints: ["src/adapters/desktop.ts"], bundle: true, write: false, format: "iife", globalName: "PredictionAdapter", platform: "browser" })).outputFiles[0].text
-  guiSource = (await build({ stdin: { contents: 'import gui from "./src/gui.ts"; import { createRoot } from "solid-js"; export const mount = ctx => createRoot(dispose => { const stop = gui.setup(ctx); return () => { stop(); dispose() } })', resolveDir: process.cwd() }, bundle: true, write: false, format: "iife", globalName: "PredictionGUI", platform: "browser" })).outputFiles[0].text
+  guiSource = (await build({ stdin: { contents: 'import gui from "./src/gui.ts"; import { createRoot } from "solid-js"; export { createSignal } from "solid-js"; export const mount = ctx => createRoot(dispose => { const stop = gui.setup(ctx); return () => { stop(); dispose() } })', resolveDir: process.cwd() }, bundle: true, write: false, format: "iife", globalName: "PredictionGUI", platform: "browser" })).outputFiles[0].text
   browser = await chromium.launch()
 })
 after(async () => { await browser?.close() })
@@ -104,6 +104,46 @@ test("Desktop owning-server config and plugin events invalidate suggestions befo
       assert.deepEqual(result, { claimedTab: false, draft: "", listeners: 0 })
     } finally { await page.close() }
   }
+})
+
+test("Desktop navigation and clearing accepted edits restore the original ghost without generating again", async () => {
+  const page = await fixture()
+  try {
+    await page.addScriptTag({ content: guiSource })
+    await page.evaluate(() => {
+      const w = window as any
+      const [current, setCurrent] = w.PredictionGUI.createSignal("first")
+      const commands = new Map<string, any>()
+      w.predictionCalls = 0
+      const data = { on: () => () => {}, session: { get: () => ({ time: { idle: 2 } }), status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } }
+      const server = { id: "fixture", connected: true, data, client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }), predict: async ({ sessionID }: { sessionID: string }) => { w.predictionCalls++; return { text: sessionID === "first" ? "First chat suggestion" : "Second chat suggestion" } }, events: { on: () => () => {} } }) } }
+      const sessions = Object.fromEntries(["first", "second"].map(id => [id, { id, key: "fixture/" + id, directory: "/project", location: { directory: "/project" }, server }]))
+      w.switchChat = setCurrent
+      w.acceptPrediction = () => commands.get("accept").run()
+      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => sessions[current()] }, screen: { current: () => ({ composer: { text: () => w.editor.textContent, focused: () => document.activeElement === w.editor, quotable: () => true, setText: (text: string) => { w.editor.textContent = text }, focus: () => w.editor.focus() } }) }, add: (_registry: unknown, command: any) => commands.set(command.id, command), app: { version: "test" }, toast: { show() {} } })
+    })
+    const ghost = page.locator("[data-opencode-prediction]")
+    await ghost.filter({ hasText: "First chat suggestion" }).waitFor({ state: "visible" })
+    await page.evaluate(() => (window as any).switchChat("second"))
+    await ghost.filter({ hasText: "Second chat suggestion" }).waitFor({ state: "visible" })
+    await page.evaluate(() => (window as any).switchChat("first"))
+    await ghost.filter({ hasText: "First chat suggestion" }).waitFor({ state: "visible" })
+    assert.equal(await page.evaluate(() => (window as any).predictionCalls), 2)
+    assert.equal(await page.evaluate(() => (window as any).acceptPrediction()), undefined)
+    const editor = page.locator('[contenteditable="true"]')
+    assert.equal(await editor.innerText(), "First chat suggestion")
+    await editor.fill("Edited accepted text")
+    assert.equal(await page.evaluate(() => (window as any).acceptPrediction()), false)
+    await ghost.waitFor({ state: "hidden" })
+    await editor.fill("")
+    await ghost.filter({ hasText: "First chat suggestion" }).waitFor({ state: "visible", timeout: 2000 })
+    assert.equal(await editor.textContent(), "")
+    assert.equal(await page.evaluate(() => (window as any).acceptPrediction()), undefined)
+    assert.equal(await editor.innerText(), "First chat suggestion")
+    assert.equal(await page.evaluate(() => (window as any).predictionCalls), 2)
+    assert.equal(await page.evaluate(() => (window as any).submissions), 0)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
 })
 
 test("Desktop error toasts offer persistent status actions and reopen readable status before completion", async () => {
