@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { resolve } from "node:path"
 import { _electron as electron } from "playwright"
 import { build } from "esbuild"
-import { createFixture } from "./fixture.mjs"
+import { createFixture, isPredictionCall } from "./fixture.mjs"
 
 for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ? "automatically" : "via Alt+Shift+P"} shows predictions and Tab edits without sending`, { timeout: 100000 }, async () => {
   await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
@@ -27,7 +27,7 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
         await page.waitForFunction(submittedAt => (window as any).__predictionFixture.predictionReady(submittedAt), submittedAt, { timeout: 15000 })
       } catch (error) { console.error("Desktop readiness:", { submittedAt, snapshot: await page.evaluate(() => (window as any).__predictionFixture.snapshot()) }); throw error }
       assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
-      assert.equal(fixture.calls.filter(call => JSON.stringify(call).includes("Predict the user's next complete prompt")).length, 0)
+      assert.equal(fixture.calls.filter(isPredictionCall).length, 0)
       await editor.press("Alt+Shift+P")
     }
     try {

@@ -6,6 +6,8 @@ import { resolve, join } from "node:path"
 import { OpenCode } from "@opencode/client"
 import { Service } from "@opencode/client/service"
 
+export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
+
 export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}) {
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
@@ -19,7 +21,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
       for await (const chunk of req) raw += chunk
       const input = JSON.parse(raw || "{}")
       calls.push(input)
-      const prediction = JSON.stringify(input).includes("Predict the user's next complete prompt")
+      const prediction = isPredictionCall(input)
       if (prediction && behavior.predictionStatus) {
         res.writeHead(behavior.predictionStatus, { "Content-Type": "application/json" })
         res.end(JSON.stringify({ error: { message: "PRIVATE fixture provider failure", type: "server_error" } }))

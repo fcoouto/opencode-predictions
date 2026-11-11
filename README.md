@@ -1,7 +1,11 @@
 # OpenCode Predictions
 
-Predict the next complete user prompt in **OpenCode Desktop and the interactive CLI**.
+Suggest a useful next user prompt in **OpenCode Desktop and the interactive CLI**.
 Suggestions appear as ghost text after the assistant finishes. **Tab accepts a suggestion for editing; it never submits it.**
+
+The default directive asks for one concise next step toward your current goal,
+rather than guessing your exact next words. It prioritizes explicitly unfinished
+work or delivery gaps without inventing facts or bundling optional tasks.
 
 ## How to install
 
