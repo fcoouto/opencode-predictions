@@ -48,6 +48,7 @@ export default Plugin.define({
     ctx.add(Command, { id: "accept", title: "Accept prompt prediction", bind: "tab", editable: true, hidden: true, run: () => client.accept() ? undefined : false })
     ctx.add(Command, { id: "dismiss", title: "Dismiss prompt prediction", bind: "escape", editable: true, hidden: true, run: () => client.dismiss() ? undefined : false })
     ctx.add(Command, { id: "request", title: "Predict next prompt", group: "Predictions", run: () => client.request() })
+    ctx.add(Command, { id: "request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", editable: true, hidden: true, run: () => client.requestFromShortcut() })
     ctx.add(Command, { id: "status", title: "Prediction status and preview", group: "Predictions", run: () => client.status() })
     return () => { client.dispose(); adapter.dispose() }
   },

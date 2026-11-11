@@ -63,6 +63,7 @@ to inspect matches. If none match, choose another selector or omit `#low`.
 
 - **Tab:** insert the visible suggestion into the editable prompt.
 - **Escape:** dismiss the suggestion.
+- **Alt+Shift+P** (**Option+Shift+P** on macOS): request a prediction after a completed response, with the empty prompt focused. It never inserts or submits text.
 - **Predict next prompt:** command-palette action to request or refresh a suggestion.
 - **Prediction status and preview:** inspect settings, resolved models, errors, and the current suggestion.
 
@@ -71,6 +72,11 @@ is visible. Suggestions do not appear in shell mode, during IME composition, in
 menus/dialogs, or while permission/form input is pending.
 
 Avoid using another plugin that also consumes Tab for ghost text in the same prompt.
+
+The prediction shortcut also works with `"automatic": false`. In the CLI, your
+terminal must forward the combination distinctly, for example through CSI-u/Kitty
+keyboard support. Legacy `ESC P` is ambiguous with a terminal control sequence;
+if the shortcut is not delivered, use **Predict next prompt** from the command palette.
 
 ## Settings
 

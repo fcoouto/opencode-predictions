@@ -38,6 +38,7 @@ export default Plugin.define({
       { id: "predictions.accept", bind: "tab", run: () => client.accept() ? undefined : false },
       { id: "predictions.dismiss", bind: "escape", run: () => client.dismiss() ? undefined : false },
       { id: "predictions.request", title: "Predict next prompt", group: "Predictions", palette: true, run: () => client.request() },
+      { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() },
     ] }))
     const stopConfig = ctx.data.on("config.updated", () => client.invalidate())

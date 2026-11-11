@@ -20,7 +20,7 @@ export function startClient(host: ClientHost) {
   let checked = 0
   let loading: AbortController | undefined
   let disposed = false
-  let manual: string | undefined
+  let manual: { key: string; fromShortcut: boolean } | undefined
   let error = ""
   const controller = createController({
     paint: host.paint,
@@ -56,22 +56,29 @@ export function startClient(host: ClientHost) {
     if (disposed) return
     current = host.state()
     if (current?.key !== scope) {
-      if (manual !== current?.key) manual = undefined
+      if (manual?.key !== current?.key) manual = undefined
       loading?.abort(); loading = undefined; cache = undefined; checked = 0; scope = current?.key
     }
     if (current && !loading && Date.now() - checked >= 2000) void load(current)
+    if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = undefined
     controller.update({ key: current && cache ? current.key + "/" + cache.version : undefined, eligible: !!current?.eligible && !!cache?.enabled, draft: current?.draft ?? "" })
-    if (cache?.enabled && current?.eligible && !current.draft && (cache.automatic || manual === current.key)) {
-      const requested = manual === current.key; manual = undefined
+    if (cache?.enabled && current?.eligible && !current.draft && (cache.automatic || manual?.key === current.key)) {
+      const requested = manual?.key === current.key; manual = undefined
       void controller.request(requested).catch(() => { error = "Prediction service unavailable" })
     }
   }
   const interval = setInterval(tick, 100)
+  const request = (fromShortcut = false) => { const state = host.state(); manual = state ? { key: state.key, fromShortcut } : undefined; host.focus(); tick() }
   tick()
   return {
     accept() { tick(); return controller.accept() },
     dismiss() { tick(); return controller.dismiss() },
-    request() { manual = host.state()?.key; host.focus(); tick() },
+    request,
+    requestFromShortcut() {
+      tick()
+      if (!current?.eligible || current.draft || cache?.enabled === false) return false
+      request(true)
+    },
     async status() {
       const preview = controller.preview()
       const state = host.state()
