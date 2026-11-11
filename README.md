@@ -92,31 +92,22 @@ Only enabled models supporting the requested variant are selected.
 
 ### Model groups
 
-Text defines one group. Both exact and wildcard selectors work:
+Text defines one group. An array defines groups in fixed priority order. Each
+entry can select one exact model or expand a wildcard into several models.
+These are individual lines to use inside your existing plugin `options` object:
 
-- `"models": "opencode/*free*#low"`
-- `"models": "opencode/beam-free#low"`
-
-An array defines groups in fixed priority order. Each entry can select one exact
-model or expand a wildcard into several models. Single-entry arrays such as
-`"models": ["opencode/*free*#low"]` or
-`"models": ["opencode/beam-free#low"]` are also valid.
-
-For two exact-model groups:
-
-```json
-"models": ["opencode/beam-free#low", "opencode/deepseek-v4.1-flash#low"]
-```
+| Use case | Example |
+| --- | --- |
+| Text: one exact model | `"models": "opencode/beam-free#low"` |
+| Text: one wildcard group | `"models": "opencode/*free*#low"` |
+| Array: one exact model | `"models": ["opencode/beam-free#low"]` |
+| Array: one wildcard group | `"models": ["opencode/*free*#low"]` |
+| Array: two groups, free first, paid fallback | `"models": ["opencode/*free*#low", "opencode-go/deepseek*flash*#low"]` |
+| Array: two exact-model groups | `"models": ["opencode/beam-free#low", "opencode/deepseek-v4.1-flash#low"]` |
+| Array: combined free selectors, then paid fallback | `"models": ["opencode/*free*#low, opencode-go/*free*#low", "opencode-go/deepseek*flash*#low"]` |
 
 Use commas **inside an entry** to combine selectors into one independently ranked
-group. For example, try a free-model group before a paid fallback group:
-
-```json
-"models": [
-  "opencode/*free*#low, opencode-go/*free*#low",
-  "opencode-go/deepseek*flash*#low"
-]
-```
+group, as in the last example.
 
 Every request starts with the first group and skips blocked or cooling candidates.
 Only after a group's eligible candidates fail or none are available does the next
