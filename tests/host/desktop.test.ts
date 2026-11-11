@@ -18,6 +18,7 @@ test("real isolated Desktop shows predictions and Tab edits without sending", { 
     const editor = page.locator('[data-component="composer-editor"][contenteditable="true"]')
     await editor.waitFor({ state: "visible", timeout: 20000 })
     await page.waitForFunction(() => document.querySelector('[data-component="composer-editor"]')?.textContent === "Fix the assertion.")
+    await page.getByRole("button", { name: "Fixture / Fixture Flash", exact: true }).waitFor({ state: "visible" })
     await editor.press("Enter")
     try {
       await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 15000 })
