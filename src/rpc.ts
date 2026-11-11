@@ -12,7 +12,7 @@ export const Predictions = Rpc.define({
     predict: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 } },
+        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" } },
         required: ["sessionID", "completion", "requestID"], additionalProperties: false,
       },
       output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice }, additionalProperties: false },

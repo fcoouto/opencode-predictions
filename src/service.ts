@@ -2,9 +2,9 @@ import { parseOptions, type ModelRef } from "./options.ts"
 import { buildPrompt, collectTurns, parseSuggestion } from "./predict.ts"
 import { resolveModels, type Candidate, type CatalogModel } from "./models.ts"
 import { statusNotice, reasonNotice, pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
-export type Request = { sessionID: string; completion: number; requestID?: string }
+export type Request = { sessionID: string; completion: number; requestID?: string; manual?: boolean }
 export type Reply = { text?: string; reason?: string; notice?: Notice }
-export type Session = { id: string; parentID?: string; outcome?: string; time: { idle?: number; busy?: number }; location: { directory: string } }
+export type Session = { id: string; parentID?: string; outcome?: string; time: { idle?: number; busy?: number; updated?: number }; location: { directory: string } }
 export type ServiceAPI = {
   session(id: string, signal: AbortSignal): Promise<Session>
   context(id: string, signal: AbortSignal): Promise<readonly unknown[]>
@@ -134,7 +134,8 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) }
     let configured: Candidate[] = []
     const check = (session: Session): string | undefined => {
-      if (session.id !== request.sessionID || session.time.idle !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale"
+      const completion = session.time.idle || (request.manual === true && !session.time.busy ? session.time.updated : undefined)
+      if (session.id !== request.sessionID || completion !== request.completion || (session.time.busy ?? 0) > request.completion) return "stale"
       if (session.location.directory !== directory) return "wrong_location"
       if (session.parentID || session.outcome === "interrupted") return "context_unavailable"
     }
@@ -149,8 +150,18 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         if (!configured.length) return { reason: "model_unavailable" }
         parent.throwIfAborted()
         if (configured.every(model => !!skip(model))) return { reason: "no_models_eligible" }
-        const messages = await api.context(request.sessionID, parent)
-        const records = messages.map(value => value && typeof value === "object" ? value as { type?: string; status?: string; outcome?: string; time?: { completed?: unknown } } : {})
+        const messages = [...await api.context(request.sessionID, parent)]
+        const records = messages.map(value => value && typeof value === "object" ? value as { type?: string; status?: string; outcome?: string; finish?: string; content?: unknown; time?: { completed?: unknown } } : {})
+        const last = records.findLast(value => value.type === "user" || value.type === "assistant" || value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
+        if (request.manual === true && last?.type === "assistant" && last.time?.completed !== undefined) {
+          const content = Array.isArray(last.content) ? last.content : []
+          const start = records.findLastIndex(value => value.type === "user" || value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
+          const pending = records.slice(start + 1).some(value => Array.isArray(value.content) && value.content.some(part => part?.type === "tool" && !["completed", "error"].includes(part.state?.status)))
+          if (last.finish === "tool-calls" || pending || !content.some(part => part?.type === "text" && typeof part.text === "string" && part.text.trim())) return { reason: "context_unavailable" }
+          // Historical completed turns may lack an idle record; close only this local copy.
+          const boundary = { type: "idle", outcome: session.outcome }
+          messages.push(boundary); records.push(boundary)
+        }
         const idle = records.findLastIndex(value => value.type === "idle")
         const start = records.slice(0, idle).findLastIndex(value => value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
         const response = records.slice(start + 1, idle).findLast(value => value.type === "assistant")

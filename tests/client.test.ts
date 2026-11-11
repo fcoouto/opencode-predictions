@@ -43,6 +43,43 @@ test("manual-only client makes no generation calls until requested", async () =>
   } finally { client.dispose() }
 })
 
+test("shortcut and palette requests carry manual intent while automatic-ineligible history never auto-generates", async () => {
+  for (const automaticEligible of [true, false]) {
+    const state: ClientState = { key: "old-session/2", sessionID: "ses_old", completion: 2, eligible: true, draft: "", automaticEligible }
+    const flags: (boolean | undefined)[] = []
+    const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+    const client = startClient({ state: () => state, status: async () => status, predict: async (_state, _id, _signal, _notice, manual) => { flags.push(manual); return { text: "Run tests." } }, paint: text => !!text, insert: () => true, focus() {}, show() {} })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      assert.deepEqual(flags, automaticEligible ? [false] : [])
+      assert.notEqual(client.requestFromShortcut(), false)
+      await new Promise(resolve => setImmediate(resolve))
+      assert.deepEqual(flags, automaticEligible ? [false, true] : [true])
+      client.request()
+      await new Promise(resolve => setImmediate(resolve))
+      assert.deepEqual(flags, automaticEligible ? [false, true, true] : [true, true])
+    } finally { client.dispose() }
+  }
+})
+
+test("manual historical replies stay hidden when the live session changes before the next tick", async () => {
+  let state: ClientState = { key: "old/2", sessionID: "ses_old", completion: 2, eligible: true, draft: "", automaticEligible: false }
+  const painted: string[] = []
+  let finish!: (reply: { text: string }) => void
+  let calls = 0
+  const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  const client = startClient({ state: () => state, status: async () => status, predict: async (_state, _id, _signal, _notice, manual) => { assert.equal(manual, true); calls++; return new Promise(resolve => { finish = resolve }) }, paint: text => { if (text) painted.push(text); return !!text }, insert: () => true, focus() {}, show() {} })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut()
+    state = { ...state, key: "other/3", sessionID: "ses_other", completion: 3 }
+    finish({ text: "Private old-chat suggestion" })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(painted, [])
+    assert.equal(calls, 1)
+  } finally { client.dispose() }
+})
+
 test("manual shortcut falls through outside an enabled empty eligible session", async () => {
   let state: ClientState | undefined = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
   const status: Status = { enabled: true, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }

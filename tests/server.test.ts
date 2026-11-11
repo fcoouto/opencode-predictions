@@ -61,6 +61,137 @@ test("trailing model-selection metadata does not discard an identifiable complet
   assert.deepEqual(await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal), { text: "Run the tests." })
 })
 
+test("only explicit manual requests can use yesterday's completed tail without an idle record", async () => {
+  const yesterday = Date.now() - 86400000
+  for (const manual of [undefined, false, true]) {
+    const { api, calls } = fixture()
+    api.session = async () => ({ id: "ses_test", time: { idle: yesterday, busy: yesterday - 1 }, location: { directory: "/project" } })
+    const history = Object.freeze([
+      { type: "user", text: "Fix the test" },
+      { type: "assistant", time: { completed: yesterday }, content: [{ type: "reasoning", text: "PRIVATE" }, { type: "text", text: "Fixed the assertion." }] },
+      { type: "model-switched", model: { providerID: "local", id: "model" } },
+    ])
+    api.context = async () => history
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: yesterday, ...(manual === undefined ? {} : { manual }) }, new AbortController().signal)
+    assert.deepEqual(reply, manual ? { text: "Run the tests." } : { reason: "context_unavailable" })
+    assert.equal(calls.length, manual ? 1 : 0)
+    assert.equal(history.length, 3)
+    if (manual) assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+  }
+})
+
+test("manual history without an idle timestamp requires a matching updated revision and no busy execution", async () => {
+  for (const entry of [
+    { manual: true, updated: 2, directory: "/project", want: "suggestion" },
+    { manual: false, updated: 2, directory: "/project", want: "stale" },
+    { manual: true, updated: 3, directory: "/project", want: "stale" },
+    { manual: true, updated: 2, busy: 1, directory: "/project", want: "stale" },
+    { manual: true, updated: 2, directory: "/other", want: "wrong_location" },
+  ]) {
+    const { api, calls } = fixture()
+    const context = api.context
+    api.context = async (id, signal) => (await context(id, signal)).slice(0, -1)
+    api.session = async () => ({ id: "ses_test", time: { updated: entry.updated, busy: entry.busy }, location: { directory: entry.directory } })
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: entry.manual }, new AbortController().signal)
+    assert.equal(reply.text ? "suggestion" : reply.reason, entry.want)
+    assert.equal(calls.length, entry.want === "suggestion" ? 1 : 0)
+  }
+})
+
+test("manual history never falls back past an unusable or unfinished latest turn", async () => {
+  const tails = [
+    [{ type: "user", text: "Unanswered current prompt" }],
+    [{ type: "user", text: "New task" }, { type: "assistant", time: {}, content: [{ type: "text", text: "Still streaming" }] }],
+    [{ type: "user", text: "New task" }, { type: "assistant", time: { completed: 2 }, content: [{ type: "text", text: " " }] }],
+    [{ type: "user", text: "New task" }, { type: "assistant", time: { completed: 2 }, content: [{ type: "tool", output: "PRIVATE" }] }],
+    [{ type: "user", text: "New task" }, { type: "assistant", time: { completed: 2 }, content: [{ type: "reasoning", text: "PRIVATE" }] }],
+    [{ type: "compaction", status: "completed", summary: "PRIVATE" }],
+    [{ type: "user", text: "New task" }, { type: "assistant", time: { completed: 2 }, content: [{ type: "text", text: "Partial response" }] }, { type: "idle", outcome: "interrupted" }],
+  ]
+  for (const tail of tails) {
+    const { api, calls } = fixture()
+    const context = api.context
+    api.context = async (id, signal) => [...await context(id, signal), ...tail]
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal)
+    assert.equal(reply.reason, "context_unavailable")
+    assert.equal(calls.length, 0)
+  }
+})
+
+test("manual fallback cannot borrow earlier text when consecutive historical turns lack idle markers", async () => {
+  for (const content of [[], [{ type: "text", text: " " }], [{ type: "tool", state: { status: "completed" } }], [{ type: "reasoning", text: "PRIVATE" }]]) {
+    const { api, calls } = fixture()
+    const context = api.context
+    api.context = async (id, signal) => [...(await context(id, signal)).slice(0, -1), { type: "user", text: "A new task without a usable answer" }, { type: "assistant", time: { completed: 2 }, content }]
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal)
+    assert.equal(reply.reason, "context_unavailable")
+    assert.equal(calls.length, 0)
+  }
+})
+
+test("manual fallback requires settled tools and a finished latest assistant response", async () => {
+  const states = [
+    { status: "streaming", input: "{" },
+    { status: "running", input: {}, metadata: {} },
+    { status: "completed", input: {}, content: [{ type: "text", text: "PRIVATE tool output" }] },
+    { status: "error", input: {}, error: { message: "PRIVATE tool failure" } },
+  ]
+  for (const state of states) for (const finish of [undefined, "stop", "tool-calls"]) {
+    const { api, calls } = fixture()
+    api.session = async () => ({ id: "ses_test", time: { updated: 2 }, location: { directory: "/project" } })
+    api.context = async () => [
+      { type: "user", text: "Inspect the project" },
+      { type: "assistant", time: { completed: 2 }, finish, content: [{ type: "text", text: "Inspected the project." }, { type: "tool", id: "tool_read", name: "read", time: { created: 1 }, state }] },
+    ]
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal)
+    const complete = (state.status === "completed" || state.status === "error") && finish !== "tool-calls"
+    assert.deepEqual(reply, complete ? { text: "Run the tests." } : { reason: "context_unavailable" })
+    assert.equal(calls.length, complete ? 1 : 0)
+    if (complete) assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+  }
+})
+
+test("manual fallback rejects unfinished tools in earlier assistant steps of the same unmarked turn", async () => {
+  for (const status of ["streaming", "running"]) {
+    const { api, calls } = fixture()
+    api.session = async () => ({ id: "ses_test", time: { updated: 2 }, location: { directory: "/project" } })
+    api.context = async () => [
+      { type: "user", text: "Inspect the project" },
+      { type: "assistant", time: { completed: 1 }, finish: "tool-calls", content: [{ type: "tool", id: "tool_read", name: "read", time: { created: 1 }, state: status === "streaming" ? { status, input: "{" } : { status, input: {}, metadata: {} } }] },
+      { type: "assistant", time: { completed: 2 }, finish: "stop", content: [{ type: "text", text: "The tool is still running." }] },
+    ]
+    assert.equal((await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal)).reason, "context_unavailable")
+    assert.equal(calls.length, 0)
+  }
+})
+
+test("manual history ignores failed compaction without mutating or including its private summary", async () => {
+  const { api, calls } = fixture()
+  const context = api.context
+  api.context = async (id, signal) => [...(await context(id, signal)).slice(0, -1), { type: "compaction", status: "failed", summary: "PRIVATE" }]
+  assert.deepEqual(await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal), { text: "Run the tests." })
+  assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+})
+
+test("manual fallback retains busy, interrupted, parent-session, and changed-revision guards", async () => {
+  for (const shape of [{ busy: 3 }, { outcome: "interrupted" }, { parentID: "ses_parent" }]) {
+    const { api, calls } = fixture()
+    api.session = async () => ({ id: "ses_test", time: { idle: 2, busy: shape.busy }, outcome: shape.outcome, parentID: shape.parentID, location: { directory: "/project" } })
+    const reply = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal)
+    assert.equal(reply.reason, shape.busy ? "stale" : "context_unavailable")
+    assert.equal(calls.length, 0)
+  }
+  const { api } = fixture()
+  let updated = 2
+  const context = api.context
+  api.context = async (id, signal) => (await context(id, signal)).slice(0, -1)
+  api.session = async () => ({ id: "ses_test", time: { updated }, location: { directory: "/project" } })
+  let generations = 0
+  api.generate = async () => { generations++; updated++; return '{"prompt":"Stale prediction"}' }
+  assert.equal((await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual: true }, new AbortController().signal)).reason, "stale")
+  assert.equal(generations, 1)
+})
+
 test("an idle turn without a completed current assistant response cannot reuse older conclusions", async () => {
   const { api, calls } = fixture()
   const context = api.context

@@ -80,6 +80,12 @@ reload or restart.
 
 Avoid using another plugin that also consumes Tab for ghost text in the same prompt.
 
+Manual requests also work with older chats: the shortcut and command-palette action
+use the latest completed turn with usable conversation text, even when historical
+completion markers are missing. They still require an idle chat and empty, eligible
+input; an unfinished or interrupted latest turn cannot reuse an older answer.
+Automatic prediction requirements are unchanged.
+
 The prediction shortcut also works with `"automatic": false`. In the CLI, your
 terminal must forward the combination distinctly, for example through CSI-u/Kitty
 keyboard support. Legacy `ESC P` is ambiguous with a terminal control sequence;
