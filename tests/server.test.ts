@@ -540,3 +540,243 @@ test("request-specific thinking-budget errors do not impose model-wide budget co
     assert.deepEqual(service.status().candidates?.map(model => model.retryAt), [61000, 61000])
   }
 })
+
+test("groups keep free-first precedence after paid success and cooldown recovery", async t => {
+  let now = 1000
+  t.mock.method(Date, "now", () => now)
+  const { api } = fixture()
+  const attempted: string[] = []
+  const notices: string[] = []
+  api.models = async () => ["free/a", "free/b", "paid/c", "paid/d"].map(key => { const [providerID, id] = key.split("/"); return { providerID, id, enabled: true, variants: [] } })
+  let recovered = false
+  api.generate = async model => {
+    const id = model.providerID + "/" + model.id
+    attempted.push(id)
+    if (id !== "paid/d" && !(recovered && id === "free/a")) throw Object.assign(new Error("PRIVATE"), { status: 503 })
+    return '{"prompt":"Run tests."}'
+  }
+  api.notice = message => { notices.push(message) }
+  const service = createService(api, { models: ["free/*", "paid/*"] }, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  assert.deepEqual(await service.predict(request, new AbortController().signal), { text: "Run tests." })
+  assert.deepEqual(attempted, ["free/a", "free/b", "paid/c", "paid/d"])
+  const ids = () => service.status().groups?.map(group => group.candidates.map(model => model.id))
+  assert.deepEqual(ids(), [["a", "b"], ["d", "c"]])
+  await service.predict(request, new AbortController().signal)
+  assert.equal(attempted.at(-1), "paid/d")
+  now = 61000
+  recovered = true
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(ids(), [["a", "b"], ["d", "c"]])
+  await service.predict(request, new AbortController().signal)
+  assert.equal(attempted.at(-1), "free/a")
+  assert.deepEqual(service.status().candidates?.map(model => model.id), ["a", "b", "d", "c"])
+  assert.deepEqual(notices, [])
+})
+
+test("singleton exact and wildcard groups work and null stops all later groups", async () => {
+  for (const models of [["local/model#high"], ["local/*#high"], ["local/model#high", "paid/other"]]) {
+    const { api, calls } = fixture()
+    api.generate = async (model, prompt) => { calls.push({ model, prompt }); return '{"prompt":null}' }
+    const service = createService(api, { models }, "/project")
+    assert.deepEqual(await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal), { reason: "no_suggestion" })
+    assert.equal(calls.length, 1)
+    assert.deepEqual(calls[0].model, { providerID: "local", id: "model", variant: "high" })
+    assert.equal(service.status().groups?.length, models.length)
+    assert.equal(service.status().groups?.[0].selectors, models[0])
+    assert.equal(service.status().models, models.join(", "))
+  }
+})
+
+test("overlapping candidates belong to earliest group without repeated attempts", async () => {
+  const { api } = fixture()
+  const attempted: string[] = []
+  api.models = async () => ["a", "b", "c"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  api.generate = async model => { attempted.push(model.id); throw new Error("PRIVATE") }
+  const service = createService(api, { models: ["local/a, local/b", "local/*", "local/c", "local/missing"] }, "/project")
+  await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  assert.deepEqual(attempted, ["a", "b", "c"])
+  assert.deepEqual(service.status().groups?.map(group => group.candidates.map(model => model.id)), [["a", "b"], ["c"], [], []])
+})
+
+test("model-wide health crosses groups and variants but candidate failures do not", async () => {
+  for (const status of [429, 403, 503]) {
+    const { api } = fixture()
+    const attempted: string[] = []
+    api.models = async () => ["first", "second"].map(providerID => ({ providerID, id: "model", enabled: true, variants: [{ id: "low" }, { id: "high" }] }))
+    api.generate = async model => {
+      attempted.push(model.providerID + "#" + model.variant)
+      if (model.providerID === "first" && model.variant === "low") throw Object.assign(new Error("PRIVATE"), { status })
+      return '{"prompt":null}'
+    }
+    const service = createService(api, { models: ["first/model#low", "first/model#high, second/model#low"] }, "/project")
+    assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "no_suggestion")
+    assert.deepEqual(attempted, status === 503 ? ["first#low", "first#high"] : ["first#low", "second#low"])
+    const high = service.status().groups?.[1].candidates.find(model => model.providerID === "first")
+    assert.equal(high?.state, status === 503 ? "ready" : status === 403 ? "blocked" : "cooling")
+  }
+})
+
+test("unmatched and blocked groups fall through without repeated individual notices", async () => {
+  const { api } = fixture()
+  const attempted: string[] = []
+  const notices: string[] = []
+  api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  api.generate = async model => { attempted.push(model.id); if (model.id === "a") throw Object.assign(new Error("PRIVATE"), { status: 403 }); return '{"prompt":null}' }
+  api.notice = message => { notices.push(message) }
+  const service = createService(api, { models: ["local/missing", "local/a", "local/b"] }, "/project")
+  for (let i = 0; i < 2; i++) assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "no_suggestion")
+  assert.deepEqual(attempted, ["a", "b", "b"])
+  assert.deepEqual(notices, [])
+})
+
+test("grouped exhaustion preserves single and multiple configured notice wording", async () => {
+  for (const [models, expected] of [
+    [["local/model"], "Model [model] failed with message: Model request failed."],
+    [["local/model", "local/model"], "Model [model] failed with message: Model request failed."],
+    [["local/missing", "local/model"], "No model worked at this time. Activate `debug` mode for details."],
+    [["local/missing"], "Model [local/missing] failed with message: No configured model is available."],
+  ] as const) {
+    const { api } = fixture()
+    const notices: string[] = []
+    api.generate = async () => { throw new Error("PRIVATE") }
+    api.notice = message => { notices.push(message) }
+    const service = createService(api, { models }, "/project")
+    for (let i = 0; i < 2; i++) await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    assert.deepEqual(notices, [expected, expected])
+  }
+})
+
+test("each group preserves learned order through catalog growth and pruning", async t => {
+  let now = 1000
+  t.mock.method(Date, "now", () => now)
+  const { api } = fixture()
+  let ids = ["free/b", "paid/c", "paid/d"]
+  api.models = async () => ids.map(key => { const [providerID, id] = key.split("/"); return { providerID, id, enabled: true, variants: [] } })
+  api.generate = async model => { if (model.id !== "d") throw new Error("PRIVATE"); return '{"prompt":null}' }
+  const service = createService(api, { models: ["free/*", "paid/*"] }, "/project")
+  await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  now = 61000
+  ids = ["free/a", "free/b", "paid/c", "paid/d", "paid/e"]
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.map(group => group.candidates.map(model => model.id)), [["a", "b"], ["d", "e", "c"]])
+  ids = ["free/a", "paid/c", "paid/e"]
+  await service.inspect(new AbortController().signal)
+  ids.push("free/b", "paid/d")
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.map(group => group.candidates.map(model => model.id)), [["a", "b"], ["d", "e", "c"]])
+})
+
+test("catalog ownership transfer resets group rank while retaining shared health", async t => {
+  let now = 1000
+  t.mock.method(Date, "now", () => now)
+  const { api } = fixture()
+  let transferred = false
+  api.models = async () => ["a", "x", "y", "z"].map(id => ({ providerID: "local", id, name: id === "a" || id === "z" || (id === "x" && transferred) ? "Free " + id : "Paid " + id, enabled: true, variants: [] }))
+  api.generate = async model => { if (model.id !== "y") throw new Error("PRIVATE"); return '{"prompt":null}' }
+  const service = createService(api, { models: ["local/Free*", "local/*"] }, "/project")
+  await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  transferred = true
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.map(group => group.candidates.map(model => model.id)), [["x", "a", "z"], ["y"]])
+  assert.equal(service.status().groups?.[0].candidates[0].state, "cooling")
+  now = 61000
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.[0].candidates.map(model => model.id), ["x", "a", "z"])
+  assert.equal(service.status().groups?.[0].candidates[0].state, "ready")
+})
+
+test("older concurrent group success cannot erase newer shared failure", async () => {
+  const { api } = fixture()
+  let finish!: (output: string) => void
+  const attempted: string[] = []
+  api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  api.generate = async model => {
+    attempted.push(model.id)
+    if (attempted.length === 1) return new Promise(resolve => { finish = resolve })
+    if (model.id === "a") throw Object.assign(new Error("PRIVATE"), { status: 403 })
+    return '{"prompt":null}'
+  }
+  const service = createService(api, { models: ["local/a", "local/b"] }, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  const older = service.predict(request, new AbortController().signal)
+  await new Promise(resolve => setImmediate(resolve))
+  await service.predict(request, new AbortController().signal)
+  await service.inspect(new AbortController().signal)
+  assert.equal(typeof finish, "function", "grouped prediction must start generation")
+  finish('{"prompt":"Run tests."}')
+  await older
+  assert.deepEqual(attempted, ["a", "a", "b"])
+  assert.equal(service.status().groups?.[0].candidates[0].state, "blocked")
+  assert.deepEqual(service.status().groups?.map(group => group.candidates.map(model => model.id)), [["a"], ["b"]])
+})
+
+test("group fallback rechecks concurrent health before calling later groups", async () => {
+  const { api } = fixture()
+  let failFirst!: (error: Error) => void
+  const attempted: string[] = []
+  api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  api.generate = async model => {
+    attempted.push(model.id)
+    if (attempted.length === 1) return new Promise((_resolve, reject) => { failFirst = reject })
+    throw Object.assign(new Error("PRIVATE"), { status: 403 })
+  }
+  const service = createService(api, { models: ["local/a", "local/b"] }, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  const older = service.predict(request, new AbortController().signal)
+  await new Promise(resolve => setImmediate(resolve))
+  await service.predict(request, new AbortController().signal)
+  assert.equal(typeof failFirst, "function", "grouped prediction must start generation")
+  failFirst(new Error("Temporary failure"))
+  await older
+  assert.deepEqual(attempted, ["a", "a", "b"])
+  assert.deepEqual(service.status().groups?.map(group => group.candidates[0].state), ["blocked", "blocked"])
+})
+
+test("cancellation and stale failures at group boundary never call paid fallback", async () => {
+  for (const cancel of [false, true]) {
+    const { api, advance } = fixture()
+    const controller = new AbortController()
+    const attempted: string[] = []
+    const notices: string[] = []
+    api.models = async () => ["free", "paid"].map(providerID => ({ providerID, id: "model", enabled: true, variants: [] }))
+    api.generate = async model => { attempted.push(model.providerID); if (cancel) controller.abort(); else advance(); throw new Error("PRIVATE") }
+    api.notice = message => { notices.push(message) }
+    const service = createService(api, { models: ["free/model", "paid/model"], debug: true }, "/project")
+    assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, controller.signal)).reason, cancel ? "cancelled" : "stale")
+    assert.deepEqual(attempted, ["free"])
+    assert.deepEqual(notices, [])
+    assert.deepEqual(service.status().groups?.map(group => group.candidates[0].state), ["ready", "ready"])
+  }
+})
+
+test("removing a grouped candidate prunes its health before it reappears", async () => {
+  const { api } = fixture()
+  let ids = ["a", "b"]
+  api.models = async () => ids.map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  api.generate = async model => { if (model.id === "a") throw Object.assign(new Error("PRIVATE"), { status: 403 }); return '{"prompt":null}' }
+  const service = createService(api, { models: ["local/a", "local/b"] }, "/project")
+  await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  assert.equal(service.status().groups?.[0].candidates[0].state, "blocked")
+  ids = ["b"]
+  await service.inspect(new AbortController().signal)
+  assert.deepEqual(service.status().groups?.[0].candidates, [])
+  ids = ["a", "b"]
+  await service.inspect(new AbortController().signal)
+  assert.equal(service.status().groups?.[0].candidates[0].state, "ready")
+})
+
+test("debug progress crosses group boundaries without losing safe details", async () => {
+  const { api } = fixture()
+  const notices: string[] = []
+  api.models = async () => ["free", "paid"].map(providerID => ({ providerID, id: "model", name: providerID, enabled: true, variants: [] }))
+  api.generate = async () => { throw Object.assign(new Error("PRIVATE"), { status: 503, reason: "overloaded" }) }
+  api.notice = message => { notices.push(message) }
+  const service = createService(api, { models: ["free/model", "paid/model"], debug: true }, "/project")
+  await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  assert.equal(notices.length, 3)
+  assert.match(notices[0], /failed with \[free\], moving on with \[paid\]/)
+  assert.match(notices[1], /HTTP 503: Provider is overloaded/)
+  assert.equal(notices[2], "No model worked at this time.")
+  assert.equal(notices.join().includes("PRIVATE"), false)
+})
