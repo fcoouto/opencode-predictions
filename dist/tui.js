@@ -157,31 +157,31 @@ function startClient(host) {
     }
   });
   const load = async (state) => {
-    const request = new AbortController();
-    loading = request;
+    const request2 = new AbortController();
+    loading = request2;
     try {
-      const value = await host.status(state, request.signal);
-      if (!disposed && !request.signal.aborted && host.state()?.key === state.key) {
+      const value = await host.status(state, request2.signal);
+      if (!disposed && !request2.signal.aborted && host.state()?.key === state.key) {
         cache = value;
         error = value.reason ?? "";
         checked = Date.now();
       }
     } catch {
-      if (!request.signal.aborted) {
+      if (!request2.signal.aborted) {
         cache = void 0;
         error = "Prediction service unavailable";
         checked = Date.now();
       }
     } finally {
-      if (loading === request) loading = void 0;
-      if (!disposed && !request.signal.aborted) tick();
+      if (loading === request2) loading = void 0;
+      if (!disposed && !request2.signal.aborted) tick();
     }
   };
   const tick = () => {
     if (disposed) return;
     current = host.state();
     if (current?.key !== scope) {
-      if (manual !== current?.key) manual = void 0;
+      if (manual?.key !== current?.key) manual = void 0;
       loading?.abort();
       loading = void 0;
       cache = void 0;
@@ -189,9 +189,10 @@ function startClient(host) {
       scope = current?.key;
     }
     if (current && !loading && Date.now() - checked >= 2e3) void load(current);
+    if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = void 0;
     controller.update({ key: current && cache ? current.key + "/" + cache.version : void 0, eligible: !!current?.eligible && !!cache?.enabled, draft: current?.draft ?? "" });
-    if (cache?.enabled && current?.eligible && !current.draft && (cache.automatic || manual === current.key)) {
-      const requested = manual === current.key;
+    if (cache?.enabled && current?.eligible && !current.draft && (cache.automatic || manual?.key === current.key)) {
+      const requested = manual?.key === current.key;
       manual = void 0;
       void controller.request(requested).catch(() => {
         error = "Prediction service unavailable";
@@ -199,6 +200,12 @@ function startClient(host) {
     }
   };
   const interval = setInterval(tick, 100);
+  const request = (fromShortcut = false) => {
+    const state = host.state();
+    manual = state ? { key: state.key, fromShortcut } : void 0;
+    host.focus();
+    tick();
+  };
   tick();
   return {
     accept() {
@@ -209,10 +216,11 @@ function startClient(host) {
       tick();
       return controller.dismiss();
     },
-    request() {
-      manual = host.state()?.key;
-      host.focus();
+    request,
+    requestFromShortcut() {
       tick();
+      if (!current?.eligible || current.draft || cache?.enabled === false) return false;
+      request(true);
     },
     async status() {
       const preview = controller.preview();
@@ -312,6 +320,7 @@ var tui_default = Plugin.define({
       { id: "predictions.accept", bind: "tab", run: () => client.accept() ? void 0 : false },
       { id: "predictions.dismiss", bind: "escape", run: () => client.dismiss() ? void 0 : false },
       { id: "predictions.request", title: "Predict next prompt", group: "Predictions", palette: true, run: () => client.request() },
+      { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() }
     ] }));
     const stopConfig = ctx.data.on("config.updated", () => client.invalidate());
