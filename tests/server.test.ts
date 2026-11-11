@@ -851,3 +851,32 @@ test("model-wide failures retain health but do not demote transferred sibling va
   assert.deepEqual(service.status().groups?.[1].candidates.map(model => model.id), ["model", "y"])
   assert.equal(service.status().groups?.[1].candidates[0].state, "blocked")
 })
+
+test("nested groups preserve independent ranking and free-first recovery without queue changes", async t => {
+  let now = 1000
+  t.mock.method(Date, "now", () => now)
+  const { api } = fixture()
+  const attempted: string[] = []
+  const notices: string[] = []
+  let freeRecovered = false
+  api.models = async () => ["a", "b", "c", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+  api.generate = async model => {
+    attempted.push(model.id)
+    if ((model.id === "a" || model.id === "b") && !freeRecovered || model.id === "c") throw Object.assign(new Error("PRIVATE"), { status: 503 })
+    return '{"prompt":null}'
+  }
+  api.notice = message => { notices.push(message) }
+  const service = createService(api, { models: [["local/a#low", "local/b#low"], ["local/c#low", "local/d#low"]] }, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  assert.equal((await service.predict(request, new AbortController().signal)).reason, "no_suggestion")
+  assert.deepEqual(attempted, ["a", "b", "c", "d"])
+  assert.deepEqual(service.status().groups?.map(group => group.candidates.map(model => model.id)), [["a", "b"], ["d", "c"]])
+  assert.deepEqual(service.status().groups?.map(group => group.selectors), ["local/a#low, local/b#low", "local/c#low, local/d#low"])
+  await service.predict(request, new AbortController().signal)
+  assert.deepEqual(attempted, ["a", "b", "c", "d", "d"])
+  freeRecovered = true
+  now = 61000
+  await service.predict(request, new AbortController().signal)
+  assert.equal(attempted.at(-1), "a")
+  assert.deepEqual(notices, [])
+})

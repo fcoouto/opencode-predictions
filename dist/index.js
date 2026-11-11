@@ -46,13 +46,15 @@ function parseOptions(input = {}) {
     const groups = typeof raw.models === "string" ? [raw.models] : raw.models;
     if (!Array.isArray(groups) || !groups.length) return invalid("models must be selector text or a nonempty array of selector groups");
     for (const group of groups) {
-      if (typeof group !== "string") return invalid("each models group must be selector text");
-      for (const entry of group.split(",")) {
+      const selectors = typeof group === "string" ? [group] : group;
+      if (!Array.isArray(selectors) || !selectors.length || selectors.some((selector) => typeof selector !== "string")) return invalid("each models group must be selector text or a nonempty array of selector text");
+      const text = selectors.join(", ");
+      for (const entry of text.split(",")) {
         const [selector, variant, extra] = entry.trim().split("#");
         const slash = selector.indexOf("/");
         if (slash <= 0 || !selector.slice(slash + 1).trim() || /\s/.test(selector.slice(0, slash)) || variant === "" || variant !== void 0 && /\s/.test(variant) || extra !== void 0) return invalid("models must contain provider/model-pattern selectors with optional #variant");
       }
-      models.push(group.trim());
+      models.push(text.trim());
     }
   }
   return { ok: true, value: { enabled: raw.enabled ?? true, ...raw.models === void 0 ? {} : { models }, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false }, warnings };

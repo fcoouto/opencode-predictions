@@ -93,7 +93,8 @@ Only enabled models supporting the requested variant are selected.
 ### Model groups
 
 Text defines one group. An array defines groups in fixed priority order. Each
-entry can select one exact model or expand a wildcard into several models.
+entry can be selector text or an inner array of selector strings. Selectors can
+name one exact model or expand a wildcard into several models.
 These are individual lines to use inside your existing plugin `options` object:
 
 | Use case | Example |
@@ -105,9 +106,22 @@ These are individual lines to use inside your existing plugin `options` object:
 | Array: two groups, free first, paid fallback | `"models": ["opencode/*free*#low", "opencode-go/deepseek*flash*#low"]` |
 | Array: two exact-model groups | `"models": ["opencode/beam-free#low", "opencode/deepseek-v4.1-flash#low"]` |
 | Array: combined free selectors, then paid fallback | `"models": ["opencode/*free*#low, opencode-go/*free*#low", "opencode-go/deepseek*flash*#low"]` |
+| Nested arrays: explicit free and paid groups | `"models": [["opencode/deepseek-*-flash-free#low", "opencode/glm-*-free#low", "opencode/nemotron-*-free#low"], ["opencode-go/deepseek-*-flash#low", "opencode-go/glm-*#low"]]` |
 
 Use commas **inside an entry** to combine selectors into one independently ranked
-group, as in the last example.
+group, or use an inner array to list its selectors explicitly. Both forms have the
+same behavior. For example, these explicit free and paid groups keep independent
+rankings:
+
+```json
+"models": [
+  ["opencode/deepseek-*-flash-free#low", "opencode/glm-*-free#low", "opencode/nemotron-*-free#low"],
+  ["opencode-go/deepseek-*-flash#low", "opencode-go/glm-*#low"]
+]
+```
+
+Inner arrays do not create more priority levels: they combine selectors within a
+single group. Text entries and inner arrays may be mixed in the outer array.
 
 Every request starts with the first group and skips blocked or cooling candidates.
 Only after a group's eligible candidates fail or none are available does the next
@@ -123,7 +137,8 @@ queue then learns from outcomes. Legacy comma-separated text remains one group.
 Overlapping provider/model/variant candidates belong to the earliest matching
 group and are attempted at most once per request. Different reasoning variants
 remain distinct candidates, with shared model-wide restrictions as described below.
-Empty arrays, empty groups, and non-string entries are rejected.
+Empty arrays, empty groups, non-string selectors, and nesting deeper than these
+group arrays are rejected.
 
 **Prediction status and preview** includes ordered `groups` and each group's
 ranked candidates. Existing flat `models` and `candidates` fields remain available.
