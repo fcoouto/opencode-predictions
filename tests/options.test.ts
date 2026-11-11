@@ -72,7 +72,24 @@ test("array entries retain group boundaries even when each group contains severa
 })
 
 test("invalid model arrays reject the entire configuration", () => {
-  for (const models of [[], [""], ["  "], ["local/a", 7], [["local/a"]], null, ["local/a", null], ["local/a", "paid/"], ["local/a,"], [",local/a"], ["local/a,,local/b"], ["local/a#"]]) {
+  for (const models of [[], [""], ["  "], ["local/a", 7], null, ["local/a", null], ["local/a", "paid/"], ["local/a,"], [",local/a"], ["local/a,,local/b"], ["local/a#"]]) {
+    assert.equal(parseOptions({ models }).ok, false, JSON.stringify(models))
+  }
+})
+
+test("nested selector arrays normalize to the same ordered groups as comma text", () => {
+  const free = ["opencode/deepseek-*-flash-free#low", "opencode/glm-*-free#low", "opencode/nemotron-*-free#low"]
+  const paid = ["opencode-go/deepseek-*-flash#low", "opencode-go/glm-*#low"]
+  assert.deepEqual(parseOptions({ models: [free, paid] }), parseOptions({ models: [free.join(", "), paid.join(", ")] }))
+  for (const selector of ["local/exact#low", "local/*#high", "local/a, local/b"]) {
+    assert.deepEqual(parseOptions({ models: [[selector]] }), parseOptions({ models: selector }))
+  }
+  assert.deepEqual(parseOptions({ models: [free, "paid/exact"] }), parseOptions({ models: [free.join(", "), "paid/exact"] }))
+  assert.deepEqual(parseOptions({ models: ["free/exact", paid] }), parseOptions({ models: ["free/exact", paid.join(", ")] }))
+})
+
+test("nested groups reject empty or invalid selectors without string coercion or recursive flattening", () => {
+  for (const models of [[[]], [[], ["local/a"]], [["local/a"], []], [["local/a", ""]], [["  "]], [["local/a", 1]], [["local/a", null]], [["local/a", {}]], [[["local/a"]]], [["local/a", ["local/b"]]], [["local/a", "bad"]], [["local/a,", "local/b"]], [["local/a", "local/b#"]]]) {
     assert.equal(parseOptions({ models }).ok, false, JSON.stringify(models))
   }
 })
