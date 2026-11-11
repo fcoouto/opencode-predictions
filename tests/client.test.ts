@@ -241,6 +241,32 @@ test("accepted edits survive navigation and clearing while status reloads withou
   } finally { client.dispose() }
 })
 
+test("an aborted request cannot repaint a retained prediction in a new location between ticks", async () => {
+  const first: ClientState = { key: "first/2", sessionID: "ses_first", completion: 2, eligible: true, draft: "" }
+  const second: ClientState = { ...first, key: "second/2", sessionID: "ses_second" }
+  let state = first
+  let scope = "server/original"
+  let predictions = 0
+  let finish!: (reply: { text: string }) => void
+  const painted: { scope: string; text: string }[] = []
+  const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  const client = createClient({ scope: () => scope, state: () => state, status: async () => status, predict: async current => { predictions++; return current.sessionID === "ses_second" ? new Promise(resolve => { finish = resolve }) : { text: "Private first-chat prediction" } }, paint: text => { if (text) painted.push({ scope, text }); return !!text }, insert: text => { state.draft = text; return true }, focus() {}, show() {}, openStatus() {} })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(client.accept(), true)
+    first.draft = ""
+    state = second; client.invalidate(); await new Promise(resolve => setImmediate(resolve))
+    state = first; client.invalidate(); await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(painted.at(-1), { scope: "server/original", text: "Private first-chat prediction" })
+    painted.length = 0
+    scope = "server/other-location"
+    finish({ text: "Late second-chat prediction" })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(painted, [])
+    assert.equal(predictions, 2)
+  } finally { client.dispose() }
+})
+
 test("Escape passes through when a cached suggestion loses input eligibility before the next tick", async () => {
   const state: ClientState = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
   let ghost: string | undefined

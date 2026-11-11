@@ -45,8 +45,7 @@ export function createController(io: ControllerIO) {
       } catch {
         // The host status command reports service availability; failed calls never auto-retry.
       } finally {
-        if (pending === request) pending = undefined
-        paint()
+        if (pending === request) { pending = undefined; paint() }
       }
     },
     dismiss(): boolean { const shown = visible; if (current.key) { results.delete(current.key); remember(current.key) }; clear(); return shown },

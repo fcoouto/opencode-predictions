@@ -96,8 +96,10 @@ function createController(io) {
         if (!disposed && !request.signal.aborted && current.key === key && !current.draft && reply.text) results.set(key, { text: reply.text, contextKey });
       } catch {
       } finally {
-        if (pending === request) pending = void 0;
-        paint();
+        if (pending === request) {
+          pending = void 0;
+          paint();
+        }
       }
     },
     dismiss() {

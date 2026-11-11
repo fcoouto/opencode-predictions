@@ -44,7 +44,12 @@
 - [x] Run the focused command again; require all tests passing.
 - [x] Update README to distinguish hiding accepted predictions while editing from dismissing or invalidating unaccepted predictions.
 - [x] Run `npm run check`, `npm run test:package`, `npm run test:host:desktop`, `npm run test:host:terminal`, and `git diff --check`; require zero failures.
-- [ ] Inspect the complete diff. Stage only retention files, generated bundles, and these approved documents; exclude the untracked `node_modules` symlink. Commit as `fix: preserve predictions across navigation and accepted edits`.
+- [x] Inspect the complete diff. Stage only retention files, generated bundles, and these approved documents; exclude the untracked `node_modules` symlink. Commit as `fix: preserve predictions across navigation and accepted edits`.
+
+#### Final review follow-up
+
+- [x] Reproduce the review finding: an aborted request's finalizer can repaint retained text after a subsequent live location change, before the next polling tick.
+- [x] Suppress repaint from obsolete request finalizers in the shared controller; verify the client regression fails before the fix and passes afterward, then run the full check again.
 
 ### Task 2: Open and merge the retention PR
 
@@ -52,7 +57,7 @@
 
 **Interfaces:** Branch `fix/preserve-chat-predictions`, base `main`, repository `fcoouto/opencode-predictions`.
 
-- [ ] Update PR behavior and verified counts; include accepted-edit restoration and the earlier intermittent native fixture timeout honestly.
+- [x] Update PR behavior and verified counts; include accepted-edit restoration and the earlier intermittent native fixture timeout honestly.
 - [ ] Push the branch without force and create the PR against `main`.
 - [ ] Watch current-head checks. Do not merge on failed, absent, or pending checks.
 - [ ] Squash-merge with `--match-head-commit` set to the verified PR head, then verify merged state and report the PR URL. Preserve this workspace and installed plugin state.
