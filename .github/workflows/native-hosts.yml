@@ -14,5 +14,5 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci --ignore-scripts
-      - run: npm run build
+      - run: npm run bundle
       - run: npm run test:installed

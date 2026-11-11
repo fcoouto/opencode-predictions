@@ -17,14 +17,15 @@
   "scripts": {
     "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "build": "node scripts/build.mjs",
+    "bundle": "node scripts/build.mjs",
     "pilot": "node src/pilot.ts",
     "test:host:server": "node --test tests/host/server.test.ts",
     "test:host:desktop": "node --test tests/host/desktop.test.ts",
     "test:host:terminal": "node --test tests/host/terminal.test.ts",
+    "test:host:git": "node --test tests/host/git.test.ts",
     "test:package": "node --test tests/package.test.mjs",
     "test:installed": "node scripts/test-installed.mjs",
-    "check": "npm test && npm run typecheck && npm run build"
+    "check": "npm test && npm run typecheck && npm run bundle"
   },
   "dependencies": { "@opencode/plugin": "2.2.6", "@opencode/client": "2.2.6" },
   "devDependencies": {
