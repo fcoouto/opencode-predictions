@@ -9,17 +9,28 @@ var notice = {
   required: ["code", "severity", "title", "message"],
   additionalProperties: false
 };
+var escalation = {
+  type: "object",
+  properties: {
+    token: { type: "string", minLength: 1 },
+    group: { type: "integer", minimum: 1 },
+    name: { type: "string" },
+    model: { type: "object", properties: { providerID: { type: "string" }, id: { type: "string" }, variant: { type: "string" } }, required: ["providerID", "id"], additionalProperties: false }
+  },
+  required: ["token", "group", "name", "model"],
+  additionalProperties: false
+};
 var Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
     predict: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" } },
+        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" }, escalation: { type: "string", minLength: 1 } },
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice, escalation }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },
@@ -37,13 +48,15 @@ var Predictions = Rpc.define({
 function parseOptions(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] };
   const raw = input;
-  const fields = ["enabled", "models", "timeoutMs", "contextTurns", "automatic", "debug"];
+  const fields = ["enabled", "models", "timeoutMs", "contextTurns", "automatic", "debug", "escalation"];
   const warnings = Object.keys(raw).filter((key) => !fields.includes(key)).map((key) => `Unknown option ignored: ${key}`);
   const invalid = (reason) => ({ ok: false, reason, warnings });
   for (const name of ["enabled", "automatic", "debug"]) {
     if (raw[name] !== void 0 && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`);
   }
   const timeoutMs = raw.timeoutMs ?? 8e3;
+  const escalation2 = raw.escalation === void 0 ? "manual" : raw.escalation;
+  if (escalation2 !== "off" && escalation2 !== "manual" && escalation2 !== "automatic") return invalid('escalation must be "off", "manual", or "automatic"');
   const contextTurns = raw.contextTurns ?? 3;
   if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return invalid("timeoutMs must be a positive integer within the timer limit");
   if (typeof contextTurns !== "number" || !Number.isInteger(contextTurns) || contextTurns < 1 || contextTurns > 5) return invalid("contextTurns must be an integer from 1 to 5");
@@ -63,7 +76,7 @@ function parseOptions(input = {}) {
       models.push(text.trim());
     }
   }
-  return { ok: true, value: { enabled: raw.enabled ?? true, ...raw.models === void 0 ? {} : { models }, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false }, warnings };
+  return { ok: true, value: { enabled: raw.enabled ?? true, ...raw.models === void 0 ? {} : { models }, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false, escalation: escalation2 }, warnings };
 }
 
 // src/predict.ts
@@ -209,6 +222,7 @@ function reasonNotice(reason) {
   const info = {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
+    escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
     context_unavailable: ["No completed response to predict from", "Finish an assistant response with usable conversation text, then request a prediction."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
@@ -230,7 +244,7 @@ function statusNotice(status) {
   }
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
-    const validation = /^(Plugin options|enabled|automatic|debug|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
@@ -280,6 +294,7 @@ function createService(api, rawOptions, directory) {
   const skipped = /* @__PURE__ */ new Map();
   const outcomes = /* @__PURE__ */ new Map();
   const owners = /* @__PURE__ */ new Map();
+  const offers = /* @__PURE__ */ new Map();
   const modelKey = (model) => JSON.stringify([model.providerID, model.id]);
   const candidateKey = (model) => JSON.stringify([model.providerID, model.id, model.variant ?? null]);
   const outcomeKey = (model, group) => JSON.stringify([group, candidateKey(model)]);
@@ -338,6 +353,20 @@ function createService(api, rawOptions, directory) {
     const entry = skip(model);
     return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...Number.isFinite(entry.until) ? { retryAt: entry.until } : {} } : { ...model, state: "ready" };
   };
+  const noSuggestion = (request, afterGroup) => {
+    if (options?.escalation === "off") return { reason: "no_suggestion" };
+    for (const [token, previous] of offers) if (previous.sessionID === request.sessionID) offers.delete(token);
+    for (let group = afterGroup + 1; group < (groups?.length ?? 0); group++) {
+      const candidate = groups[group].find((model2) => !skip(model2));
+      if (!candidate) continue;
+      const { name, ...model } = candidate;
+      const offer = { token: crypto.randomUUID(), group: group + 1, model, name };
+      offers.set(offer.token, { sessionID: request.sessionID, completion: request.completion, afterGroup, offer });
+      if (offers.size > 128) offers.delete(offers.keys().next().value);
+      return { reason: "no_suggestion", escalation: offer };
+    }
+    return { reason: "no_suggestion" };
+  };
   const status = () => {
     const candidates = groups?.flat();
     return {
@@ -348,6 +377,7 @@ function createService(api, rawOptions, directory) {
       debug: options?.debug ?? false,
       timeoutMs: options?.timeoutMs ?? 8e3,
       contextTurns: options?.contextTurns ?? 3,
+      escalation: options?.escalation ?? "off",
       version,
       warnings: parsed.warnings,
       pluginVersion,
@@ -359,6 +389,23 @@ function createService(api, rawOptions, directory) {
   const predict = async (request, parent) => {
     const started = performance.now();
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) };
+    const caller = parent;
+    let deadline;
+    const limitEscalation = () => {
+      deadline = AbortSignal.timeout(options.timeoutMs);
+      parent = AbortSignal.any([caller, deadline]);
+    };
+    let offered;
+    let extraCall = false;
+    if (request.escalation !== void 0) {
+      offered = offers.get(request.escalation);
+      if (!request.manual || options.escalation === "off" || !offered || offered.sessionID !== request.sessionID || offered.completion !== request.completion) return { reason: "escalation_unavailable" };
+      offers.delete(request.escalation);
+      extraCall = true;
+      limitEscalation();
+    } else {
+      for (const [token, previous] of offers) if (previous.sessionID === request.sessionID) offers.delete(token);
+    }
     let configured = [];
     const check = (session) => {
       const completion = session.time.idle || (request.manual === true && !session.time.busy ? session.time.updated : void 0);
@@ -396,22 +443,29 @@ function createService(api, rawOptions, directory) {
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" };
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns);
         if (!prompt) return { reason: "context_unavailable" };
-        const chain = groups.flatMap((queue, group) => queue.map((model) => ({ ...model, group })));
+        let chain = groups.flatMap((queue, group) => queue.map((model) => ({ ...model, group })));
+        if (offered) {
+          const target = chain.find((model) => model.group + 1 === offered.offer.group && candidateKey(model) === candidateKey(offered.offer.model) && !skip(model));
+          if (!target) return noSuggestion(request, offered.afterGroup);
+          chain = [target];
+        }
         const ownership = new Map(owners);
         let failure = "no_models_eligible";
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted();
-          const changed = check(await api.session(request.sessionID, parent));
+          const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
           parent.throwIfAborted();
           const candidate = chain[index];
           if (skip(candidate)) continue;
           const { name, group, ...model } = candidate;
           const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)]);
+          let generating = true;
           try {
             const output = await abortable(() => api.generate(model, prompt, signal), signal);
+            generating = false;
             parent.throwIfAborted();
-            const changed2 = check(await api.session(request.sessionID, parent));
+            const changed2 = check(await abortable(() => api.session(request.sessionID, parent), parent));
             if (changed2) return { reason: changed2 };
             parent.throwIfAborted();
             const text = parseSuggestion(output);
@@ -426,13 +480,26 @@ function createService(api, rawOptions, directory) {
             }
             if (abstained) {
               if (!skip(model)) move(model, true, group, ownership);
-              return { reason: "no_suggestion" };
+              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate2) => candidate2.group > group && !skip(candidate2)) : -1;
+              if (next !== -1) {
+                extraCall = true;
+                limitEscalation();
+                index = next - 1;
+                continue;
+              }
+              return noSuggestion(request, group);
             }
             throw new Error("Invalid prediction response");
           } catch (error) {
             const timedOut = signal.aborted;
+            if (!caller.aborted && deadline?.aborted && generating) {
+              const key2 = candidateKey(model);
+              const until2 = Date.now() + 6e4;
+              if ((skipped.get(key2)?.until ?? 0) < until2) skipped.set(key2, { until: until2, reason: `Timed out after ${options.timeoutMs} ms.` });
+              move(model, false, group, ownership);
+            }
             parent.throwIfAborted();
-            const changed2 = check(await api.session(request.sessionID, parent));
+            const changed2 = check(await abortable(() => api.session(request.sessionID, parent), parent));
             if (changed2) return { reason: changed2 };
             parent.throwIfAborted();
             failure = timedOut ? "timeout" : "generation_failed";
@@ -441,6 +508,7 @@ function createService(api, rawOptions, directory) {
             const until = Date.now() + policy.delayMs;
             if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail });
             move(model, false, group, ownership, policy.modelWide);
+            if (extraCall) break;
             if (options.debug) {
               const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
               const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
@@ -459,22 +527,22 @@ Queue: ${queue}`, request);
         const reply2 = await work();
         if (reply2.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply2.reason)) {
           parent.throwIfAborted();
-          const changed = check(await api.session(request.sessionID, parent));
+          const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
           parent.throwIfAborted();
           const selectors = new Set(options.models.flatMap((group) => group.split(",").map((value) => value.trim())));
           const single = configured[0];
           const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
           reply2.notice = statusNotice(status()) ?? reasonNotice(reply2.reason);
-          await api.notice?.(message, request, reply2.notice);
+          await abortable(() => Promise.resolve(api.notice?.(message, request, reply2.notice)), parent);
         }
         return reply2;
       }, parent);
       lastOutcome = reply.text ? "suggestion" : reply.reason;
       return reply;
     } catch {
-      lastOutcome = parent.aborted ? "cancelled" : "generation_failed";
-      return { reason: lastOutcome, ...!parent.aborted ? { notice: reasonNotice("service_unavailable") } : {} };
+      lastOutcome = caller.aborted ? "cancelled" : deadline?.aborted ? "timeout" : "generation_failed";
+      return { reason: lastOutcome, ...lastOutcome !== "cancelled" ? { notice: reasonNotice(lastOutcome === "timeout" ? "timeout" : "service_unavailable") } : {} };
     } finally {
       lastLatencyMs = Math.round(performance.now() - started);
     }

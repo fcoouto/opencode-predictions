@@ -65,9 +65,10 @@ to inspect matches. If none match, choose another selector or omit `#low`.
 
 ## Controls
 
-- **Tab:** insert the visible suggestion into the editable prompt.
+- **Tab:** insert the visible prediction into the editable prompt. Plugin messages such as **Ask another model**, loading text, and errors are never accepted; Tab keeps its normal host behavior for them.
 - **Alt+Shift+P** (**Option+Shift+P** on macOS): request a prediction after a completed response, with the empty prompt focused. It never inserts or submits text.
 - **Predict next prompt:** command-palette action to request or refresh a suggestion.
+- **Ask another model:** after an abstention, the Desktop composer action, existing prediction shortcut, or **Predict next prompt** command asks the next eligible group. The message shows the target model/provider and warns that its quota is used. Each action makes at most one additional model call and never inserts or submits text.
 - **Prediction status and preview:** reopen a readable status snapshot with settings, resolved models, safe errors, and the current suggestion. Choose **Technical details** for host/plugin versions, feedback capabilities, and timing.
 
 Typing hides the suggestion without discarding it. Escape keeps its normal host
@@ -102,6 +103,7 @@ if the shortcut is not delivered, use **Predict next prompt** from the command p
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
+| `escalation` | `"manual"` | After a valid no-suggestion response: `"off"` stops, `"manual"` offers **Ask another model**, and `"automatic"` makes one additional attempt in the next eligible group. |
 | `enabled` | `true` | Enable predictions. |
 | `debug` | `false` | Show safe per-model failures, fallback progress, and queue decisions. |
 
@@ -111,6 +113,43 @@ default reasoning. The plugin never changes your main session model.
 `*` matches model IDs or display names case-insensitively. Matches within each
 wildcard selector use stable provider/model-ID order, not speed or price.
 Only enabled models supporting the requested variant are selected.
+
+### When a model has no suggestion
+
+Prediction text and plugin-to-user communication are separate. Communication stays
+outside the editable draft, cannot be adopted with Tab, and does not generate through
+Tab. Desktop offers a native composer action; CLI shows **Alt+Shift+P** guidance.
+Typing or advancing the conversation clears the communication. Real prediction text
+retains its existing Tab acceptance and cached restoration behavior.
+
+```json
+{
+  "automatic": true,
+  "escalation": "manual"
+}
+```
+
+- **`"off"`:** valid `{"prompt":null}` stops. No escalation action is offered;
+  the usual explicit request can still refresh from the first eligible group.
+- **`"manual"` (default):** stop after abstention and show **Ask another model**.
+  An explicit action asks the first ready model in the earliest later eligible
+  group. Empty, blocked and cooling groups are skipped. There is no wraparound.
+- **`"automatic"`:** valid abstention permits one additional model call in the
+  next eligible group. If that model also abstains, another explicit action is
+  needed to go further. This is not a loop until some model produces text.
+
+`automatic: false` controls only how the initial request starts. Combining it with
+`escalation: "automatic"` means a manual request can still make an extra call.
+Later groups are preference tiers, not proof of greater reasoning quality. They may
+consume paid quota, even when the first group uses free models.
+
+An escalation action stops on text, abstention or error; it does not start another
+error-fallback chain. Its `timeoutMs` budget includes validation and generation.
+Ordinary initial requests retain their existing per-model timeout and error fallback.
+Abstention remains a healthy response, not a cooldown or failure penalty.
+If a displayed manual target becomes unavailable, the offer refreshes without
+silently calling a different model. Old, duplicate, or changed-context offers do
+not generate. If no later model is available, no additional call is made.
 
 ### Model groups
 
@@ -145,10 +184,11 @@ rankings:
 Inner arrays do not create more priority levels: they combine selectors within a
 single group. Text entries and inner arrays may be mixed in the outer array.
 
-Every request starts with the first group and skips blocked or cooling candidates.
-Only after a group's eligible candidates fail or none are available does the next
-group run. A valid “no suggestion” response stops the entire request; it does not
-trigger paid fallback. The plugin does not infer pricing: choose and check your
+Ordinary initial requests start with the first group and skip blocked or cooling candidates.
+Only after a group's eligible candidates fail or none are available does ordinary
+error fallback move to the next group. With escalation off, a valid “no suggestion”
+response stops the entire request; it does not trigger paid fallback.
+The plugin does not infer pricing: choose and check your
 selectors yourself.
 
 Group order never changes. A paid-model success cannot promote the paid group
@@ -187,7 +227,8 @@ When a model fails, the next eligible configured match is tried silently. If the
 whole queue is unavailable, the notice includes safe causes and recovery guidance
 without requiring debug mode. Cooldown notices give the earliest retry eligibility;
 they do not schedule an automatic retry. Successful fallback, cancellation, stale
-requests, and automatic “no suggestion” responses remain silent.
+requests remain silent. Automatic “no suggestion” responses produce no toast;
+escalation-enabled clients instead show non-editable communication near the composer.
 
 **Prediction status and preview** opens a native dialog, not an expiring JSON toast.
 It shows a snapshot of current health, settings warnings, ordered model groups and
@@ -210,8 +251,9 @@ limit, invalid response, or timeout. Raw provider errors, credentials, and conve
 contents are never included in failure notices. Debug final summaries omit the
 activation hint. Debug progress keeps the `[opencode-predictions]` prefix;
 actionable notices use descriptive titles. No log files are created.
-Each candidate is attempted once. No unselected model is called. A valid
-no-suggestion response stops the chain; exhaustion shows a failure notice.
+Each candidate is attempted at most once per request. No unselected model is called.
+A valid no-suggestion response follows the configured escalation policy;
+error exhaustion shows a failure notice.
 
 ### Ranking queue
 

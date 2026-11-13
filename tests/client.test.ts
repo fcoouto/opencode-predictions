@@ -343,3 +343,70 @@ test("Tab passes through when a cached suggestion loses input eligibility before
     assert.equal(ghost, undefined)
   } finally { client.dispose() }
 })
+test("manual escalation renders non-accepting communication and stale callbacks never request in another chat", async () => {
+  let state = { key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }
+  let message: any
+  let activate: (() => void) | undefined
+  let calls = 0
+  const tokens: (string | undefined)[] = []
+  const inserted: string[] = []
+  const client = createClient({
+    scope: () => "/project", state: () => state,
+    status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async (_state, _id, _signal, _notice, manual, token) => {
+      calls++; tokens.push(token)
+      if (token) { assert.equal(manual, true); return { text: "Run the tests." } }
+      return { reason: "no_suggestion", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "model" }, name: "Next model" } }
+    },
+    paint: text => !!text, insert: text => { inserted.push(text); return true }, focus() {}, show() {}, openStatus() {},
+    communicate: (value, run) => { message = value; activate = run },
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    assert.equal(message.offer.model.providerID, "paid")
+    assert.equal(client.accept(), false)
+    assert.deepEqual(tokens, [undefined])
+    const stale = activate!
+    client.requestFromShortcut()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(tokens, [undefined, "next"])
+    assert.equal(client.accept(), true)
+    assert.deepEqual(inserted, ["Run the tests."])
+    stale()
+    assert.equal(calls, 2)
+    state = { ...state, key: "two", sessionID: "ses_two" }
+    stale()
+    assert.equal(calls, 2)
+  } finally { client.dispose() }
+})
+
+test("queued escalation is cancelled by config changes or typing, never converted into an ordinary request", async () => {
+  for (const change of ["config", "typing"]) {
+    let draft = ""
+    let calls = 0
+    let activate!: () => void
+    let hold = false
+    let resolve!: (status: Status) => void
+    const status: Status = { enabled: true, automatic: false, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+    const client = createClient({
+      scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft }),
+      status: async () => { if (hold) { hold = false; return new Promise(done => { resolve = done }) } return status },
+      predict: async () => { calls++; return { reason: "no_suggestion", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "model" }, name: "Next model" } } },
+      paint: () => false, insert: () => false, focus() {}, show() {}, openStatus() {}, communicate: (value, run) => { if (value?.offer) activate = run },
+    })
+    try {
+      await new Promise(done => setImmediate(done))
+      client.request(); await new Promise(done => setImmediate(done))
+      assert.equal(calls, 1)
+      hold = true
+      const checking = client.status()
+      activate()
+      if (change === "config") { status.version = "two"; client.invalidate() }
+      else { draft = "typed"; client.accept(); draft = "" }
+      resolve(status)
+      await checking; await new Promise(done => setImmediate(done))
+      assert.equal(calls, 1, change)
+    } finally { client.dispose() }
+  }
+})

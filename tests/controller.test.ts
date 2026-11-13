@@ -2,6 +2,65 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createController } from "../src/controller.ts"
 
+const offer = { token: "offer-one", group: 2, model: { providerID: "paid", id: "model", variant: "low" }, name: "Next model" }
+
+test("plugin communications never accept via Tab and an explicit request consumes the offered token", async () => {
+  let message: any
+  let ghost: string | undefined
+  const inserted: string[] = []
+  const tokens: (string | undefined)[] = []
+  const controller = createController({
+    predict: async (_signal, token) => { tokens.push(token); return token ? { text: "Ask another model" } : { reason: "no_suggestion", communication: { message: "No suggestion from this model.", offer } } },
+    paint: text => { ghost = text; return !!text }, insert: text => { inserted.push(text); return true },
+    communicate: value => { message = value },
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  await controller.request()
+  assert.equal(ghost, undefined)
+  assert.ok(message)
+  assert.equal(controller.accept(), false)
+  assert.deepEqual(inserted, [])
+  assert.deepEqual(tokens, [undefined])
+  await controller.request(true)
+  assert.deepEqual(tokens, [undefined, "offer-one"])
+  assert.equal(message, undefined)
+  assert.equal(controller.accept(), true)
+  assert.deepEqual(inserted, ["Ask another model"])
+})
+
+test("pending communication prevents duplicate escalation and vanishes on typing without later resurrection", async () => {
+  let finish!: (reply: any) => void
+  let message: any
+  let calls = 0
+  const controller = createController({
+    predict: async (_signal, token) => { calls++; return token ? new Promise(resolve => { finish = resolve }) : { communication: { message: "No suggestion.", offer } } },
+    paint: () => false, insert: () => { throw Error("communication inserted") }, communicate: value => { message = value },
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  await controller.request()
+  const pending = controller.request(true)
+  await controller.request(true)
+  assert.equal(calls, 2)
+  assert.equal(message.pending, true)
+  assert.equal(controller.accept(), false)
+  controller.update({ key: "one", eligible: true, draft: "typed" })
+  assert.equal(message, undefined)
+  finish({ text: "too late" }); await pending
+  controller.update({ key: "one", eligible: true, draft: "" })
+  assert.equal(message, undefined)
+  assert.equal(controller.accept(), false)
+})
+
+test("a no-more-models communication cannot wrap manual requests back to group one", async () => {
+  let calls = 0
+  const controller = createController({ predict: async () => { calls++; return { communication: { message: "No other models available." } } }, paint: () => false, insert: () => true })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  await controller.request()
+  await controller.request(true)
+  assert.equal(calls, 1)
+  assert.equal(controller.accept(), false)
+})
+
 function setup(predict = async (_signal: AbortSignal) => ({ text: "Run the tests." })) {
   let ghost: string | undefined
   const inserted: string[] = []

@@ -43,6 +43,27 @@ def observe(expected):
     actual = json.loads(path.read_text()).get("draft")
     assert actual == expected, (actual, expected)
 
+def wait_placeholder(expected, contains=False):
+    """Observe the real editor; incremental terminal frames need not repeat full text."""
+    path = pathlib.Path(observation)
+    path.unlink(missing_ok=True)
+    os.write(master, b"\x1b[19~")
+
+    def ready():
+        if not path.exists():
+            return False
+        try:
+            placeholder = json.loads(path.read_text()).get("placeholder", "")
+        except json.JSONDecodeError:
+            return False
+        if isinstance(placeholder, str) and (expected in placeholder if contains else placeholder == expected):
+            return True
+        path.unlink(missing_ok=True)
+        os.write(master, b"\x1b[19~")
+        return False
+
+    pump_until(ready)
+
 try:
     if os.environ.get("PREDICTIONS_FEEDBACK_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Prediction settings are invalid" in output)
@@ -56,6 +77,19 @@ try:
         os.write(master, b"\x1b[20~")
         pump_until(lambda: b"Prediction status snapshot" in output)
         print(json.dumps({"statusReopened": True}))
+    elif os.environ.get("PREDICTIONS_ESCALATION_TEST") == "1":
+        pump_until(lambda: pathlib.Path(observation + ".ready").exists())
+        wait_placeholder("Ask another model", contains=True)
+        assert b"Run the targeted tests." not in output
+        observe("")
+        os.write(master, b"\t")
+        observe("")
+        os.write(master, b"\x1b[112;4u")
+        wait_placeholder("Run the targeted tests.")
+        observe("")
+        os.write(master, b"\t")
+        observe("Run the targeted tests.")
+        print(json.dumps({"escalationValidated": True}))
     else:
         if os.environ.get("PREDICTIONS_MANUAL_TEST") == "1":
             pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Fix the assertion." in output)

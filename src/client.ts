@@ -1,5 +1,5 @@
 import type { Reply, Status } from "./service.ts"
-import { createController } from "./controller.ts"
+import { createController, type Communication } from "./controller.ts"
 import { log } from "./log.ts"
 import { statusNotice, reasonNotice, formatStatus, feedbackRevision, type Notice, type StatusView } from "./feedback.ts"
 export type ClientState = { key: string; sessionID: string; completion: number; eligible: boolean; draft: string; automaticEligible?: boolean }
@@ -7,12 +7,13 @@ export type ClientHost = {
   scope(): string | undefined
   state(): ClientState | undefined
   status(signal: AbortSignal): Promise<Status>
-  predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice) => void, manual?: boolean): Promise<Reply>
+  predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice) => void, manual?: boolean, escalation?: string): Promise<Reply>
   paint(text: string | undefined): boolean
   insert(text: string): boolean
   focus(): void
   show(notice: Notice): void
   clearNotice?(): void
+  communicate?(value: Communication | undefined, activate: () => void): void
   openStatus(view: StatusView): void | Promise<void>
   diagnostics?(): Record<string, unknown>
 }
@@ -26,8 +27,9 @@ export function startClient(host: ClientHost) {
   let epoch = 0
   let loading: { abort: AbortController; done: Promise<void> } | undefined
   let disposed = false
-  let manual: { scope: string; key?: string; fromShortcut: boolean } | undefined
+  let manual: { scope: string; key?: string; fromShortcut: boolean; draft: string; epoch: number; version?: string; escalation?: string } | undefined
   let requestingManual = false
+  let communication: Communication | undefined
   let predicting: { signal: AbortSignal; scope: string | undefined; epoch: number; explicit: boolean } | undefined
   const activePrediction = () => predicting && !predicting.signal.aborted && predicting.scope === scope && predicting.epoch === epoch ? predicting : undefined
   const fingerprint = (notice: Notice) => JSON.stringify([notice.code, notice.severity, notice.title, notice.message, !!notice.persistent])
@@ -68,12 +70,22 @@ export function startClient(host: ClientHost) {
       }
     }
     current = host.state()
-    if (manual?.key && manual.key !== current?.key) manual = undefined
+    if (manual && ((manual.key && manual.key !== current?.key) || manual.draft !== (current?.draft ?? "") || manual.epoch !== epoch)) manual = undefined
   }
   const controller = createController({
     paint: host.paint,
     insert: host.insert,
-    predict: async signal => {
+    communicate: value => {
+      communication = value
+      const key = current?.key
+      const location = scope
+      const generation = epoch
+      host.communicate?.(value, () => {
+        if (disposed || generation !== epoch || host.scope() !== location || host.state()?.key !== key || host.state()?.draft || !value?.offer || communication?.offer?.token !== value.offer.token || communication.pending) return
+        request()
+      })
+    },
+    predict: async (signal, escalation) => {
       const state = current!
       const location = scope
       const generation = epoch
@@ -94,7 +106,7 @@ export function startClient(host: ClientHost) {
             if (notice) { final = notice; return }
             if (modern) progress(message)
             else if (debug) { legacyProgress.push(message); if (legacyProgress.length > 32) legacyProgress.shift() }
-          }, explicit)
+          }, explicit, escalation)
         } catch { reply = { reason: "service_unavailable", notice: reasonNotice("service_unavailable") } }
         if (!live()) return { reason: "stale" }
         if (reply.text || reply.reason === "no_suggestion") {
@@ -108,7 +120,10 @@ export function startClient(host: ClientHost) {
         if (notice && notice.severity !== "info") {
           record().requestFailure = notice
           announce(notice, explicit)
-        } else if (notice && explicit) announce(notice, true)
+        } else if (notice && explicit && !(reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice, true)
+        if (reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate) {
+          return { ...reply, communication: { message: reply.escalation ? "No suggestion from this model." : "No other models available.", offer: reply.escalation } }
+        }
         return reply
       } finally { if (predicting === flight) predicting = undefined }
     },
@@ -149,12 +164,14 @@ export function startClient(host: ClientHost) {
     const available = !!cache?.enabled && !cache.reason
     controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : undefined, eligible: !!current?.eligible && available, draft: current?.draft ?? "" })
     if (manual && !loading) {
-      const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : undefined
+      const action = manual
       manual = undefined
+      if (action.version && action.version !== cache?.version) return
+      const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : undefined
       if (issue) { announce(issue, true); return }
       if (activePrediction()) { announce({ code: "prediction_pending", severity: "info", title: "A prediction is already running", message: "Wait for the current prediction to finish." }, true); return }
       requestingManual = true
-      void controller.request(true)
+      void controller.request(true, action.escalation ?? null)
       requestingManual = false
     } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request()
   }
@@ -162,7 +179,7 @@ export function startClient(host: ClientHost) {
     if (disposed) return
     sync()
     if (!scope) { announce(reasonNotice("location_unavailable")!, true); return }
-    manual = { scope, key: host.state()?.key, fromShortcut }
+    manual = { scope, key: host.state()?.key, fromShortcut, draft: host.state()?.draft ?? "", epoch, version: cache?.version, escalation: communication?.offer?.token }
     host.focus()
     tick()
   }
@@ -186,7 +203,7 @@ export function startClient(host: ClientHost) {
       const value = scope ? record() : undefined
       await host.openStatus(formatStatus(cache, { currentNotice: activeNotice() ?? (!scope ? reasonNotice("location_unavailable") : undefined), lastNotice: value?.lastNotice, suggestion: controller.preview(), diagnostics: host.diagnostics?.() }))
     },
-    invalidate() { if (disposed) return; epoch++; loading?.abort.abort(); loading = undefined; cache = undefined; checked = -Infinity; controller.update({ eligible: false, draft: "" }); tick() },
+    invalidate() { if (disposed) return; epoch++; manual = undefined; loading?.abort.abort(); loading = undefined; cache = undefined; checked = -Infinity; controller.update({ eligible: false, draft: "" }); tick() },
     dispose() { disposed = true; clearInterval(interval); loading?.abort.abort(); controller.dispose(); host.clearNotice?.() },
   }
 }

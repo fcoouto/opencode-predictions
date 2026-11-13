@@ -19,6 +19,172 @@ function fixture() {
   return { api, calls, advance: () => { completion++ } }
 }
 
+function escalationFixture(escalation = "manual") {
+  const { api, advance } = fixture()
+  const attempted: string[] = []
+  api.models = async () => ["a", "b", "c", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+  api.generate = async model => { attempted.push(model.id); return '{"prompt":null}' }
+  const service = createService(api, { models: [["local/a#low", "local/b"], "local/c#low", "local/d"], escalation }, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  return { api, advance, attempted, service, request, run: (extra = {}) => service.predict({ ...request, ...extra }, new AbortController().signal) }
+}
+
+test("manual escalation offers one next-group model without treating abstention as a failure", async () => {
+  const f = escalationFixture()
+  const reply = await f.run()
+  assert.deepEqual(f.attempted, ["a"])
+  assert.equal(reply.reason, "no_suggestion")
+  assert.ok(reply.escalation?.token)
+  assert.equal(reply.escalation.group, 2)
+  assert.deepEqual(reply.escalation.model, { providerID: "local", id: "c", variant: "low" })
+  assert.equal(f.service.status().candidates?.find(model => model.id === "a")?.state, "ready")
+  const second = await f.run({ manual: true, escalation: reply.escalation.token })
+  assert.deepEqual(f.attempted, ["a", "c"])
+  assert.equal(second.escalation?.group, 3)
+  await f.run({ manual: true, escalation: second.escalation!.token })
+  assert.deepEqual(f.attempted, ["a", "c", "d"])
+})
+
+test("automatic escalation makes only one extra call and off preserves stop-on-null", async () => {
+  const auto = escalationFixture("automatic")
+  const reply = await auto.run()
+  assert.deepEqual(auto.attempted, ["a", "c"])
+  assert.equal(reply.reason, "no_suggestion")
+  assert.equal(reply.escalation?.group, 3)
+  const off = escalationFixture("off")
+  assert.deepEqual(await off.run(), { reason: "no_suggestion" })
+  assert.deepEqual(off.attempted, ["a"])
+})
+
+test("an escalation error does not fall through to more models", async () => {
+  const f = escalationFixture("automatic")
+  f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "c") throw new Error("unavailable"); return '{"prompt":null}' }
+  assert.equal((await f.run()).reason, "generation_failed")
+  assert.deepEqual(f.attempted, ["a", "c"])
+  assert.equal(f.service.status().candidates?.find(model => model.id === "c")?.state, "cooling")
+})
+
+test("manual offers require explicit intent and cannot cross sessions, completions or service versions", async () => {
+  const f = escalationFixture()
+  const first = await f.run()
+  const token = first.escalation!.token
+  for (const extra of [{ escalation: token }, { manual: true, escalation: "invented" }, { manual: true, escalation: token, sessionID: "ses_other" }, { manual: true, escalation: token, completion: 3 }]) {
+    assert.equal((await f.run(extra)).reason, "escalation_unavailable")
+  }
+  const other = escalationFixture()
+  assert.equal((await other.run({ manual: true, escalation: token })).reason, "escalation_unavailable")
+  assert.deepEqual(other.attempted, [])
+  await Promise.all([f.run({ manual: true, escalation: token }), f.run({ manual: true, escalation: token })])
+  assert.deepEqual(f.attempted, ["a", "c"])
+  assert.equal((await f.run({ manual: true, escalation: token })).reason, "escalation_unavailable")
+})
+
+test("a changed manual target refreshes the offer without silently spending on another provider", async () => {
+  const f = escalationFixture()
+  const first = await f.run()
+  f.api.models = async () => ["a", "b", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+  const reply = await f.run({ manual: true, escalation: first.escalation!.token })
+  assert.deepEqual(f.attempted, ["a"])
+  assert.equal(reply.reason, "no_suggestion")
+  assert.equal(reply.escalation?.model.id, "d")
+  assert.equal(reply.escalation?.group, 3)
+})
+
+test("automatic escalation skips empty groups and stops at the first extra suggestion", async () => {
+  const f = escalationFixture("automatic")
+  f.api.models = async () => ["a", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+  f.api.generate = async model => { f.attempted.push(model.id); return model.id === "a" ? '{"prompt":null}' : '{"prompt":"Run the tests."}' }
+  assert.deepEqual(await f.run(), { text: "Run the tests." })
+  assert.deepEqual(f.attempted, ["a", "d"])
+})
+
+test("escalation validates completion again and never generates after cancellation", async () => {
+  const f = escalationFixture()
+  const first = await f.run()
+  f.advance()
+  assert.equal((await f.run({ manual: true, escalation: first.escalation!.token })).reason, "stale")
+  assert.deepEqual(f.attempted, ["a"])
+  const controller = new AbortController()
+  controller.abort()
+  assert.equal((await f.service.predict(f.request, controller.signal)).reason, "cancelled")
+  assert.deepEqual(f.attempted, ["a"])
+})
+
+test("a manual escalation deadline includes metadata calls that ignore cancellation", async () => {
+  const f = escalationFixture()
+  const service = createService(f.api, { models: ["local/a", "local/c"], timeoutMs: 20 }, "/project")
+  const first = await service.predict(f.request, new AbortController().signal)
+  assert.ok(first.escalation)
+  f.api.session = () => new Promise(() => {})
+  const keepAlive = setTimeout(() => {}, 1000)
+  try {
+    const reply = await service.predict({ ...f.request, manual: true, escalation: first.escalation.token }, new AbortController().signal)
+    assert.equal(reply.reason, "timeout")
+    assert.deepEqual(f.attempted, ["a"])
+    assert.equal(service.status().candidates?.find(model => model.id === "c")?.state, "ready")
+  } finally { clearTimeout(keepAlive) }
+})
+
+test("automatic escalation deadline also covers the next session validation", async () => {
+  const f = escalationFixture("automatic")
+  const session = f.api.session
+  f.api.generate = async model => { f.attempted.push(model.id); f.api.session = () => new Promise(() => {}); return '{"prompt":null}' }
+  // The completed first response is validated once before the next model's validation hangs.
+  let checkedFirst = false
+  const originalGenerate = f.api.generate
+  f.api.generate = async (...args) => {
+    const output = await originalGenerate(...args)
+    f.api.session = async (...input) => {
+      if (!checkedFirst) { checkedFirst = true; return session(...input) }
+      return new Promise(() => {})
+    }
+    return output
+  }
+  const service = createService(f.api, { models: ["local/a", "local/c"], escalation: "automatic", timeoutMs: 20 }, "/project")
+  const keepAlive = setTimeout(() => {}, 1000)
+  try {
+    const outcome = await Promise.race([service.predict(f.request, new AbortController().signal), new Promise(resolve => setTimeout(() => resolve({ reason: "test-deadline" }), 100))])
+    assert.equal((outcome as any).reason, "timeout")
+    assert.deepEqual(f.attempted, ["a"])
+    assert.equal(service.status().candidates?.find(model => model.id === "c")?.state, "ready")
+  } finally { clearTimeout(keepAlive) }
+})
+
+test("automatic escalation deadline bounds final validation and notice delivery after an error", async () => {
+  for (const hanging of ["validation", "notice"]) {
+    const f = escalationFixture("automatic")
+    const session = f.api.session
+    let failed = false
+    let validations = 0
+    f.api.session = async (...args) => {
+      if (failed && ++validations === 2 && hanging === "validation") return new Promise(() => {})
+      return session(...args)
+    }
+    f.api.notice = async () => { if (hanging === "notice") return new Promise(() => {}) }
+    f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "c") { failed = true; throw Error("temporary") } return '{"prompt":null}' }
+    const service = createService(f.api, { models: ["local/a", "local/c"], escalation: "automatic", timeoutMs: 20 }, "/project")
+    const outcome = await Promise.race([service.predict(f.request, new AbortController().signal), new Promise(resolve => setTimeout(() => resolve({ reason: "test-deadline" }), 150))])
+    assert.equal((outcome as any).reason, "timeout", hanging)
+    assert.deepEqual(f.attempted, ["a", "c"])
+  }
+})
+
+test("escalation generation deadlines apply normal timeout cooldown without penalizing validation-only timeouts", async () => {
+  for (const mode of ["manual", "automatic"]) {
+    const f = escalationFixture(mode)
+    f.api.generate = async model => { f.attempted.push(model.id); return model.id === "c" ? new Promise(() => {}) : '{"prompt":null}' }
+    const service = createService(f.api, { models: ["local/a", "local/c"], escalation: mode, timeoutMs: 20 }, "/project")
+    const keepAlive = setTimeout(() => {}, 1000)
+    try {
+      let reply = await service.predict(f.request, new AbortController().signal)
+      if (mode === "manual") reply = await service.predict({ ...f.request, manual: true, escalation: reply.escalation!.token }, new AbortController().signal)
+      assert.equal(reply.reason, "timeout")
+      assert.equal(service.status().candidates?.find(model => model.id === "c")?.state, "cooling", mode)
+      assert.equal(service.status().candidates?.find(model => model.id === "a")?.state, "ready")
+    } finally { clearTimeout(keepAlive) }
+  }
+})
+
 test("server uses the exact selected model and filtered context without writing history", async () => {
   const { api, calls } = fixture()
   const service = createService(api, { models: "local/model" }, "/project")

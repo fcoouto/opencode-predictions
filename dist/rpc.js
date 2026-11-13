@@ -6,17 +6,28 @@ var notice = {
   required: ["code", "severity", "title", "message"],
   additionalProperties: false
 };
+var escalation = {
+  type: "object",
+  properties: {
+    token: { type: "string", minLength: 1 },
+    group: { type: "integer", minimum: 1 },
+    name: { type: "string" },
+    model: { type: "object", properties: { providerID: { type: "string" }, id: { type: "string" }, variant: { type: "string" } }, required: ["providerID", "id"], additionalProperties: false }
+  },
+  required: ["token", "group", "name", "model"],
+  additionalProperties: false
+};
 var Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
     predict: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" } },
+        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" }, escalation: { type: "string", minLength: 1 } },
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice, escalation }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },

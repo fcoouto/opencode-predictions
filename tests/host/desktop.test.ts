@@ -93,3 +93,39 @@ for (const kind of ["invalid", "temporary"] as const) test(`real isolated Deskto
     await page.getByRole("dialog").getByText(/Service plugin: 0.1.0/).waitFor({ state: "visible" })
   } finally { await app.close() }
 })
+
+test("real isolated Desktop shows Ask another model without Tab adoption and escalates on click", { timeout: 100000 }, async () => {
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: ["fixture/model", "fixture/second"], escalation: "manual" }, { predictionOutputs: { model: '{"prompt":null}', second: '{"prompt":"Run the targeted tests."}' } })
+  const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
+  const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
+  try {
+    const page = await app.firstWindow()
+    page.on("pageerror", error => console.error("Desktop page:", error.message))
+    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), { timeout: 45000 })
+    await page.evaluate(() => (window as any).__predictionFixture.launch())
+    const editor = page.locator('[data-component="composer-editor"][contenteditable="true"]')
+    await editor.waitFor({ state: "visible", timeout: 20000 })
+    await page.waitForFunction(() => document.querySelector('[data-component="composer-editor"]')?.textContent === "Fix the assertion.")
+    await page.getByRole("button", { name: "Fixture / Fixture Flash", exact: true }).waitFor({ state: "visible" })
+    await editor.press("Enter")
+    const communication = page.locator("[data-opencode-communication]")
+    await communication.waitFor({ state: "visible", timeout: 15000 })
+    assert.match(await communication.innerText(), /fixture\/second/)
+    assert.match(await communication.innerText(), /quota/)
+    assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
+    const calls = fixture.calls.filter(isPredictionCall).length
+    const users = await page.evaluate(() => (window as any).__predictionFixture.users())
+    await editor.press("Tab")
+    assert.equal(await editor.innerText(), "")
+    assert.equal(fixture.calls.filter(isPredictionCall).length, calls)
+    await editor.focus()
+    await page.screenshot({ path: resolve(".test-artifacts/escalation-desktop.png") })
+    await page.getByText("Ask another model", { exact: true }).click()
+    await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 15000 })
+    assert.equal(fixture.calls.filter(isPredictionCall).length, calls + 1)
+    await editor.press("Tab")
+    assert.equal(await editor.innerText(), "Run the targeted tests.")
+    assert.equal(await page.evaluate(() => (window as any).__predictionFixture.users()), users)
+  } finally { await app.close() }
+})

@@ -233,3 +233,51 @@ test("Desktop inspects default server location health on a draft with no mounted
     await page.evaluate(() => (window as any).stopGUI())
   } finally { await page.close() }
 })
+
+test("Desktop communication stays outside the draft and native Ask action cannot be adopted with Tab", async () => {
+  const page = await fixture()
+  try {
+    await page.addScriptTag({ content: guiSource })
+    await page.evaluate(() => {
+      const w = window as any
+      w.commands = new Map(); w.requests = []; w.notices = []
+      const data = { on: () => () => {}, session: { get: () => ({ time: { idle: 2 } }), status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } }
+      const session = { id: "ses_test", key: "server/ses_test", directory: "/project", location: { directory: "/project" }, server: { id: "fixture", connected: true, data, client: { rpc: () => ({
+        status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+        predict: async (input: any) => { w.requests.push(input); return input.escalation ? { text: "Run the tests." } : { reason: "no_suggestion", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "next" }, name: "Next model" } } }, events: { on: () => () => {} },
+      }) } } }
+      w.pillInput = { session }
+      const composer = { text: () => w.editor.textContent, focused: () => document.activeElement === w.editor, quotable: () => true, setText: (text: string) => { w.editor.textContent = text }, focus: () => w.editor.focus() }
+      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => session }, screen: { current: () => ({ composer }) }, add: (_registry: unknown, contribution: any) => w.commands.set(contribution.id, contribution), app: { version: "test" }, toast: { show: (notice: any) => { w.notices.push(notice); return { dismiss() {} } } } })
+    })
+    await page.waitForFunction(() => !!document.querySelector("[data-opencode-communication]"), undefined, { timeout: 2000 })
+    const before = await page.evaluate(() => {
+      const w = window as any
+      const pill = w.commands.get("escalate").show(w.pillInput)
+      return { draft: w.editor.textContent, text: document.querySelector("[data-opencode-communication]")?.textContent, accepted: w.commands.get("accept").run(), calls: w.requests.length, label: pill.label, title: pill.title, notices: w.notices.length, ghost: !!document.querySelector("[data-opencode-prediction]") }
+    })
+    assert.equal(before.draft, "")
+    assert.equal(before.accepted, false)
+    assert.equal(before.calls, 1)
+    assert.equal(before.ghost, false)
+    assert.equal(before.notices, 0)
+    assert.equal(before.label, "Ask another model")
+    assert.match(before.text!, /paid\/next/)
+    assert.match(before.text!, /quota/)
+    await page.evaluate(() => {
+      const w = window as any
+      const nativeAction = document.createElement("button"); nativeAction.textContent = "Host composer action"; document.body.append(nativeAction); nativeAction.focus()
+      w.commands.get("accept").run()
+    })
+    assert.equal(await page.locator("[data-opencode-communication]").count(), 1)
+    await page.evaluate(() => { const w = window as any; w.commands.get("escalate").show(w.pillInput).run() })
+    await page.waitForFunction(() => !!document.querySelector("[data-opencode-prediction]"))
+    const after = await page.evaluate(() => {
+      const w = window as any
+      const accepted = w.commands.get("accept").run()
+      return { accepted, draft: w.editor.textContent, token: w.requests[1].escalation, manual: w.requests[1].manual, messages: document.querySelectorAll("[data-opencode-communication]").length, submitted: w.submissions }
+    })
+    assert.deepEqual(after, { accepted: undefined, draft: "Run the tests.", token: "next", manual: true, messages: 0, submitted: 0 })
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})

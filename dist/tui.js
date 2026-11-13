@@ -1,6 +1,93 @@
 // src/tui.ts
 import { Plugin } from "@opencode/plugin/tui";
 
+// src/controller.ts
+function communicationText(value) {
+  const offer = value.offer;
+  return [value.pending ? "Asking another model\u2026" : value.message, offer && `Next: ${offer.name} (${offer.model.providerID}/${offer.model.id}${offer.model.variant ? "#" + offer.model.variant : ""}), group ${offer.group}.`, offer && "Uses this provider's quota.", offer && !value.pending && "Ask another model \xB7 Alt+Shift+P"].filter(Boolean).join("\n");
+}
+function createController(io) {
+  let current = { eligible: false, draft: "" };
+  let pending;
+  const results = /* @__PURE__ */ new Map();
+  let visible = false;
+  let disposed = false;
+  const attempted = /* @__PURE__ */ new Set();
+  const remember = (key) => {
+    attempted.add(key);
+    if (attempted.size > 128) {
+      const oldest = attempted.values().next().value;
+      attempted.delete(oldest);
+      results.delete(oldest);
+    }
+  };
+  const paint = () => {
+    const result = !disposed && !current.draft && current.key ? results.get(current.key) : void 0;
+    visible = io.paint(current.eligible ? result?.text : void 0);
+    io.communicate?.(result?.communication ? { ...result.communication, pending: !!pending } : void 0);
+  };
+  const clear = () => {
+    pending?.abort();
+    pending = void 0;
+    visible = false;
+    io.paint(void 0);
+    io.communicate?.(void 0);
+  };
+  return {
+    update(snapshot) {
+      if (disposed) return;
+      if (snapshot.key !== current.key || snapshot.draft) clear();
+      current = snapshot;
+      if (snapshot.key && snapshot.draft) {
+        remember(snapshot.key);
+        if (results.get(snapshot.key)?.communication) results.delete(snapshot.key);
+      }
+      paint();
+    },
+    async request(manual = false, expectedOffer) {
+      const key = current.key;
+      if (disposed || !key || !current.eligible || current.draft || pending || !manual && attempted.has(key)) return;
+      const communication = results.get(key)?.communication;
+      if (manual && expectedOffer !== void 0 && (communication?.offer?.token ?? null) !== expectedOffer) return;
+      if (manual && communication && !communication.offer) return;
+      const escalation2 = manual ? communication?.offer?.token : void 0;
+      remember(key);
+      const request = new AbortController();
+      pending = request;
+      paint();
+      try {
+        const reply = await io.predict(request.signal, escalation2);
+        if (!disposed && !request.signal.aborted && current.key === key && !current.draft) {
+          if (reply.text) results.set(key, { text: reply.text });
+          else if (reply.communication) results.set(key, { communication: reply.communication });
+          else if (communication) results.delete(key);
+        }
+      } catch {
+      } finally {
+        if (pending === request) {
+          pending = void 0;
+          paint();
+        }
+      }
+    },
+    accept() {
+      const result = current.key ? results.get(current.key) : void 0;
+      if (disposed || !visible || !current.eligible || current.draft || !result?.text) return false;
+      clear();
+      return io.insert(result.text);
+    },
+    preview() {
+      return current.key ? results.get(current.key)?.text : void 0;
+    },
+    dispose() {
+      disposed = true;
+      clear();
+      results.clear();
+      attempted.clear();
+    }
+  };
+}
+
 // src/adapters/terminal.ts
 function createTerminalAdapter(renderer) {
   let painted;
@@ -18,23 +105,27 @@ function createTerminalAdapter(renderer) {
     painted = void 0;
     ghost = void 0;
   };
+  const paint = (text) => {
+    const current = editor();
+    if (!text || !current || current.plainText !== "") {
+      clear();
+      return false;
+    }
+    if (painted !== current) {
+      clear();
+      painted = current;
+      original = current.placeholder;
+    }
+    ghost = text;
+    if (current.placeholder !== text) current.placeholder = text;
+    return true;
+  };
   return {
     eligible: () => editor()?.plainText === "",
     read: () => editor()?.plainText ?? "",
-    paint(text) {
-      const current = editor();
-      if (!text || !current || current.plainText !== "") {
-        clear();
-        return false;
-      }
-      if (painted !== current) {
-        clear();
-        painted = current;
-        original = current.placeholder;
-      }
-      ghost = text;
-      if (current.placeholder !== text) current.placeholder = text;
-      return true;
+    paint,
+    communicate(value) {
+      if (value) paint(communicationText(value));
     },
     insert(text) {
       const current = editor();
@@ -44,74 +135,6 @@ function createTerminalAdapter(renderer) {
       return true;
     },
     dispose: clear
-  };
-}
-
-// src/controller.ts
-function createController(io) {
-  let current = { eligible: false, draft: "" };
-  let pending;
-  const results = /* @__PURE__ */ new Map();
-  let visible = false;
-  let disposed = false;
-  const attempted = /* @__PURE__ */ new Set();
-  const remember = (key) => {
-    attempted.add(key);
-    if (attempted.size > 128) {
-      const oldest = attempted.values().next().value;
-      attempted.delete(oldest);
-      results.delete(oldest);
-    }
-  };
-  const paint = () => {
-    visible = io.paint(!disposed && current.eligible && !current.draft && current.key ? results.get(current.key)?.text : void 0);
-  };
-  const clear = () => {
-    pending?.abort();
-    pending = void 0;
-    visible = false;
-    io.paint(void 0);
-  };
-  return {
-    update(snapshot) {
-      if (disposed) return;
-      if (snapshot.key !== current.key || snapshot.draft) clear();
-      current = snapshot;
-      if (snapshot.key && snapshot.draft) remember(snapshot.key);
-      paint();
-    },
-    async request(manual = false) {
-      const key = current.key;
-      if (disposed || !key || !current.eligible || current.draft || pending || !manual && attempted.has(key)) return;
-      remember(key);
-      const request = new AbortController();
-      pending = request;
-      try {
-        const reply = await io.predict(request.signal);
-        if (!disposed && !request.signal.aborted && current.key === key && !current.draft && reply.text) results.set(key, { text: reply.text });
-      } catch {
-      } finally {
-        if (pending === request) {
-          pending = void 0;
-          paint();
-        }
-      }
-    },
-    accept() {
-      const result = current.key ? results.get(current.key) : void 0;
-      if (disposed || !visible || !current.eligible || current.draft || !result) return false;
-      clear();
-      return io.insert(result.text);
-    },
-    preview() {
-      return current.key ? results.get(current.key)?.text : void 0;
-    },
-    dispose() {
-      disposed = true;
-      clear();
-      results.clear();
-      attempted.clear();
-    }
   };
 }
 
@@ -172,6 +195,7 @@ function reasonNotice(reason) {
   const info = {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
+    escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
     context_unavailable: ["No completed response to predict from", "Finish an assistant response with usable conversation text, then request a prediction."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
@@ -193,7 +217,7 @@ function statusNotice(status) {
   }
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
-    const validation = /^(Plugin options|enabled|automatic|debug|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
@@ -204,6 +228,7 @@ function formatStatus(status, details) {
   if (notice2) lines.push(notice2.message);
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`);
+    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic \u2014 at most one additional model call; may consume paid provider quota." : status.escalation === "manual" ? "Manual \u2014 Ask another model uses the displayed provider's quota." : "Off"}`);
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : []);
     for (const [index, group] of groups.entries()) {
       lines.push(`Group ${index + 1}: ${group.selectors}`);
@@ -243,6 +268,7 @@ function startClient(host) {
   let disposed = false;
   let manual;
   let requestingManual = false;
+  let communication;
   let predicting;
   const activePrediction = () => predicting && !predicting.signal.aborted && predicting.scope === scope && predicting.epoch === epoch ? predicting : void 0;
   const fingerprint = (notice2) => JSON.stringify([notice2.code, notice2.severity, notice2.title, notice2.message, !!notice2.persistent]);
@@ -294,12 +320,22 @@ function startClient(host) {
       }
     }
     current = host.state();
-    if (manual?.key && manual.key !== current?.key) manual = void 0;
+    if (manual && (manual.key && manual.key !== current?.key || manual.draft !== (current?.draft ?? "") || manual.epoch !== epoch)) manual = void 0;
   };
   const controller = createController({
     paint: host.paint,
     insert: host.insert,
-    predict: async (signal) => {
+    communicate: (value) => {
+      communication = value;
+      const key = current?.key;
+      const location = scope;
+      const generation = epoch;
+      host.communicate?.(value, () => {
+        if (disposed || generation !== epoch || host.scope() !== location || host.state()?.key !== key || host.state()?.draft || !value?.offer || communication?.offer?.token !== value.offer.token || communication.pending) return;
+        request();
+      });
+    },
+    predict: async (signal, escalation2) => {
       const state = current;
       const location = scope;
       const generation = epoch;
@@ -326,7 +362,7 @@ function startClient(host) {
               legacyProgress.push(message);
               if (legacyProgress.length > 32) legacyProgress.shift();
             }
-          }, explicit);
+          }, explicit, escalation2);
         } catch {
           reply = { reason: "service_unavailable", notice: reasonNotice("service_unavailable") };
         }
@@ -341,7 +377,10 @@ function startClient(host) {
         if (notice2 && notice2.severity !== "info") {
           record().requestFailure = notice2;
           announce(notice2, explicit);
-        } else if (notice2 && explicit) announce(notice2, true);
+        } else if (notice2 && explicit && !(reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice2, true);
+        if (reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate) {
+          return { ...reply, communication: { message: reply.escalation ? "No suggestion from this model." : "No other models available.", offer: reply.escalation } };
+        }
         return reply;
       } finally {
         if (predicting === flight) predicting = void 0;
@@ -389,8 +428,10 @@ function startClient(host) {
     const available = !!cache?.enabled && !cache.reason;
     controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
     if (manual && !loading) {
-      const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : void 0;
+      const action = manual;
       manual = void 0;
+      if (action.version && action.version !== cache?.version) return;
+      const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : void 0;
       if (issue) {
         announce(issue, true);
         return;
@@ -400,7 +441,7 @@ function startClient(host) {
         return;
       }
       requestingManual = true;
-      void controller.request(true);
+      void controller.request(true, action.escalation ?? null);
       requestingManual = false;
     } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request();
   };
@@ -411,7 +452,7 @@ function startClient(host) {
       announce(reasonNotice("location_unavailable"), true);
       return;
     }
-    manual = { scope, key: host.state()?.key, fromShortcut };
+    manual = { scope, key: host.state()?.key, fromShortcut, draft: host.state()?.draft ?? "", epoch, version: cache?.version, escalation: communication?.offer?.token };
     host.focus();
     tick();
   };
@@ -441,6 +482,7 @@ function startClient(host) {
     invalidate() {
       if (disposed) return;
       epoch++;
+      manual = void 0;
       loading?.abort.abort();
       loading = void 0;
       cache = void 0;
@@ -466,17 +508,28 @@ var notice = {
   required: ["code", "severity", "title", "message"],
   additionalProperties: false
 };
+var escalation = {
+  type: "object",
+  properties: {
+    token: { type: "string", minLength: 1 },
+    group: { type: "integer", minimum: 1 },
+    name: { type: "string" },
+    model: { type: "object", properties: { providerID: { type: "string" }, id: { type: "string" }, variant: { type: "string" } }, required: ["providerID", "id"], additionalProperties: false }
+  },
+  required: ["token", "group", "name", "model"],
+  additionalProperties: false
+};
 var Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
     predict: {
       input: {
         type: "object",
-        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" } },
+        properties: { sessionID: { type: "string", minLength: 5 }, completion: { type: "number", minimum: 0 }, requestID: { type: "string", minLength: 1 }, manual: { type: "boolean" }, escalation: { type: "string", minLength: 1 } },
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice, escalation }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },
@@ -514,7 +567,7 @@ var tui_default = Plugin.define({
         return { key: value.id + "/" + value.location.directory + "/" + completion, sessionID: value.id, completion, eligible, draft: adapter.read(), automaticEligible: !!value.time.idle };
       },
       status: async (signal) => await ctx.client.rpc(Predictions).status({}, { location: location(), signal }),
-      predict: async (state, requestID, signal, notice2, manual) => {
+      predict: async (state, requestID, signal, notice2, manual, escalation2) => {
         const value = session();
         if (!value || value.id !== state.sessionID) return { reason: "stale" };
         const rpc = ctx.client.rpc(Predictions);
@@ -522,13 +575,14 @@ var tui_default = Plugin.define({
           if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice2(String(event.data.message), event.data.notice);
         });
         try {
-          return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...manual ? { manual: true } : {} }, { location: value.location, signal });
+          return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...manual ? { manual: true } : {}, ...escalation2 ? { escalation: escalation2 } : {} }, { location: value.location, signal });
         } finally {
           stop();
         }
       },
       paint: adapter.paint,
       insert: adapter.insert,
+      communicate: adapter.communicate,
       focus: () => ctx.renderer.currentFocusedEditor?.focus(),
       show: (notice2) => {
         ctx.ui.toast.show({ title: notice2.title, message: notice2.message + (notice2.severity !== "info" ? "\nOpen Prediction status and preview from the command palette for details." : ""), variant: notice2.severity, duration: 8e3 });

@@ -22,15 +22,16 @@ export default Plugin.define({
         return { key: value.id + "/" + value.location.directory + "/" + completion, sessionID: value.id, completion, eligible, draft: adapter.read(), automaticEligible: !!value.time.idle }
       },
       status: async signal => await ctx.client.rpc(Predictions).status({}, { location: location(), signal }) as Status,
-      predict: async (state, requestID, signal, notice, manual) => {
+      predict: async (state, requestID, signal, notice, manual, escalation) => {
         const value = session()
         if (!value || value.id !== state.sessionID) return { reason: "stale" }
         const rpc = ctx.client.rpc(Predictions)
         const stop = rpc.events.on("progress", event => { if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice(String(event.data.message), event.data.notice as Notice | undefined) })
-        try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...(manual ? { manual: true } : {}) }, { location: value.location, signal }) as Reply } finally { stop() }
+        try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...(manual ? { manual: true } : {}), ...(escalation ? { escalation } : {}) }, { location: value.location, signal }) as Reply } finally { stop() }
       },
       paint: adapter.paint,
       insert: adapter.insert,
+      communicate: adapter.communicate,
       focus: () => ctx.renderer.currentFocusedEditor?.focus(),
       show: notice => { ctx.ui.toast.show({ title: notice.title, message: notice.message + (notice.severity !== "info" ? "\nOpen Prediction status and preview from the command palette for details." : ""), variant: notice.severity, duration: 8000 }) },
       openStatus: async view => {
