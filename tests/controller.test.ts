@@ -1,8 +1,20 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { createController } from "../src/controller.ts"
+import { createController, communicationText } from "../src/controller.ts"
 
 const offer = { token: "offer-one", group: 2, model: { providerID: "paid", id: "model", variant: "low" }, name: "Next model" }
+
+test("activity indicators carry the requested leading character, never real prediction payloads", () => {
+  const activity = { kind: "alternative" as const, name: "Next model" }
+  assert.match(communicationText({ message: "", activity }), /^\uFFFB[▰▱]{3} Next model$/)
+  assert.equal(communicationText({ message: "", activity }, true), "\uFFFB… Next model")
+  assert.equal(communicationText({ message: "No suggestion." }), "No suggestion.")
+})
+
+test("abstention placeholder names the source and target and uses the host shortcut label", () => {
+  const value = { message: "[First Model] provided no prediction.", offer }
+  assert.equal(communicationText(value), "[First Model] provided no prediction.\nUse Alt+Shift+P to escalate it to [Next model].")
+})
 
 test("plugin communications never accept via Tab and an explicit request consumes the offered token", async () => {
   let message: any
@@ -69,6 +81,102 @@ function setup(predict = async (_signal: AbortSignal) => ({ text: "Run the tests
   controller.update({ key: "server/session/completion/config", eligible: true, draft: "" })
   return { controller, inserted, ghost: () => ghost, calls: () => calls }
 }
+
+test("alternative activity withdraws the original, passes Tab through and restores on failure", async () => {
+  for (const outcome of [{ reason: "no_suggestion" }, { reason: "generation_failed" }, { reason: "timeout" }, new Error("offline")]) {
+    let finish!: (reply: any) => void
+    let reject!: (error: unknown) => void
+    let ghost: string | undefined
+    let message: any
+    let signal!: AbortSignal
+    const inserted: string[] = []
+    const controller = createController({
+      predict: async (value, token) => {
+        signal = value
+        return token ? new Promise((resolve, fail) => { finish = resolve; reject = fail }) : { text: "Run the targeted tests.", escalation: offer }
+      },
+      paint: text => { ghost = text; return !!text }, insert: text => { inserted.push(text); return true }, communicate: value => { message = value },
+    })
+    controller.update({ key: "one", eligible: true, draft: "" })
+    await controller.request()
+    const pending = controller.request(true)
+    assert.equal(ghost, undefined)
+    assert.deepEqual(message?.activity, { kind: "alternative", name: "Next model" })
+    assert.equal(controller.accept(), false)
+    assert.equal(signal.aborted, false)
+    assert.deepEqual(inserted, [])
+    if (outcome instanceof Error) reject(outcome); else finish(outcome)
+    await pending
+    assert.equal(ghost, "Run the targeted tests.")
+    assert.equal(message?.offer, undefined, "a consumed offer must not survive failure")
+    assert.equal(controller.accept(), true)
+    assert.deepEqual(inserted, ["Run the targeted tests."])
+    controller.dispose()
+  }
+})
+
+test("typing during replacement cancels it but preserves cached real text, including status-like prefixes", async () => {
+  let finish!: (reply: any) => void
+  let signal!: AbortSignal
+  let ghost: string | undefined
+  const controller = createController({
+    predict: async (value, token) => { signal = value; return token ? new Promise(resolve => { finish = resolve }) : { text: "▱▰▱ Run the targeted tests.", escalation: offer } },
+    paint: text => { ghost = text; return !!text }, insert: () => true,
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  await controller.request()
+  const pending = controller.request(true)
+  assert.equal(ghost, undefined)
+  controller.update({ key: "one", eligible: true, draft: "typed" })
+  assert.equal(signal.aborted, true)
+  finish({ text: "Explain the failure." }); await pending
+  controller.update({ key: "one", eligible: true, draft: "" })
+  assert.equal(ghost, "▱▰▱ Run the targeted tests.")
+  assert.equal(controller.accept(), true)
+  controller.dispose()
+})
+
+test("exhaustion status is temporary and restores the original without another generation", async t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] })
+  let ghost: string | undefined
+  let message: any
+  let calls = 0
+  const controller = createController({
+    predict: async () => { calls++; return { text: "Original.", communication: { message: "" } } },
+    paint: text => { ghost = text; return !!text }, insert: () => true, communicate: value => { message = value },
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  await controller.request()
+  await controller.request(true)
+  assert.equal(ghost, undefined)
+  assert.equal(message.message, "No alternatives available.")
+  assert.equal(controller.accept(), false)
+  t.mock.timers.tick(1500)
+  assert.equal(ghost, "Original.")
+  assert.equal(calls, 1)
+  assert.equal(controller.accept(), true)
+  controller.dispose()
+})
+
+test("initial generation emits activity without adoptable text and disposal clears it", async () => {
+  let finish!: (reply: any) => void
+  let message: any
+  const inserted: string[] = []
+  const controller = createController({
+    predict: async () => new Promise(resolve => { finish = resolve }), paint: text => !!text,
+    insert: text => { inserted.push(text); return true }, communicate: value => { message = value },
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  const pending = controller.request()
+  assert.deepEqual(message.activity, { kind: "initial" })
+  assert.match(communicationText(message), /^\uFFFB[▰▱]{3}$/)
+  assert.equal(controller.accept(), false)
+  controller.dispose()
+  assert.equal(message, undefined)
+  finish({ text: "Late." }); await pending
+  assert.equal(message, undefined)
+  assert.deepEqual(inserted, [])
+})
 
 test("Tab accepts visible current text once, leaves it editable, and otherwise passes through", async () => {
   const { controller, inserted, ghost } = setup()

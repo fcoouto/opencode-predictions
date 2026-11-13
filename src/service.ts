@@ -4,7 +4,7 @@ import { resolveModels, type Candidate, type CatalogModel } from "./models.ts"
 import { statusNotice, reasonNotice, pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
 export type Request = { sessionID: string; completion: number; requestID?: string; manual?: boolean; escalation?: string }
 export type EscalationOffer = { token: string; group: number; model: ModelRef; name: string }
-export type Reply = { text?: string; reason?: string; notice?: Notice; escalation?: EscalationOffer }
+export type Reply = { text?: string; reason?: string; notice?: Notice; escalation?: EscalationOffer; modelName?: string }
 export type Session = { id: string; parentID?: string; outcome?: string; time: { idle?: number; busy?: number; updated?: number }; location: { directory: string } }
 export type ServiceAPI = {
   session(id: string, signal: AbortSignal): Promise<Session>
@@ -16,7 +16,7 @@ export type ServiceAPI = {
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
 export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
 
-async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
+export async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
   let onAbort: () => void = () => {}
   try {
@@ -59,7 +59,9 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
   const skipped = new Map<string, { until: number; reason: string }>()
   const outcomes = new Map<string, "working" | "failed">()
   const owners = new Map<string, { group: number }>()
-  type Offer = { sessionID: string; completion: number; afterGroup: number; offer: EscalationOffer }
+  type Cycle = { key: string; sessionID: string; completion: number; group: number; tried: Set<string>; pending: boolean; token?: string }
+  type Offer = { cycle: Cycle; offer: EscalationOffer }
+  const cycles = new Map<string, Cycle>()
   const offers = new Map<string, Offer>()
   const modelKey = (model: ModelRef) => JSON.stringify([model.providerID, model.id])
   const candidateKey = (model: ModelRef) => JSON.stringify([model.providerID, model.id, model.variant ?? null])
@@ -120,19 +122,19 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     const entry = skip(model)
     return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...(Number.isFinite(entry.until) ? { retryAt: entry.until } : {}) } : { ...model, state: "ready" }
   }
-  const noSuggestion = (request: Request, afterGroup: number): Reply => {
-    if (options?.escalation === "off") return { reason: "no_suggestion" }
-    for (const [token, previous] of offers) if (previous.sessionID === request.sessionID) offers.delete(token)
-    for (let group = afterGroup + 1; group < (groups?.length ?? 0); group++) {
-      const candidate = groups![group].find(model => !skip(model))
+  const nextOffer = (_request: Request, cycle: Cycle): EscalationOffer | undefined => {
+    if (options?.escalation === "off" || cycles.get(cycle.key) !== cycle) return
+    if (cycle.token) offers.delete(cycle.token)
+    cycle.token = undefined
+    for (let group = cycle.group; group < (groups?.length ?? 0); group++) {
+      const candidate = groups![group].find(model => !skip(model) && !cycle.tried.has(candidateKey(model)))
       if (!candidate) continue
       const { name, ...model } = candidate
       const offer = { token: crypto.randomUUID(), group: group + 1, model, name }
-      offers.set(offer.token, { sessionID: request.sessionID, completion: request.completion, afterGroup, offer })
-      if (offers.size > 128) offers.delete(offers.keys().next().value!)
-      return { reason: "no_suggestion", escalation: offer }
+      offers.set(offer.token, { cycle, offer })
+      cycle.token = offer.token
+      return offer
     }
-    return { reason: "no_suggestion" }
   }
   const status = (): Status => {
     const candidates = groups?.flat()
@@ -155,15 +157,35 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     const limitEscalation = () => { deadline = AbortSignal.timeout(options.timeoutMs); parent = AbortSignal.any([caller, deadline]) }
     let offered: Offer | undefined
     let extraCall = false
-    if (request.escalation !== undefined) {
+    const key = JSON.stringify([request.sessionID, request.completion])
+    let cycle = cycles.get(key)
+    const continuing = !!cycle?.tried.size
+    const refreshing = request.escalation === "refresh"
+    if (refreshing) {
+      if (!request.manual || options.escalation === "off" || !cycle) return { reason: "escalation_unavailable" }
+      limitEscalation()
+    } else if (request.escalation !== undefined) {
       offered = offers.get(request.escalation)
-      if (!request.manual || options.escalation === "off" || !offered || offered.sessionID !== request.sessionID || offered.completion !== request.completion) return { reason: "escalation_unavailable" }
+      if (!request.manual || options.escalation === "off" || !offered || offered.cycle !== cycle || offered.cycle.pending) return { reason: "escalation_unavailable" }
       offers.delete(request.escalation)
       extraCall = true
       limitEscalation()
-    } else {
-      for (const [token, previous] of offers) if (previous.sessionID === request.sessionID) offers.delete(token)
     }
+    if (options.escalation === "off") cycle = undefined
+    if (cycle?.pending) return { reason: "escalation_unavailable" }
+    if (!cycle) {
+      cycle = { key, sessionID: request.sessionID, completion: request.completion, group: 0, tried: new Set(), pending: false }
+      if (options.escalation !== "off") {
+        cycles.set(key, cycle)
+        if (cycles.size > 128) {
+          const oldest = cycles.values().next().value!
+          cycles.delete(oldest.key)
+          if (oldest.token) offers.delete(oldest.token)
+        }
+      }
+    }
+    const progress = cycle
+    progress.pending = true
     let configured: Candidate[] = []
     const check = (session: Session): string | undefined => {
       const completion = session.time.idle || (request.manual === true && !session.time.busy ? session.time.updated : undefined)
@@ -201,10 +223,12 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" }
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns)
         if (!prompt) return { reason: "context_unavailable" }
-        let chain = groups!.flatMap((queue, group) => queue.map(model => ({ ...model, group })))
+        if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" }
+        if ((continuing || refreshing) && !offered) return { reason: "no_suggestion" }
+        let chain = groups!.flatMap((queue, group) => queue.map(model => ({ ...model, group }))).filter(model => model.group >= progress.group && !progress.tried.has(candidateKey(model)))
         if (offered) {
           const target = chain.find(model => model.group + 1 === offered.offer.group && candidateKey(model) === candidateKey(offered.offer.model) && !skip(model))
-          if (!target) return noSuggestion(request, offered.afterGroup)
+          if (!target) return { reason: "no_suggestion" }
           chain = [target]
         }
         const ownership = new Map(owners)
@@ -214,9 +238,12 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent))
           if (changed) return { reason: changed }
           parent.throwIfAborted()
+          if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" }
           const candidate = chain[index]
           if (skip(candidate)) continue
           const { name, group, ...model } = candidate
+          progress.group = group
+          progress.tried.add(candidateKey(model))
           const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)])
           let generating = true
           try {
@@ -232,9 +259,9 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             try { abstained = (JSON.parse(output) as { prompt?: unknown } | null)?.prompt === null } catch {}
             if (abstained) {
               if (!skip(model)) move(model, true, group, ownership)
-              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex(candidate => candidate.group > group && !skip(candidate)) : -1
+              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate, next) => next > index && !progress.tried.has(candidateKey(candidate)) && !skip(candidate)) : -1
               if (next !== -1) { extraCall = true; limitEscalation(); index = next - 1; continue }
-              return noSuggestion(request, group)
+              return { reason: "no_suggestion", ...(options.escalation !== "off" ? { modelName: name } : {}) }
             }
             throw new Error("Invalid prediction response")
           } catch (error) {
@@ -286,11 +313,16 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         return reply
       }, parent)
       lastOutcome = reply.text ? "suggestion" : reply.reason
+      if (reply.text || ["no_suggestion", "generation_failed", "timeout"].includes(reply.reason ?? "")) {
+        const escalation = nextOffer(request, progress)
+        if (escalation) reply.escalation = escalation
+      }
       return reply
     } catch {
       lastOutcome = caller.aborted ? "cancelled" : deadline?.aborted ? "timeout" : "generation_failed"
       return { reason: lastOutcome, ...(lastOutcome !== "cancelled" ? { notice: reasonNotice(lastOutcome === "timeout" ? "timeout" : "service_unavailable") } : {}) }
     } finally {
+      progress.pending = false
       lastLatencyMs = Math.round(performance.now() - started)
     }
   }

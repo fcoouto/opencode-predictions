@@ -30,7 +30,7 @@ var Predictions = Rpc.define({
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice, escalation }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, modelName: { type: "string" }, notice, escalation }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },
@@ -294,6 +294,7 @@ function createService(api, rawOptions, directory) {
   const skipped = /* @__PURE__ */ new Map();
   const outcomes = /* @__PURE__ */ new Map();
   const owners = /* @__PURE__ */ new Map();
+  const cycles = /* @__PURE__ */ new Map();
   const offers = /* @__PURE__ */ new Map();
   const modelKey = (model) => JSON.stringify([model.providerID, model.id]);
   const candidateKey = (model) => JSON.stringify([model.providerID, model.id, model.variant ?? null]);
@@ -353,19 +354,19 @@ function createService(api, rawOptions, directory) {
     const entry = skip(model);
     return entry ? { ...model, state: entry.until === Infinity ? "blocked" : "cooling", reason: entry.reason, ...Number.isFinite(entry.until) ? { retryAt: entry.until } : {} } : { ...model, state: "ready" };
   };
-  const noSuggestion = (request, afterGroup) => {
-    if (options?.escalation === "off") return { reason: "no_suggestion" };
-    for (const [token, previous] of offers) if (previous.sessionID === request.sessionID) offers.delete(token);
-    for (let group = afterGroup + 1; group < (groups?.length ?? 0); group++) {
-      const candidate = groups[group].find((model2) => !skip(model2));
+  const nextOffer = (_request, cycle) => {
+    if (options?.escalation === "off" || cycles.get(cycle.key) !== cycle) return;
+    if (cycle.token) offers.delete(cycle.token);
+    cycle.token = void 0;
+    for (let group = cycle.group; group < (groups?.length ?? 0); group++) {
+      const candidate = groups[group].find((model2) => !skip(model2) && !cycle.tried.has(candidateKey(model2)));
       if (!candidate) continue;
       const { name, ...model } = candidate;
       const offer = { token: crypto.randomUUID(), group: group + 1, model, name };
-      offers.set(offer.token, { sessionID: request.sessionID, completion: request.completion, afterGroup, offer });
-      if (offers.size > 128) offers.delete(offers.keys().next().value);
-      return { reason: "no_suggestion", escalation: offer };
+      offers.set(offer.token, { cycle, offer });
+      cycle.token = offer.token;
+      return offer;
     }
-    return { reason: "no_suggestion" };
   };
   const status = () => {
     const candidates = groups?.flat();
@@ -397,15 +398,35 @@ function createService(api, rawOptions, directory) {
     };
     let offered;
     let extraCall = false;
-    if (request.escalation !== void 0) {
+    const key = JSON.stringify([request.sessionID, request.completion]);
+    let cycle = cycles.get(key);
+    const continuing = !!cycle?.tried.size;
+    const refreshing = request.escalation === "refresh";
+    if (refreshing) {
+      if (!request.manual || options.escalation === "off" || !cycle) return { reason: "escalation_unavailable" };
+      limitEscalation();
+    } else if (request.escalation !== void 0) {
       offered = offers.get(request.escalation);
-      if (!request.manual || options.escalation === "off" || !offered || offered.sessionID !== request.sessionID || offered.completion !== request.completion) return { reason: "escalation_unavailable" };
+      if (!request.manual || options.escalation === "off" || !offered || offered.cycle !== cycle || offered.cycle.pending) return { reason: "escalation_unavailable" };
       offers.delete(request.escalation);
       extraCall = true;
       limitEscalation();
-    } else {
-      for (const [token, previous] of offers) if (previous.sessionID === request.sessionID) offers.delete(token);
     }
+    if (options.escalation === "off") cycle = void 0;
+    if (cycle?.pending) return { reason: "escalation_unavailable" };
+    if (!cycle) {
+      cycle = { key, sessionID: request.sessionID, completion: request.completion, group: 0, tried: /* @__PURE__ */ new Set(), pending: false };
+      if (options.escalation !== "off") {
+        cycles.set(key, cycle);
+        if (cycles.size > 128) {
+          const oldest = cycles.values().next().value;
+          cycles.delete(oldest.key);
+          if (oldest.token) offers.delete(oldest.token);
+        }
+      }
+    }
+    const progress = cycle;
+    progress.pending = true;
     let configured = [];
     const check = (session) => {
       const completion = session.time.idle || (request.manual === true && !session.time.busy ? session.time.updated : void 0);
@@ -443,10 +464,12 @@ function createService(api, rawOptions, directory) {
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" };
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns);
         if (!prompt) return { reason: "context_unavailable" };
-        let chain = groups.flatMap((queue, group) => queue.map((model) => ({ ...model, group })));
+        if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" };
+        if ((continuing || refreshing) && !offered) return { reason: "no_suggestion" };
+        let chain = groups.flatMap((queue, group) => queue.map((model) => ({ ...model, group }))).filter((model) => model.group >= progress.group && !progress.tried.has(candidateKey(model)));
         if (offered) {
           const target = chain.find((model) => model.group + 1 === offered.offer.group && candidateKey(model) === candidateKey(offered.offer.model) && !skip(model));
-          if (!target) return noSuggestion(request, offered.afterGroup);
+          if (!target) return { reason: "no_suggestion" };
           chain = [target];
         }
         const ownership = new Map(owners);
@@ -456,9 +479,12 @@ function createService(api, rawOptions, directory) {
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
           parent.throwIfAborted();
+          if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" };
           const candidate = chain[index];
           if (skip(candidate)) continue;
           const { name, group, ...model } = candidate;
+          progress.group = group;
+          progress.tried.add(candidateKey(model));
           const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)]);
           let generating = true;
           try {
@@ -480,22 +506,22 @@ function createService(api, rawOptions, directory) {
             }
             if (abstained) {
               if (!skip(model)) move(model, true, group, ownership);
-              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate2) => candidate2.group > group && !skip(candidate2)) : -1;
+              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate2, next2) => next2 > index && !progress.tried.has(candidateKey(candidate2)) && !skip(candidate2)) : -1;
               if (next !== -1) {
                 extraCall = true;
                 limitEscalation();
                 index = next - 1;
                 continue;
               }
-              return noSuggestion(request, group);
+              return { reason: "no_suggestion", ...options.escalation !== "off" ? { modelName: name } : {} };
             }
             throw new Error("Invalid prediction response");
           } catch (error) {
             const timedOut = signal.aborted;
             if (!caller.aborted && deadline?.aborted && generating) {
-              const key2 = candidateKey(model);
+              const key3 = candidateKey(model);
               const until2 = Date.now() + 6e4;
-              if ((skipped.get(key2)?.until ?? 0) < until2) skipped.set(key2, { until: until2, reason: `Timed out after ${options.timeoutMs} ms.` });
+              if ((skipped.get(key3)?.until ?? 0) < until2) skipped.set(key3, { until: until2, reason: `Timed out after ${options.timeoutMs} ms.` });
               move(model, false, group, ownership);
             }
             parent.throwIfAborted();
@@ -504,9 +530,9 @@ function createService(api, rawOptions, directory) {
             parent.throwIfAborted();
             failure = timedOut ? "timeout" : "generation_failed";
             const policy = timedOut ? { detail: `Timed out after ${options.timeoutMs} ms.`, delayMs: 6e4, modelWide: false } : failurePolicy(error);
-            const key = policy.modelWide ? modelKey(model) : candidateKey(model);
+            const key2 = policy.modelWide ? modelKey(model) : candidateKey(model);
             const until = Date.now() + policy.delayMs;
-            if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail });
+            if ((skipped.get(key2)?.until ?? 0) < until) skipped.set(key2, { until, reason: policy.detail });
             move(model, false, group, ownership, policy.modelWide);
             if (extraCall) break;
             if (options.debug) {
@@ -539,11 +565,16 @@ Queue: ${queue}`, request);
         return reply2;
       }, parent);
       lastOutcome = reply.text ? "suggestion" : reply.reason;
+      if (reply.text || ["no_suggestion", "generation_failed", "timeout"].includes(reply.reason ?? "")) {
+        const escalation2 = nextOffer(request, progress);
+        if (escalation2) reply.escalation = escalation2;
+      }
       return reply;
     } catch {
       lastOutcome = caller.aborted ? "cancelled" : deadline?.aborted ? "timeout" : "generation_failed";
       return { reason: lastOutcome, ...lastOutcome !== "cancelled" ? { notice: reasonNotice(lastOutcome === "timeout" ? "timeout" : "service_unavailable") } : {} };
     } finally {
+      progress.pending = false;
       lastLatencyMs = Math.round(performance.now() - started);
     }
   };

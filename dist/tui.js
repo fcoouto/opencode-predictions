@@ -2,13 +2,18 @@
 import { Plugin } from "@opencode/plugin/tui";
 
 // src/controller.ts
-function communicationText(value) {
-  const offer = value.offer;
-  return [value.pending ? "Asking another model\u2026" : value.message, offer && `Next: ${offer.name} (${offer.model.providerID}/${offer.model.id}${offer.model.variant ? "#" + offer.model.variant : ""}), group ${offer.group}.`, offer && "Uses this provider's quota.", offer && !value.pending && "Ask another model \xB7 Alt+Shift+P"].filter(Boolean).join("\n");
+function communicationText(value, reducedMotion = false, shortcut = "Alt+Shift+P") {
+  if (!value.activity) return value.message && value.offer ? `${value.message}
+Use ${shortcut} to escalate it to [${value.offer.name}].` : value.message;
+  const indicator = reducedMotion ? "\u2026" : ["\u25B0\u25B1\u25B1", "\u25B1\u25B0\u25B1", "\u25B1\u25B1\u25B0"][Math.floor(Date.now() / 200) % 3];
+  return "\uFFFB" + indicator + (value.activity.kind === "alternative" ? " " + value.activity.name : "");
 }
 function createController(io) {
   let current = { eligible: false, draft: "" };
   let pending;
+  let staged;
+  let transient;
+  let timer;
   const results = /* @__PURE__ */ new Map();
   let visible = false;
   let disposed = false;
@@ -23,15 +28,35 @@ function createController(io) {
   };
   const paint = () => {
     const result = !disposed && !current.draft && current.key ? results.get(current.key) : void 0;
-    visible = io.paint(current.eligible ? result?.text : void 0);
-    io.communicate?.(result?.communication ? { ...result.communication, pending: !!pending } : void 0);
+    const activity = staged ?? (pending ? result?.communication?.offer ? { kind: "alternative", name: result.communication.offer.name } : { kind: "initial" } : void 0);
+    const message = transient && transient.key === current.key ? transient.message : void 0;
+    visible = io.paint(current.eligible && !activity && !message ? result?.text : void 0);
+    io.communicate?.(!current.draft && !disposed ? activity ? { ...result?.communication, message: "", activity, pending: true } : message ? { message } : result?.communication : void 0);
+  };
+  const clearTransient = () => {
+    clearTimeout(timer);
+    timer = void 0;
+    transient = void 0;
   };
   const clear = () => {
     pending?.abort();
     pending = void 0;
+    staged = void 0;
+    clearTransient();
     visible = false;
     io.paint(void 0);
     io.communicate?.(void 0);
+  };
+  const exhausted = () => {
+    if (!current.key) return;
+    clearTransient();
+    transient = { key: current.key, message: "No alternatives available." };
+    timer = setTimeout(() => {
+      transient = void 0;
+      timer = void 0;
+      paint();
+    }, 1500);
+    paint();
   };
   return {
     update(snapshot) {
@@ -40,41 +65,64 @@ function createController(io) {
       current = snapshot;
       if (snapshot.key && snapshot.draft) {
         remember(snapshot.key);
-        if (results.get(snapshot.key)?.communication) results.delete(snapshot.key);
+        const result = results.get(snapshot.key);
+        if (result?.text) result.communication = void 0;
+        else results.delete(snapshot.key);
       }
       paint();
     },
-    async request(manual = false, expectedOffer) {
+    async request(manual = false, expectedOffer, continuation = false) {
       const key = current.key;
       if (disposed || !key || !current.eligible || current.draft || pending || !manual && attempted.has(key)) return;
       const communication = results.get(key)?.communication;
       if (manual && expectedOffer !== void 0 && (communication?.offer?.token ?? null) !== expectedOffer) return;
-      if (manual && communication && !communication.offer) return;
-      const escalation2 = manual ? communication?.offer?.token : void 0;
+      if (manual && communication && !communication.offer && expectedOffer !== null) {
+        staged = void 0;
+        exhausted();
+        return;
+      }
+      const escalation2 = manual ? communication?.offer?.token ?? (continuation && attempted.has(key) ? "refresh" : void 0) : void 0;
+      const refreshing = manual && !!communication && !communication.offer;
+      let noAlternatives = false;
       remember(key);
       const request = new AbortController();
       pending = request;
+      clearTransient();
       paint();
       try {
         const reply = await io.predict(request.signal, escalation2);
         if (!disposed && !request.signal.aborted && current.key === key && !current.draft) {
-          if (reply.text) results.set(key, { text: reply.text });
-          else if (reply.communication) results.set(key, { communication: reply.communication });
-          else if (communication) results.delete(key);
+          const text = reply.text || results.get(key)?.text;
+          const next = reply.communication ?? (reply.escalation ? { message: "", offer: reply.escalation } : !reply.text && communication ? { message: text ? "" : "No suggestion." } : void 0);
+          results.set(key, { text, communication: next });
+          noAlternatives = refreshing && reply.reason === "no_suggestion" && !next?.offer;
         }
       } catch {
+        if (!request.signal.aborted && current.key === key) {
+          const result = results.get(key);
+          if (result?.communication) result.communication = { message: result.text ? "" : "Prediction failed." };
+        }
       } finally {
         if (pending === request) {
           pending = void 0;
-          paint();
+          staged = void 0;
+          if (noAlternatives) exhausted();
+          else paint();
         }
       }
     },
     accept() {
       const result = current.key ? results.get(current.key) : void 0;
-      if (disposed || !visible || !current.eligible || current.draft || !result?.text) return false;
+      if (disposed || pending || staged || !visible || !current.eligible || current.draft || !result?.text) return false;
       clear();
-      return io.insert(result.text);
+      result.communication = void 0;
+      const inserted = io.insert(result.text);
+      if (!inserted) paint();
+      return inserted;
+    },
+    stage(activity) {
+      staged = activity;
+      paint();
     },
     preview() {
       return current.key ? results.get(current.key)?.text : void 0;
@@ -89,10 +137,11 @@ function createController(io) {
 }
 
 // src/adapters/terminal.ts
-function createTerminalAdapter(renderer) {
+function createTerminalAdapter(renderer, reducedMotion = () => false) {
   let painted;
   let original;
   let ghost;
+  let status = false;
   const editor = () => {
     const value = renderer.currentFocusedEditor;
     if (!value || typeof value.plainText !== "string" || typeof value.insertText !== "function" || !("placeholder" in value)) return;
@@ -123,9 +172,20 @@ function createTerminalAdapter(renderer) {
   return {
     eligible: () => editor()?.plainText === "",
     read: () => editor()?.plainText ?? "",
-    paint,
+    paint(text) {
+      if (!text && status) return false;
+      status = false;
+      return paint(text);
+    },
     communicate(value) {
-      if (value) paint(communicationText(value));
+      const text = value && communicationText(value, reducedMotion(), process.platform === "darwin" ? "Option+Shift+P" : "Alt+Shift+P");
+      if (text) {
+        status = true;
+        paint(text);
+      } else if (status) {
+        clear();
+        status = false;
+      }
     },
     insert(text) {
       const current = editor();
@@ -138,11 +198,8 @@ function createTerminalAdapter(renderer) {
   };
 }
 
-// src/log.ts
-var prefix = "[opencode-predictions]";
-function log(show, message) {
-  show(message.startsWith(prefix) ? message : `${prefix} ${message}`);
-}
+// src/predict.ts
+var encoder = new TextEncoder();
 
 // package.json
 var package_default = {
@@ -228,7 +285,7 @@ function formatStatus(status, details) {
   if (notice2) lines.push(notice2.message);
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`);
-    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic \u2014 at most one additional model call; may consume paid provider quota." : status.escalation === "manual" ? "Manual \u2014 Ask another model uses the displayed provider's quota." : "Off"}`);
+    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic \u2014 at most one additional model call after abstention; may consume paid provider quota." : status.escalation === "manual" ? "Manual \u2014 Alt+Shift+P tries an untried model using its provider's quota." : "Off"}`);
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : []);
     for (const [index, group] of groups.entries()) {
       lines.push(`Group ${index + 1}: ${group.selectors}`);
@@ -254,6 +311,28 @@ function formatStatus(status, details) {
   ];
   if (status && status.feedbackRevision !== feedbackRevision) technical.push("Feedback capabilities differ or are unknown. Check the installed client and server plugin versions to confirm compatibility.");
   return { summary: lines.join("\n"), details: technical.join("\n") };
+}
+
+// src/service.ts
+async function abortable(work, signal) {
+  signal.throwIfAborted();
+  let onAbort = () => {
+  };
+  try {
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await Promise.race([work(), aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
+// src/log.ts
+var prefix = "[opencode-predictions]";
+function log(show, message) {
+  show(message.startsWith(prefix) ? message : `${prefix} ${message}`);
 }
 
 // src/client.ts
@@ -339,20 +418,23 @@ function startClient(host) {
       const state = current;
       const location = scope;
       const generation = epoch;
+      const version = cache?.version;
       const explicit = requestingManual;
       let final;
       const modern = cache?.feedbackRevision === feedbackRevision;
       const debug = !!cache?.debug;
       const legacyProgress = [];
       const progress = (message) => log((text) => host.show({ code: "progress", severity: "info", title: "Prompt predictions", message: text }), message);
-      const live = () => !disposed && !signal.aborted && epoch === generation && host.scope() === location && host.state()?.key === state.key;
+      const live = () => !disposed && !signal.aborted && epoch === generation && host.scope() === location && host.state()?.key === state.key && !host.state()?.draft;
       const flight = { signal, scope: location, epoch: generation, explicit };
+      const deadline = escalation2 ? AbortSignal.timeout(cache?.timeoutMs ?? 8e3) : void 0;
+      const requestSignal = deadline ? AbortSignal.any([signal, deadline]) : signal;
       predicting = flight;
       try {
         let reply;
         try {
-          reply = await host.predict(state, crypto.randomUUID(), signal, (message, notice3) => {
-            if (!live()) return;
+          reply = await abortable(() => host.predict(state, crypto.randomUUID(), requestSignal, (message, notice3) => {
+            if (!live() || requestSignal.aborted) return;
             if (notice3) {
               final = notice3;
               return;
@@ -362,11 +444,22 @@ function startClient(host) {
               legacyProgress.push(message);
               if (legacyProgress.length > 32) legacyProgress.shift();
             }
-          }, explicit, escalation2);
+          }, explicit, escalation2), requestSignal);
         } catch {
-          reply = { reason: "service_unavailable", notice: reasonNotice("service_unavailable") };
+          const reason = deadline?.aborted && !signal.aborted ? "timeout" : "service_unavailable";
+          reply = { reason, notice: reasonNotice(reason) };
         }
-        if (!live()) return { reason: "stale" };
+        if (!live()) {
+          if (!signal.aborted) {
+            const latest = host.state();
+            if (host.scope() === location && latest?.key === state.key && latest.draft) controller.update({ key: JSON.stringify([location, state.key, version]), eligible: false, draft: latest.draft });
+            else {
+              sync();
+              controller.update({ eligible: false, draft: "" });
+            }
+          }
+          return { reason: "stale" };
+        }
         if (reply.text || reply.reason === "no_suggestion") {
           record().requestFailure = void 0;
           record().announced = record().health ? fingerprint(record().health) : void 0;
@@ -378,8 +471,8 @@ function startClient(host) {
           record().requestFailure = notice2;
           announce(notice2, explicit);
         } else if (notice2 && explicit && !(reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice2, true);
-        if (reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate) {
-          return { ...reply, communication: { message: reply.escalation ? "No suggestion from this model." : "No other models available.", offer: reply.escalation } };
+        if (cache?.escalation && cache.escalation !== "off") {
+          return { ...reply, communication: { message: reply.text || controller.preview() ? "" : reply.reason === "no_suggestion" ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction." : "Prediction failed.", offer: reply.escalation } };
         }
         return reply;
       } finally {
@@ -394,12 +487,14 @@ function startClient(host) {
     const generation = epoch;
     const inspectedFailure = record().requestFailure;
     const abort = new AbortController();
+    const deadline = AbortSignal.timeout(cache?.timeoutMs ?? 8e3);
+    const signal = AbortSignal.any([abort.signal, deadline]);
     const live = () => !disposed && !abort.signal.aborted && epoch === generation && host.scope() === location;
     const request2 = { abort, done: Promise.resolve() };
     loading = request2;
     const done = (async () => {
       try {
-        const value = await host.status(abort.signal);
+        const value = await abortable(() => host.status(signal), signal);
         if (live()) {
           cache = value;
           checked = Date.now();
@@ -408,9 +503,15 @@ function startClient(host) {
         }
       } catch {
         if (live()) {
-          cache = void 0;
           checked = Date.now();
-          health(reasonNotice("service_unavailable"));
+          if (deadline.aborted) {
+            manual = void 0;
+            controller.stage(void 0);
+            health(reasonNotice("timeout"));
+          } else {
+            cache = void 0;
+            health(reasonNotice("service_unavailable"));
+          }
         }
       } finally {
         if (loading?.abort === abort) loading = void 0;
@@ -426,33 +527,41 @@ function startClient(host) {
     if (scope && !loading && Date.now() - checked >= 2e3) void load();
     if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = void 0;
     const available = !!cache?.enabled && !cache.reason;
-    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, eligible: !!current?.eligible && available, draft: current?.draft ?? "" });
+    controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, eligible: !!current?.eligible && !!cache?.enabled, draft: current?.draft ?? "" });
+    controller.stage(manual?.activity);
     if (manual && !loading) {
       const action = manual;
       manual = void 0;
-      if (action.version && action.version !== cache?.version) return;
+      if (action.version && action.version !== cache?.version) {
+        controller.stage(void 0);
+        return;
+      }
       const issue = record().health?.severity === "error" ? record().health : !cache ? reasonNotice("service_unavailable") : !cache.enabled ? reasonNotice("disabled") : !current ? reasonNotice("context_unavailable") : current.draft || !current.eligible ? reasonNotice("composer_unavailable") : void 0;
       if (issue) {
+        controller.stage(void 0);
         announce(issue, true);
         return;
       }
       if (activePrediction()) {
-        announce({ code: "prediction_pending", severity: "info", title: "A prediction is already running", message: "Wait for the current prediction to finish." }, true);
+        controller.stage(void 0);
         return;
       }
       requestingManual = true;
-      void controller.request(true, action.escalation ?? null);
+      void controller.request(true, action.escalation ?? null, !!cache?.escalation && cache.escalation !== "off");
       requestingManual = false;
     } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request();
   };
   const request = (fromShortcut = false) => {
     if (disposed) return;
     sync();
+    if (manual || activePrediction()) return;
     if (!scope) {
       announce(reasonNotice("location_unavailable"), true);
       return;
     }
-    manual = { scope, key: host.state()?.key, fromShortcut, draft: host.state()?.draft ?? "", epoch, version: cache?.version, escalation: communication?.offer?.token };
+    const offer = communication?.offer;
+    manual = { scope, key: host.state()?.key, fromShortcut, draft: host.state()?.draft ?? "", epoch, version: cache?.version, escalation: offer?.token, activity: offer ? { kind: "alternative", name: offer.name } : { kind: "initial" } };
+    controller.stage(manual.activity);
     host.focus();
     tick();
   };
@@ -529,7 +638,7 @@ var Predictions = Rpc.define({
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice, escalation }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, modelName: { type: "string" }, notice, escalation }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },
@@ -544,10 +653,32 @@ var Predictions = Rpc.define({
 });
 
 // src/tui.ts
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 var tui_default = Plugin.define({
   id: "opencode-predictions.tui",
   setup(ctx) {
-    const adapter = createTerminalAdapter(ctx.renderer);
+    let checkedMotion = -Infinity;
+    let reducedMotion = true;
+    const adapter = createTerminalAdapter(ctx.renderer, () => {
+      if (Date.now() - checkedMotion < 2e3) return reducedMotion;
+      checkedMotion = Date.now();
+      try {
+        let settings = {};
+        try {
+          settings = JSON.parse(readFileSync(join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode", "cli.json"), "utf8"));
+        } catch (error) {
+          if (error.code !== "ENOENT") throw error;
+        }
+        const inline = JSON.parse(process.env.OPENCODE_CLI_CONFIG_CONTENT ?? "{}");
+        const animations = inline.animations ?? settings.animations;
+        reducedMotion = animations !== void 0 && animations !== true;
+      } catch {
+        reducedMotion = true;
+      }
+      return reducedMotion;
+    });
     const session = () => {
       const route = ctx.ui.router.current();
       return route.type === "session" ? ctx.data.session.get(route.sessionID) : void 0;

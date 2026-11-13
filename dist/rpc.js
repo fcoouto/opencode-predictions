@@ -27,7 +27,7 @@ var Predictions = Rpc.define({
         required: ["sessionID", "completion", "requestID"],
         additionalProperties: false
       },
-      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, notice, escalation }, additionalProperties: false }
+      output: { type: "object", properties: { text: { type: "string" }, reason: { type: "string" }, modelName: { type: "string" }, notice, escalation }, additionalProperties: false }
     },
     status: {
       input: { type: "object", additionalProperties: false },

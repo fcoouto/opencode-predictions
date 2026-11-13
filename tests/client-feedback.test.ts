@@ -210,7 +210,8 @@ test("an aborted request in another location cannot block or clear newer manual 
     assert.deepEqual(attempts, ["session", "second"])
     finishes[0]({ reason: "no_suggestion" }); await settle()
     f.client.request(); await settle()
-    assert.equal(f.notices.at(-1)?.code, "prediction_pending", "old finally must not release the newer request's busy state")
+    assert.deepEqual(attempts, ["session", "second"], "old finally must not release the newer request's busy state")
+    assert.equal(f.notices.some(notice => notice.code === "prediction_pending"), false, "repeated pending requests stay silent")
     finishes[1]({ reason: "no_suggestion" }); await settle()
   } finally { f.client.dispose() }
 })
