@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { createFixture } from "./fixture.mjs"
+import { createFixture, isPredictionCall } from "./fixture.mjs"
 import { Predictions } from "../../src/rpc.ts"
 import type { Reply, Status } from "../../src/service.ts"
 
@@ -21,8 +21,8 @@ test("packed server API generates from a real session without changing its histo
   assert.deepEqual(await fixture.api.session.context({ sessionID: session.id }), history)
 })
 
-test("real server RPC preserves escalation offers and rejects their reuse without history writes", { timeout: 60000 }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: ["fixture/model", "fixture/second"], escalation: "manual" }, { predictionOutputs: { model: '{"prompt":null}', second: '{"prompt":"Run the targeted tests."}' } })
+test("real server RPC preserves text plus same-group offers and rejects reuse without history writes", { timeout: 60000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [["fixture/model", "fixture/second"]], escalation: "manual" }, { predictionOutputs: { model: '{"prompt":"Original prediction."}', second: '{"prompt":"Run the targeted tests."}' } })
   const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
   await fixture.api.session.prompt({ sessionID: session.id, text: "Fix the assertion." })
   await fixture.api.session.wait({ sessionID: session.id })
@@ -31,11 +31,26 @@ test("real server RPC preserves escalation offers and rejects their reuse withou
   const rpc = fixture.api.rpc(Predictions)
   const input = { sessionID: session.id, completion: completed.time.idle!, requestID: crypto.randomUUID() }
   const first = await rpc.predict(input, { location: session.location }) as Reply
-  assert.equal(first.reason, "no_suggestion")
+  assert.equal(first.text, "Original prediction.")
   assert.ok(first.escalation)
   assert.equal(first.escalation.model.id, "second")
-  const escalation = { ...input, requestID: crypto.randomUUID(), manual: true, escalation: first.escalation.token }
+  assert.equal(first.escalation.group, 1)
+  const refreshed = await rpc.predict({ ...input, requestID: crypto.randomUUID(), manual: true, escalation: "refresh" }, { location: session.location }) as Reply
+  assert.equal(refreshed.escalation?.model.id, "second")
+  assert.equal(fixture.calls.filter(isPredictionCall).length, 1)
+  const escalation = { ...input, requestID: crypto.randomUUID(), manual: true, escalation: refreshed.escalation!.token }
   assert.deepEqual(await rpc.predict(escalation, { location: session.location }), { text: "Run the targeted tests." })
   assert.deepEqual(await rpc.predict({ ...escalation, requestID: crypto.randomUUID() }, { location: session.location }), { reason: "escalation_unavailable" })
   assert.deepEqual(await fixture.api.session.context({ sessionID: session.id }), history)
+})
+
+test("real server RPC preserves the abstaining display name for placeholder communication", { timeout: 60000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [["fixture/model", "fixture/second"]] }, { predictionOutputs: { model: '{"prompt":null}', second: '{"prompt":"Run tests."}' } })
+  const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
+  await fixture.api.session.prompt({ sessionID: session.id, text: "Fix the assertion." })
+  await fixture.api.session.wait({ sessionID: session.id })
+  const completed = await fixture.api.session.get({ sessionID: session.id })
+  const reply = await fixture.api.rpc(Predictions).predict({ sessionID: session.id, completion: completed.time.idle!, requestID: crypto.randomUUID() }, { location: session.location }) as Reply
+  assert.equal(reply.modelName, "Fixture Flash")
+  assert.equal(reply.escalation?.name, "Fixture second")
 })

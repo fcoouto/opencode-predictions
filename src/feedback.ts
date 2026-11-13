@@ -49,7 +49,7 @@ export function formatStatus(status: Status | undefined, details: { lastNotice?:
   if (notice) lines.push(notice.message)
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`)
-    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic — at most one additional model call; may consume paid provider quota." : status.escalation === "manual" ? "Manual — Ask another model uses the displayed provider's quota." : "Off"}`)
+    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic — at most one additional model call after abstention; may consume paid provider quota." : status.escalation === "manual" ? "Manual — Alt+Shift+P tries an untried model using its provider's quota." : "Off"}`)
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : [])
     for (const [index, group] of groups.entries()) {
       lines.push(`Group ${index + 1}: ${group.selectors}`)

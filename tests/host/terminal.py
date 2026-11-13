@@ -77,9 +77,40 @@ try:
         os.write(master, b"\x1b[20~")
         pump_until(lambda: b"Prediction status snapshot" in output)
         print(json.dumps({"statusReopened": True}))
+    elif os.environ.get("PREDICTIONS_ALTERNATIVE_OUTCOME"):
+        outcome = os.environ["PREDICTIONS_ALTERNATIVE_OUTCOME"]
+        pump_until(lambda: pathlib.Path(observation + ".ready").exists())
+        wait_placeholder("\ufffb…")
+        wait_placeholder("Original prediction.")
+        observe("")
+        os.write(master, b"\x1b[112;4u")
+        wait_placeholder("\ufffb… Fixture second")
+        def alternative_started():
+            try:
+                return "second" in json.loads(pathlib.Path(directory).parent.joinpath("prediction-models.json").read_text())
+            except (FileNotFoundError, json.JSONDecodeError):
+                return False
+        pump_until(alternative_started)
+        observe("")
+        os.write(master, b"\t")
+        observe("")
+        if outcome == "typing":
+            os.write(master, b"my own prompt")
+            observe("my own prompt")
+            end = time.monotonic() + 2.8
+            pump_until(lambda: time.monotonic() >= end, 4)
+            observe("my own prompt")
+            os.write(master, b"\x01\x0b")
+        expected = "Run the targeted tests." if outcome == "success" else "Original prediction."
+        wait_placeholder(expected)
+        observe("")
+        os.write(master, b"\t")
+        observe(expected)
+        print(json.dumps({"compactValidated": True}))
     elif os.environ.get("PREDICTIONS_ESCALATION_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
-        wait_placeholder("Ask another model", contains=True)
+        shortcut = "Option+Shift+P" if sys.platform == "darwin" else "Alt+Shift+P"
+        wait_placeholder("[Fixture Flash] provided no prediction.\nUse " + shortcut + " to escalate it to [Fixture second].")
         assert b"Run the targeted tests." not in output
         observe("")
         os.write(master, b"\t")
@@ -91,6 +122,7 @@ try:
         observe("Run the targeted tests.")
         print(json.dumps({"escalationValidated": True}))
     else:
+        pump_until(lambda: pathlib.Path(observation + ".ready").exists())
         if os.environ.get("PREDICTIONS_MANUAL_TEST") == "1":
             pump_until(lambda: pathlib.Path(observation + ".ready").exists() and b"Fix the assertion." in output)
             observe("")
@@ -98,7 +130,7 @@ try:
             # CSI-u distinguishes Alt+Shift+P from the legacy ESC P DCS introducer.
             os.write(master, b"\x1b[112;4u")
             observe("")
-        pump_until(lambda: b"Run the targeted tests." in output)
+        wait_placeholder("Run the targeted tests.")
         observe("")
         os.write(master, b"\t")
         observe("Run the targeted tests.")

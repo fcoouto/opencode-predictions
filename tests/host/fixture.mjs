@@ -22,8 +22,11 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
       const input = JSON.parse(raw || "{}")
       calls.push(input)
       const prediction = isPredictionCall(input)
-      if (prediction && behavior.predictionStatus) {
-        res.writeHead(behavior.predictionStatus, { "Content-Type": "application/json" })
+      if (prediction) await writeFile(join(root, "prediction-models.json"), JSON.stringify(calls.filter(isPredictionCall).map(call => call.model)))
+      if (prediction && behavior.predictionDelayMs?.[input.model]) await new Promise(resolve => setTimeout(resolve, behavior.predictionDelayMs[input.model]))
+      const status = behavior.predictionStatuses?.[input.model] ?? behavior.predictionStatus
+      if (prediction && status) {
+        res.writeHead(status, { "Content-Type": "application/json" })
         res.end(JSON.stringify({ error: { message: "PRIVATE fixture provider failure", type: "server_error" } }))
         return
       }

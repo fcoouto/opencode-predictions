@@ -65,10 +65,9 @@ to inspect matches. If none match, choose another selector or omit `#low`.
 
 ## Controls
 
-- **Tab:** insert the visible prediction into the editable prompt. Plugin messages such as **Ask another model**, loading text, and errors are never accepted; Tab keeps its normal host behavior for them.
-- **Alt+Shift+P** (**Option+Shift+P** on macOS): request a prediction after a completed response, with the empty prompt focused. It never inserts or submits text.
-- **Predict next prompt:** command-palette action to request or refresh a suggestion.
-- **Ask another model:** after an abstention, the Desktop composer action, existing prediction shortcut, or **Predict next prompt** command asks the next eligible group. The message shows the target model/provider and warns that its quota is used. Each action makes at most one additional model call and never inserts or submits text.
+- **Tab:** insert only the visible real prediction into the editable prompt. During compact status, Tab keeps its normal host behavior and cannot accept a hidden prediction.
+- **Alt+Shift+P** (**Option+Shift+P** on macOS): request a prediction after a completed response, or try another model after a prediction/abstention. The empty prompt must be focused. It never inserts or submits text.
+- **Predict next prompt:** command-palette equivalent of the prediction shortcut. With escalation off, explicit requests retain ordinary refresh behavior.
 - **Prediction status and preview:** reopen a readable status snapshot with settings, resolved models, safe errors, and the current suggestion. Choose **Technical details** for host/plugin versions, feedback capabilities, and timing.
 
 Typing hides the suggestion without discarding it. Escape keeps its normal host
@@ -103,7 +102,7 @@ if the shortcut is not delivered, use **Predict next prompt** from the command p
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
-| `escalation` | `"manual"` | After a valid no-suggestion response: `"off"` stops, `"manual"` offers **Ask another model**, and `"automatic"` makes one additional attempt in the next eligible group. |
+| `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one extra call after abstention. |
 | `enabled` | `true` | Enable predictions. |
 | `debug` | `false` | Show safe per-model failures, fallback progress, and queue decisions. |
 
@@ -114,13 +113,42 @@ default reasoning. The plugin never changes your main session model.
 wildcard selector use stable provider/model-ID order, not speed or price.
 Only enabled models supporting the requested variant are selected.
 
-### When a model has no suggestion
+### Progress and alternative predictions
 
-Prediction text and plugin-to-user communication are separate. Communication stays
-outside the editable draft, cannot be adopted with Tab, and does not generate through
-Tab. Desktop offers a native composer action; CLI shows **Alt+Shift+P** guidance.
-Typing or advancing the conversation clears the communication. Real prediction text
-retains its existing Tab acceptance and cached restoration behavior.
+Press **Alt+Shift+P** again after a prediction or a no-suggestion response to try
+the next untried eligible model in the current group, then later groups. Each action
+permits at most one additional stateless generation request. OpenCode/provider
+transport retries may make additional HTTP attempts for that same model; this SDK
+does not expose retry control. Models are not repeated within a
+prediction cycle, including models called by ordinary initial error fallback.
+
+While generating, a compact activity indicator replaces prediction text. An
+alternative request also shows the model's display name, for example
+`￻▱▰▱ Fixture Flash`. Indicators start with `￻` (U+FFFB). The moving block means local activity, not completion percentage
+or proof that the provider is healthy. Desktop respects reduced motion; CLI respects
+the existing `animations` preference in `cli.json` and `OPENCODE_CLI_CONFIG_CONTENT`.
+Unreadable CLI motion settings use a static indicator.
+
+The original prediction is temporarily withdrawn but retained internally. **Tab
+passes through normally while status is visible**: it cannot insert status or accept
+the hidden original, and does not itself cancel the request. Success shows the new
+prediction; abstention, error or timeout restores the original. Tab accepts real text
+again once it is visible. No action button is shown. Without a prediction, a muted
+placeholder identifies the abstaining model and the next alternative:
+
+```text
+[First Model] provided no prediction.
+Use Option+Shift+P to escalate it to [Next Model].
+```
+
+macOS uses **Option+Shift+P**; other platforms show **Alt+Shift+P**. The actual
+shortcut binding is unchanged. The second line appears only when an alternative
+exists. This is placeholder communication, not draft text: it does not extend the
+composer and cannot be accepted with Tab. Typing dismisses it. A legacy service
+without source-model metadata shows a generic no-prediction message instead.
+With no alternatives, a brief **No alternatives available.** message precedes restoration.
+Repeated shortcuts while pending are ignored. Typing or changing context cancels
+pending work and clears status; late results cannot overwrite the draft.
 
 ```json
 {
@@ -131,25 +159,36 @@ retains its existing Tab acceptance and cached restoration behavior.
 
 - **`"off"`:** valid `{"prompt":null}` stops. No escalation action is offered;
   the usual explicit request can still refresh from the first eligible group.
-- **`"manual"` (default):** stop after abstention and show **Ask another model**.
-  An explicit action asks the first ready model in the earliest later eligible
-  group. Empty, blocked and cooling groups are skipped. There is no wraparound.
+- **`"manual"` (default):** stop after a prediction or abstention. The shortcut
+  requests an alternative, current group first. Skip blocked/cooling candidates
+  and empty groups; never wrap to earlier groups within a cycle.
 - **`"automatic"`:** valid abstention permits one additional model call in the
-  next eligible group. If that model also abstains, another explicit action is
+  current group first. If that model also abstains, another explicit action is
   needed to go further. This is not a loop until some model produces text.
 
 `automatic: false` controls only how the initial request starts. Combining it with
 `escalation: "automatic"` means a manual request can still make an extra call.
-Later groups are preference tiers, not proof of greater reasoning quality. They may
-consume paid quota, even when the first group uses free models.
+Group order expresses preference, not guaranteed quality or price. Every model call
+may consume its provider's quota, including paid quota. Cancellation does not
+guarantee avoiding provider charges. Pending status names the model; it is not an
+advance pricing confirmation.
 
 An escalation action stops on text, abstention or error; it does not start another
 error-fallback chain. Its `timeoutMs` budget includes validation and generation.
 Ordinary initial requests retain their existing per-model timeout and error fallback.
 Abstention remains a healthy response, not a cooldown or failure penalty.
-If a displayed manual target becomes unavailable, the offer refreshes without
+If the offered manual target becomes unavailable, the offer refreshes without
 silently calling a different model. Old, duplicate, or changed-context offers do
-not generate. If no later model is available, no additional call is made.
+not generate. If no untried eligible model is available, no additional call is made.
+
+A cycle covers one server/location, session, completion and service configuration.
+Focus changes do not restart it. The service keeps at most 128 cycles; eviction
+invalidates associated tokens. Continuation refreshes use an explicit metadata-only
+intent and never become initial generation when state is missing or evicted; another
+explicit shortcut uses a refreshed offer. Readiness and continuation refresh are
+bounded by `timeoutMs`, so a stalled lookup restores the retained original.
+Configuration/service changes or new context start fresh cycles. Off mode retains
+ordinary explicit refresh behavior.
 
 ### Model groups
 

@@ -1,4 +1,4 @@
-import { Command, ComposerPill, Plugin, createKeyed } from "@opencode/plugin/gui"
+import { Command, Plugin, createKeyed } from "@opencode/plugin/gui"
 import { onCleanup, createComponent, createSignal } from "solid-js"
 import type { Data } from "@opencode/client/solid"
 import { createDesktopAdapter } from "./adapters/desktop.ts"
@@ -6,7 +6,6 @@ import { startClient } from "./client.ts"
 import { Predictions } from "./rpc.ts"
 import type { Reply, Status } from "./service.ts"
 import { pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
-import { communicationText, type Communication } from "./controller.ts"
 
 export default Plugin.define({
   setup(ctx) {
@@ -20,7 +19,6 @@ export default Plugin.define({
       return server && location ? { server, location } : undefined
     }
     let errorToast: { dismiss(): void } | undefined
-    const [communication, setCommunication] = createSignal<{ value: Communication; activate: () => void; key: string }>()
     const client = startClient({
       scope: () => { const value = connection(); return value ? JSON.stringify([value.server.id, value.location]) : undefined },
       state: () => {
@@ -48,11 +46,7 @@ export default Plugin.define({
       },
       paint: adapter.paint,
       insert: adapter.insert,
-      communicate: (value, activate) => {
-        adapter.communicate(value)
-        const key = session()?.key
-        setCommunication(value && key ? { value, activate, key } : undefined)
-      },
+      communicate: adapter.communicate,
       focus: () => ctx.screen.current()?.composer.focus(),
       show: notice => {
         const toast = ctx.toast.show({ title: notice.title, description: notice.message, variant: notice.severity === "error" ? "error" : "default", persistent: !!notice.persistent, duration: 8000, ...(notice.severity !== "info" ? { actions: [{ label: "Open prediction status", run: () => client.status() }] } : {}) })
@@ -89,11 +83,6 @@ export default Plugin.define({
     ctx.add(Command, { id: "request", title: "Predict next prompt", group: "Predictions", run: () => client.request() })
     ctx.add(Command, { id: "request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", editable: true, hidden: true, run: () => client.requestFromShortcut() })
     ctx.add(Command, { id: "status", title: "Prediction status and preview", group: "Predictions", run: () => client.status() })
-    ctx.add(ComposerPill, { id: "escalate", show: input => {
-      const current = communication()
-      if (!current?.value.offer || current.key !== input.session.key) return
-      return { label: current.value.pending ? "Asking another model…" : "Ask another model", title: communicationText(current.value), ...(!current.value.pending ? { run: current.activate } : {}) }
-    } })
     return () => { client.dispose(); adapter.dispose() }
   },
 })

@@ -410,3 +410,127 @@ test("queued escalation is cancelled by config changes or typing, never converte
     } finally { client.dispose() }
   }
 })
+
+test("alternative shortcut withdraws text before readiness and restores adoption despite all-cooling status", async () => {
+  const state: ClientState = { key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }
+  const status: Status = { enabled: true, automatic: false, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  let hold = false
+  let ready!: (value: Status) => void
+  let finish!: (value: any) => void
+  let ghost: string | undefined
+  let message: any
+  let calls = 0
+  const client = createClient({
+    scope: () => "/project", state: () => state,
+    status: async () => hold ? new Promise(resolve => { ready = resolve }) : status,
+    predict: async (_state, _id, _signal, _notice, _manual, token) => {
+      calls++
+      return token ? new Promise(resolve => { finish = resolve }) : { text: "Run the targeted tests.", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second Model" } }
+    },
+    paint: text => { ghost = text; return !!text }, insert: text => { state.draft = text; return true },
+    communicate: value => { message = value }, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "Run the targeted tests.")
+    hold = true
+    const checking = client.status()
+    client.requestFromShortcut()
+    assert.equal(ghost, undefined)
+    assert.deepEqual(message?.activity, { kind: "alternative", name: "Second Model" })
+    assert.equal(client.accept(), false)
+    client.requestFromShortcut()
+    hold = false; ready(status); await checking
+    assert.equal(calls, 2)
+    assert.equal(client.accept(), false)
+    finish({ reason: "generation_failed" }); await new Promise(resolve => setImmediate(resolve))
+    status.reason = "no_models_eligible"
+    await client.status()
+    assert.equal(ghost, "Run the targeted tests.")
+    assert.equal(client.accept(), true)
+    assert.equal(state.draft, "Run the targeted tests.")
+  } finally { client.dispose() }
+})
+
+test("exhausted local authority can refresh without generation when an untried model recovers", async () => {
+  let calls = 0
+  let modelCalls = 0
+  let ghost: string | undefined
+  const tokens: (string | undefined)[] = []
+  const offer = { token: "recovered", group: 1, model: { providerID: "local", id: "b" }, name: "Recovered model" }
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => ({ enabled: true, automatic: false, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async (_state, _id, _signal, _notice, _manual, token) => {
+      calls++; tokens.push(token)
+      if (calls === 1) { modelCalls++; return { text: "Original prediction." } }
+      if (calls === 2) return { reason: "no_suggestion", escalation: offer }
+      modelCalls++; return { text: "Replacement." }
+    },
+    paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(ghost, "Original prediction.")
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 2, "explicit action must be able to refresh exhausted authority")
+    assert.equal(modelCalls, 1, "refresh spends no generation call")
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(tokens, [undefined, "refresh", "recovered"])
+    assert.equal(ghost, "Replacement.")
+  } finally { client.dispose() }
+})
+
+test("timed-out readiness restores the original and does not generate an alternative", async () => {
+  let hold = false
+  let ghost: string | undefined
+  let calls = 0
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => hold ? new Promise(() => {}) : { enabled: true, automatic: false, escalation: "manual", timeoutMs: 20, contextTurns: 3, debug: false, warnings: [], version: "one" },
+    predict: async () => { calls++; return { text: "Original.", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second" } } },
+    paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    hold = true
+    const checking = client.status()
+    client.requestFromShortcut()
+    assert.equal(ghost, undefined)
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(ghost, "Original.")
+    assert.equal(client.accept(), true)
+    assert.equal(calls, 1)
+    await checking
+  } finally { client.dispose() }
+})
+
+test("typing observed between polls revokes spent authority before a continuation refresh", async () => {
+  let draft = ""
+  let finish!: (reply: any) => void
+  const tokens: (string | undefined)[] = []
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft }),
+    status: async () => ({ enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, warnings: [], version: "one" }),
+    predict: async (_state, _id, _signal, _notice, _manual, token) => {
+      tokens.push(token)
+      if (tokens.length === 1) return { text: "Original.", escalation: { token: "spent", group: 1, model: { providerID: "local", id: "b" }, name: "Second" } }
+      if (tokens.length === 2) return new Promise(resolve => { finish = resolve })
+      return { reason: "escalation_unavailable" }
+    },
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut()
+    draft = "typed"
+    finish({ text: "Late." }); await new Promise(resolve => setImmediate(resolve))
+    draft = ""
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(tokens, [undefined, "spent", "refresh"])
+  } finally { client.dispose() }
+})

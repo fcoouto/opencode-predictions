@@ -74,6 +74,54 @@ test("desktop input, shell mode, composition, open menus, and missing anchors re
   } finally { await page.close() }
 })
 
+test("Desktop compact status wraps a long Unicode model name within a narrow prediction slot", async () => {
+  const page = await fixture()
+  try {
+    await page.setViewportSize({ width: 360, height: 640 })
+    const state = await page.evaluate(() => {
+      const w = window as any
+      w.editor.style.width = "280px"
+      w.adapter.communicate({ message: "", activity: { kind: "alternative", name: "長い Model Display Name With More Words" } })
+      const status = document.querySelector<HTMLElement>("[data-opencode-communication]")!
+      const element = w.editor.getBoundingClientRect()
+      const bounds = status.getBoundingClientRect()
+      return { text: status.textContent, draft: w.editor.textContent, sameLeft: bounds.left === element.left, sameWidth: bounds.width === element.width, right: bounds.right, label: document.querySelector("[data-opencode-announcement]")?.textContent }
+    })
+    assert.match(state.text!, /^\uFFFB[▰▱]{3} 長い Model Display Name With More Words$/)
+    assert.equal(state.draft, "")
+    assert.equal(state.sameLeft, true)
+    assert.equal(state.sameWidth, true)
+    assert.ok(state.right <= 360)
+    assert.match(state.label!, /Requesting prediction from 長い Model Display Name/)
+    await page.screenshot({ path: ".test-artifacts/compact-desktop-narrow.png" })
+    await page.evaluate(() => (window as any).adapter.dispose())
+    assert.equal(await page.locator("[data-opencode-communication], [data-opencode-announcement]").count(), 0)
+  } finally { await page.close() }
+})
+
+test("Desktop abstention is a faint macOS placeholder, never an extra composer section or button", async () => {
+  const page = await fixture()
+  try {
+    const state = await page.evaluate(() => {
+      const w = window as any
+      Object.defineProperty(navigator, "platform", { value: "MacIntel", configurable: true })
+      const composer = document.querySelector("form")!
+      const height = composer.getBoundingClientRect().height
+      w.adapter.communicate({ message: "[First Model] provided no prediction.", offer: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second Model" } })
+      const status = document.querySelector<HTMLElement>("[data-opencode-communication]")!
+      const style = getComputedStyle(status)
+      return { text: status.textContent, opacity: Number(style.opacity), sameHeight: composer.getBoundingClientRect().height === height, draft: w.editor.textContent, buttons: composer.querySelectorAll("button").length }
+    })
+    assert.equal(state.text, "[First Model] provided no prediction.\nUse Option+Shift+P to escalate it to [Second Model].")
+    assert.ok(state.opacity < 1)
+    assert.equal(state.sameHeight, true)
+    assert.equal(state.draft, "")
+    assert.equal(state.buttons, 0)
+    await page.locator('[contenteditable="true"]').fill("my own prompt")
+    assert.equal(await page.locator("[data-opencode-communication]").count(), 0)
+  } finally { await page.close() }
+})
+
 test("Desktop owning-server config and plugin events invalidate suggestions before Tab can accept", async () => {
   for (const event of ["config.updated", "plugin.updated"]) {
     const page = await fixture()
@@ -234,7 +282,7 @@ test("Desktop inspects default server location health on a draft with no mounted
   } finally { await page.close() }
 })
 
-test("Desktop communication stays outside the draft and native Ask action cannot be adopted with Tab", async () => {
+test("Desktop compact status withdraws real text, passes Tab through and restores on abstention", async () => {
   const page = await fixture()
   try {
     await page.addScriptTag({ content: guiSource })
@@ -244,33 +292,33 @@ test("Desktop communication stays outside the draft and native Ask action cannot
       const data = { on: () => () => {}, session: { get: () => ({ time: { idle: 2 } }), status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } }
       const session = { id: "ses_test", key: "server/ses_test", directory: "/project", location: { directory: "/project" }, server: { id: "fixture", connected: true, data, client: { rpc: () => ({
         status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
-        predict: async (input: any) => { w.requests.push(input); return input.escalation ? { text: "Run the tests." } : { reason: "no_suggestion", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "next" }, name: "Next model" } } }, events: { on: () => () => {} },
+        predict: async (input: any) => { w.requests.push(input); return input.escalation ? new Promise(resolve => { w.finish = resolve }) : { text: "Run the tests.", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "next" }, name: "Next model" } } }, events: { on: () => () => {} },
       }) } } }
       w.pillInput = { session }
       const composer = { text: () => w.editor.textContent, focused: () => document.activeElement === w.editor, quotable: () => true, setText: (text: string) => { w.editor.textContent = text }, focus: () => w.editor.focus() }
       w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => session }, screen: { current: () => ({ composer }) }, add: (_registry: unknown, contribution: any) => w.commands.set(contribution.id, contribution), app: { version: "test" }, toast: { show: (notice: any) => { w.notices.push(notice); return { dismiss() {} } } } })
     })
-    await page.waitForFunction(() => !!document.querySelector("[data-opencode-communication]"), undefined, { timeout: 2000 })
+    await page.locator("[data-opencode-prediction]").waitFor({ state: "visible" })
     const before = await page.evaluate(() => {
       const w = window as any
-      const pill = w.commands.get("escalate").show(w.pillInput)
-      return { draft: w.editor.textContent, text: document.querySelector("[data-opencode-communication]")?.textContent, accepted: w.commands.get("accept").run(), calls: w.requests.length, label: pill.label, title: pill.title, notices: w.notices.length, ghost: !!document.querySelector("[data-opencode-prediction]") }
+      return { draft: w.editor.textContent, calls: w.requests.length, pill: w.commands.has("escalate"), notices: w.notices.length }
     })
     assert.equal(before.draft, "")
-    assert.equal(before.accepted, false)
     assert.equal(before.calls, 1)
-    assert.equal(before.ghost, false)
     assert.equal(before.notices, 0)
-    assert.equal(before.label, "Ask another model")
-    assert.match(before.text!, /paid\/next/)
-    assert.match(before.text!, /quota/)
-    await page.evaluate(() => {
-      const w = window as any
-      const nativeAction = document.createElement("button"); nativeAction.textContent = "Host composer action"; document.body.append(nativeAction); nativeAction.focus()
-      w.commands.get("accept").run()
-    })
-    assert.equal(await page.locator("[data-opencode-communication]").count(), 1)
-    await page.evaluate(() => { const w = window as any; w.commands.get("escalate").show(w.pillInput).run() })
+    assert.equal(before.pill, false)
+    await page.evaluate(() => (window as any).commands.get("request-shortcut").run())
+    const status = page.locator("[data-opencode-communication]")
+    await status.waitFor({ state: "visible" })
+    assert.match((await status.textContent())!, /^\uFFFB[▰▱]{3} Next model$/)
+    assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
+    assert.equal(await page.evaluate(() => (window as any).commands.get("accept").run()), false)
+    assert.equal(await page.locator('[contenteditable="true"]').innerText(), "")
+    const announcement = await status.getAttribute("aria-label")
+    await page.emulateMedia({ reducedMotion: "reduce" })
+    await page.waitForFunction(() => document.querySelector("[data-opencode-communication]")?.textContent === "\uFFFB… Next model")
+    assert.equal(await status.getAttribute("aria-label"), announcement)
+    await page.evaluate(() => (window as any).finish({ reason: "no_suggestion" }))
     await page.waitForFunction(() => !!document.querySelector("[data-opencode-prediction]"))
     const after = await page.evaluate(() => {
       const w = window as any

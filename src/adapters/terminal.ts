@@ -2,10 +2,11 @@ import type { TextareaRenderable } from "@opentui/core"
 import { communicationText, type Communication } from "../controller.ts"
 
 // Host editor access is private to this adapter; the native placeholder never becomes draft text.
-export function createTerminalAdapter(renderer: { readonly currentFocusedEditor: unknown }) {
+export function createTerminalAdapter(renderer: { readonly currentFocusedEditor: unknown }, reducedMotion = () => false) {
   let painted: TextareaRenderable | undefined
   let original: TextareaRenderable["placeholder"]
   let ghost: string | undefined
+  let status = false
   const editor = (): TextareaRenderable | undefined => {
     const value = renderer.currentFocusedEditor as TextareaRenderable | null
     if (!value || typeof value.plainText !== "string" || typeof value.insertText !== "function" || !("placeholder" in value)) return
@@ -29,8 +30,16 @@ export function createTerminalAdapter(renderer: { readonly currentFocusedEditor:
   return {
     eligible: () => editor()?.plainText === "",
     read: () => editor()?.plainText ?? "",
-    paint,
-    communicate(value: Communication | undefined) { if (value) paint(communicationText(value)) },
+    paint(text: string | undefined) {
+      if (!text && status) return false
+      status = false
+      return paint(text)
+    },
+    communicate(value: Communication | undefined) {
+      const text = value && communicationText(value, reducedMotion(), process.platform === "darwin" ? "Option+Shift+P" : "Alt+Shift+P")
+      if (text) { status = true; paint(text) }
+      else if (status) { clear(); status = false }
+    },
     insert(text: string): boolean {
       const current = editor()
       if (!current || current.plainText !== "") return false

@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createService, type ServiceAPI } from "../src/service.ts"
+import { startClient } from "../src/client.ts"
 
 function fixture() {
   const calls: { model: unknown; prompt: string }[] = []
@@ -29,28 +30,29 @@ function escalationFixture(escalation = "manual") {
   return { api, advance, attempted, service, request, run: (extra = {}) => service.predict({ ...request, ...extra }, new AbortController().signal) }
 }
 
-test("manual escalation offers one next-group model without treating abstention as a failure", async () => {
+test("manual escalation exhausts the current group before later groups without penalizing abstention", async () => {
   const f = escalationFixture()
   const reply = await f.run()
   assert.deepEqual(f.attempted, ["a"])
   assert.equal(reply.reason, "no_suggestion")
   assert.ok(reply.escalation?.token)
-  assert.equal(reply.escalation.group, 2)
-  assert.deepEqual(reply.escalation.model, { providerID: "local", id: "c", variant: "low" })
+  assert.equal(reply.escalation.group, 1)
+  assert.deepEqual(reply.escalation.model, { providerID: "local", id: "b" })
   assert.equal(f.service.status().candidates?.find(model => model.id === "a")?.state, "ready")
   const second = await f.run({ manual: true, escalation: reply.escalation.token })
-  assert.deepEqual(f.attempted, ["a", "c"])
-  assert.equal(second.escalation?.group, 3)
-  await f.run({ manual: true, escalation: second.escalation!.token })
-  assert.deepEqual(f.attempted, ["a", "c", "d"])
+  assert.deepEqual(f.attempted, ["a", "b"])
+  assert.equal(second.escalation?.group, 2)
+  const third = await f.run({ manual: true, escalation: second.escalation!.token })
+  await f.run({ manual: true, escalation: third.escalation!.token })
+  assert.deepEqual(f.attempted, ["a", "b", "c", "d"])
 })
 
 test("automatic escalation makes only one extra call and off preserves stop-on-null", async () => {
   const auto = escalationFixture("automatic")
   const reply = await auto.run()
-  assert.deepEqual(auto.attempted, ["a", "c"])
+  assert.deepEqual(auto.attempted, ["a", "b"])
   assert.equal(reply.reason, "no_suggestion")
-  assert.equal(reply.escalation?.group, 3)
+  assert.equal(reply.escalation?.group, 2)
   const off = escalationFixture("off")
   assert.deepEqual(await off.run(), { reason: "no_suggestion" })
   assert.deepEqual(off.attempted, ["a"])
@@ -58,10 +60,10 @@ test("automatic escalation makes only one extra call and off preserves stop-on-n
 
 test("an escalation error does not fall through to more models", async () => {
   const f = escalationFixture("automatic")
-  f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "c") throw new Error("unavailable"); return '{"prompt":null}' }
+  f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "b") throw new Error("unavailable"); return '{"prompt":null}' }
   assert.equal((await f.run()).reason, "generation_failed")
-  assert.deepEqual(f.attempted, ["a", "c"])
-  assert.equal(f.service.status().candidates?.find(model => model.id === "c")?.state, "cooling")
+  assert.deepEqual(f.attempted, ["a", "b"])
+  assert.equal(f.service.status().candidates?.find(model => model.id === "b")?.state, "cooling")
 })
 
 test("manual offers require explicit intent and cannot cross sessions, completions or service versions", async () => {
@@ -75,14 +77,14 @@ test("manual offers require explicit intent and cannot cross sessions, completio
   assert.equal((await other.run({ manual: true, escalation: token })).reason, "escalation_unavailable")
   assert.deepEqual(other.attempted, [])
   await Promise.all([f.run({ manual: true, escalation: token }), f.run({ manual: true, escalation: token })])
-  assert.deepEqual(f.attempted, ["a", "c"])
+  assert.deepEqual(f.attempted, ["a", "b"])
   assert.equal((await f.run({ manual: true, escalation: token })).reason, "escalation_unavailable")
 })
 
 test("a changed manual target refreshes the offer without silently spending on another provider", async () => {
   const f = escalationFixture()
   const first = await f.run()
-  f.api.models = async () => ["a", "b", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+  f.api.models = async () => ["a", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
   const reply = await f.run({ manual: true, escalation: first.escalation!.token })
   assert.deepEqual(f.attempted, ["a"])
   assert.equal(reply.reason, "no_suggestion")
@@ -183,6 +185,153 @@ test("escalation generation deadlines apply normal timeout cooldown without pena
       assert.equal(service.status().candidates?.find(model => model.id === "a")?.state, "ready")
     } finally { clearTimeout(keepAlive) }
   }
+})
+
+test("text predictions carry same-group offers and each action spends exactly once", async () => {
+  const f = escalationFixture("automatic")
+  f.api.generate = async model => { f.attempted.push(model.id); return JSON.stringify({ prompt: `Use ${model.id}.` }) }
+  let reply = await f.run()
+  assert.equal(reply.text, "Use a.")
+  assert.equal(reply.escalation?.model.id, "b")
+  assert.deepEqual(f.attempted, ["a"])
+  for (const id of ["b", "c", "d"]) {
+    reply = await f.run({ manual: true, escalation: reply.escalation!.token })
+    assert.equal(reply.text, `Use ${id}.`)
+  }
+  assert.equal(reply.escalation, undefined)
+  assert.deepEqual(f.attempted, ["a", "b", "c", "d"])
+  await f.run({ manual: true })
+  assert.deepEqual(f.attempted, ["a", "b", "c", "d"], "tokenless refresh cannot restart the cycle")
+})
+
+test("initial fallback attempts remain tried after cooldown and catalog recovery", async t => {
+  let now = 1000
+  t.mock.method(Date, "now", () => now)
+  const f = escalationFixture()
+  f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "a") throw Error("temporary"); return '{"prompt":"Run tests."}' }
+  const first = await f.run()
+  assert.equal(first.escalation?.model.id, "c")
+  now = 100000
+  f.api.models = async () => ["a", "c", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+  const second = await f.run({ manual: true, escalation: first.escalation!.token })
+  assert.equal(second.escalation?.model.id, "d")
+  await f.run({ manual: true, escalation: second.escalation!.token })
+  assert.deepEqual(f.attempted, ["a", "b", "c", "d"])
+})
+
+test("recoverable alternative errors return the next offer without hidden fallback", async () => {
+  const f = escalationFixture()
+  const first = await f.run()
+  f.api.generate = async model => { f.attempted.push(model.id); throw Error("temporary") }
+  const second = await f.run({ manual: true, escalation: first.escalation!.token })
+  assert.equal(second.reason, "generation_failed")
+  assert.equal(second.escalation?.model.id, "c")
+  assert.deepEqual(f.attempted, ["a", "b"])
+})
+
+test("concurrent initial requests reserve one cycle before metadata awaits", async () => {
+  const f = escalationFixture()
+  const session = f.api.session
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  f.api.session = async (...args) => { await gate; return session(...args) }
+  const pending = f.run()
+  const duplicate = f.run()
+  release()
+  await Promise.all([pending, duplicate])
+  assert.deepEqual(f.attempted, ["a"])
+  const refresh = await f.run({ manual: true })
+  assert.equal(refresh.escalation?.model.id, "b")
+  assert.deepEqual(f.attempted, ["a"])
+})
+
+test("evicted cycles invalidate tokens and cannot publish authority from late work", async () => {
+  const f = escalationFixture()
+  f.api.session = async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } })
+  const first = await f.run()
+  for (let i = 0; i < 128; i++) await f.run({ sessionID: `ses_${i}` })
+  assert.equal((await f.run({ manual: true, escalation: first.escalation!.token })).reason, "escalation_unavailable")
+  assert.equal(f.attempted.length, 129)
+})
+
+test("variants are separate attempts and overlapping groups cannot repeat them", async () => {
+  const f = escalationFixture()
+  const service = createService(f.api, { models: [["local/a#low", "local/a"], ["local/a#low", "local/b"]] }, "/project")
+  const variants: (string | undefined)[] = []
+  f.api.generate = async model => { variants.push(model.variant); return '{"prompt":"Run tests."}' }
+  let reply = await service.predict(f.request, new AbortController().signal)
+  assert.equal(reply.escalation?.group, 1)
+  reply = await service.predict({ ...f.request, manual: true, escalation: reply.escalation!.token }, new AbortController().signal)
+  assert.equal(reply.escalation?.group, 2)
+  reply = await service.predict({ ...f.request, manual: true, escalation: reply.escalation!.token }, new AbortController().signal)
+  assert.equal(reply.escalation, undefined)
+  assert.deepEqual(variants, ["low", undefined, undefined])
+})
+
+test("eviction during generation prevents the old work from publishing a new offer", async () => {
+  const f = escalationFixture()
+  f.api.session = async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } })
+  let finish!: (output: string) => void
+  let calls = 0
+  f.api.generate = async () => ++calls === 1 ? new Promise(resolve => { finish = resolve }) : '{"prompt":null}'
+  const pending = f.run()
+  await new Promise(resolve => setImmediate(resolve))
+  for (let i = 0; i < 128; i++) await f.run({ sessionID: `ses_eviction_${i}` })
+  finish('{"prompt":"Old original."}')
+  const reply = await pending
+  assert.equal(reply.escalation, undefined)
+  assert.equal(calls, 129)
+})
+
+test("an explicit continuation refresh never generates after its cycle is evicted", async () => {
+  const f = escalationFixture()
+  f.api.session = async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } })
+  const first = await f.run()
+  for (let i = 0; i < 128; i++) await f.run({ sessionID: `ses_refresh_${i}` })
+  assert.equal((await f.run({ manual: true, escalation: first.escalation!.token })).reason, "escalation_unavailable")
+  assert.equal((await f.run({ manual: true, escalation: "refresh" })).reason, "escalation_unavailable")
+  assert.equal(f.attempted.length, 129, "refresh must not silently start a new cycle")
+})
+
+test("an evicted client cannot turn stale-token recovery into a fresh paid generation", async () => {
+  const f = escalationFixture()
+  f.api.session = async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } })
+  f.api.generate = async model => { f.attempted.push(model.id); return '{"prompt":"Original."}' }
+  const client = startClient({
+    scope: () => "/project", state: () => ({ key: "one", ...f.request, eligible: true, draft: "" }),
+    status: async signal => ({ ...await f.service.inspect(signal), automatic: false }),
+    predict: (state, requestID, signal, _notice, manual, escalation) => f.service.predict({ sessionID: state.sessionID, completion: state.completion, requestID, manual, escalation }, signal),
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    for (let i = 0; i < 128; i++) await f.run({ sessionID: `ses_client_${i}` })
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(f.attempted.length, 129, "lost continuation state must never restart ordinary initial fallback")
+  } finally { client.dispose() }
+})
+
+test("continuation refresh validation is bounded even when metadata ignores abort", async () => {
+  const f = escalationFixture()
+  const service = createService(f.api, { models: [["local/a", "local/b"]], timeoutMs: 20 }, "/project")
+  await service.predict(f.request, new AbortController().signal)
+  f.api.session = () => new Promise(() => {})
+  const reply = await Promise.race([
+    service.predict({ ...f.request, manual: true, escalation: "refresh" }, new AbortController().signal),
+    new Promise<{ reason: string }>(resolve => setTimeout(() => resolve({ reason: "test-deadline" }), 100)),
+  ])
+  assert.equal(reply.reason, "timeout")
+  assert.deepEqual(f.attempted, ["a"])
+})
+
+test("valid abstention identifies the authoritative attempted display name", async () => {
+  const f = escalationFixture()
+  f.api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, name: id === "a" ? "First Model" : "Second Model", enabled: true, variants: [{ id: "low" }] }))
+  const reply = await f.run()
+  assert.equal((reply as any).modelName, "First Model")
+  assert.equal(reply.escalation?.name, "Second Model")
 })
 
 test("server uses the exact selected model and filtered context without writing history", async () => {
@@ -583,7 +732,7 @@ test("invalid prediction output fails over, but a valid no-suggestion response s
     const attempted: string[] = []
     api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
     api.generate = async model => { attempted.push(model.id); return model.id === "a" ? first : '{"prompt":"Run the tests."}' }
-    const reply = await createService(api, { models: "local/*" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    const reply = await createService(api, { models: "local/*", escalation: "off" }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
     assert.deepEqual(reply, expectedReply)
     assert.equal(attempted.length, expectedCalls)
   }
@@ -596,7 +745,7 @@ test("working responses lead the learned queue while failures move behind untrie
   const attempted: string[] = []
   api.models = async () => ["a", "b", "c"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
   api.generate = async model => { attempted.push(model.id); if (model.id === "a") throw Object.assign(new Error("Unavailable"), { status: 503 }); return '{"prompt":null}' }
-  const service = createService(api, { models: "local/*" }, "/project")
+  const service = createService(api, { models: "local/*", escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   assert.deepEqual(await service.predict(request, new AbortController().signal), { reason: "no_suggestion" })
   assert.deepEqual(attempted, ["a", "b"])
@@ -656,7 +805,7 @@ test("explicit budget evidence overrides a generic rate-limit reason and skips a
   let calls = 0
   api.models = async () => [{ providerID: "local", id: "model", enabled: true, variants: [{ id: "low" }, { id: "high" }] }]
   api.generate = async () => { calls++; throw Object.assign(new Error("Free usage limit reached. PRIVATE"), { status: 429, reason: "rate_limit" }) }
-  const service = createService(api, { models: "local/model#low, local/model#high" }, "/project")
+  const service = createService(api, { models: "local/model#low, local/model#high", escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   await service.predict(request, new AbortController().signal)
   assert.equal(calls, 1)
@@ -687,7 +836,7 @@ test("temporary and unknown failures cool for sixty seconds instead of becoming 
     const { api } = fixture()
     let calls = 0
     api.generate = async () => { calls++; if (error) throw error; return "invalid response" }
-    const service = createService(api, { models: "local/model" }, "/project")
+    const service = createService(api, { models: "local/model", escalation: "off" }, "/project")
     const request = { sessionID: "ses_test", completion: 2 }
     await service.predict(request, new AbortController().signal)
     assert.equal(service.status().candidates?.[0].retryAt, 61000)
@@ -746,7 +895,7 @@ test("model-level skips neither spill into other providers nor hide the next eli
   api.models = async () => ["first", "second"].map(providerID => ({ providerID, id: "model", enabled: true, variants: [{ id: "low" }, { id: "high" }] }))
   api.generate = async model => { attempted.push(model.providerID + "#" + model.variant); if (model.providerID === "first") throw Object.assign(new Error("Too many requests"), { status: 429 }); return '{"prompt":null}' }
   api.notice = message => { notices.push(message) }
-  const service = createService(api, { models: "first/model#low, first/model#high, second/model#low", debug: true }, "/project")
+  const service = createService(api, { models: "first/model#low, first/model#high, second/model#low", debug: true, escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   await service.predict(request, new AbortController().signal)
   assert.deepEqual(attempted, ["first#low", "second#low"])
@@ -772,7 +921,7 @@ test("an older concurrent success cannot erase a newer failure or make its model
   let finish!: (output: string) => void
   let calls = 0
   api.generate = async () => { if (++calls === 1) return new Promise(resolve => { finish = resolve }); throw Object.assign(new Error("Denied"), { status: 403 }) }
-  const service = createService(api, { models: "local/model" }, "/project")
+  const service = createService(api, { models: "local/model", escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   const older = service.predict(request, new AbortController().signal)
   await new Promise(resolve => setImmediate(resolve))
@@ -794,7 +943,7 @@ test("fallback rechecks shared health instead of calling a model another request
     if (attempted.length === 1) return new Promise((_resolve, reject) => { failFirst = reject })
     throw Object.assign(new Error("Denied"), { status: 403 })
   }
-  const service = createService(api, { models: "local/*" }, "/project")
+  const service = createService(api, { models: "local/*", escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   const older = service.predict(request, new AbortController().signal)
   await new Promise(resolve => setImmediate(resolve))
@@ -878,7 +1027,7 @@ test("groups keep free-first precedence after paid success and cooldown recovery
     return '{"prompt":"Run tests."}'
   }
   api.notice = message => { notices.push(message) }
-  const service = createService(api, { models: ["free/*", "paid/*"] }, "/project")
+  const service = createService(api, { models: ["free/*", "paid/*"], escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   assert.deepEqual(await service.predict(request, new AbortController().signal), { text: "Run tests." })
   assert.deepEqual(attempted, ["free/a", "free/b", "paid/c", "paid/d"])
@@ -901,7 +1050,7 @@ test("singleton exact and wildcard groups work and null stops all later groups",
     const { api, calls } = fixture()
     api.generate = async (model, prompt) => { calls.push({ model, prompt }); return '{"prompt":null}' }
     const service = createService(api, { models }, "/project")
-    assert.deepEqual(await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal), { reason: "no_suggestion" })
+    assert.deepEqual(await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal), { reason: "no_suggestion", modelName: "model" })
     assert.equal(calls.length, 1)
     assert.deepEqual(calls[0].model, { providerID: "local", id: "model", variant: "high" })
     assert.equal(service.status().groups?.length, models.length)
@@ -946,7 +1095,7 @@ test("unmatched and blocked groups fall through without repeated individual noti
   api.models = async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
   api.generate = async model => { attempted.push(model.id); if (model.id === "a") throw Object.assign(new Error("PRIVATE"), { status: 403 }); return '{"prompt":null}' }
   api.notice = message => { notices.push(message) }
-  const service = createService(api, { models: ["local/missing", "local/a", "local/b"] }, "/project")
+  const service = createService(api, { models: ["local/missing", "local/a", "local/b"], escalation: "off" }, "/project")
   for (let i = 0; i < 2; i++) assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "no_suggestion")
   assert.deepEqual(attempted, ["a", "b", "b"])
   assert.deepEqual(notices, [])
@@ -1019,7 +1168,7 @@ test("older concurrent group success cannot erase newer shared failure", async (
     if (model.id === "a") throw Object.assign(new Error("PRIVATE"), { status: 403 })
     return '{"prompt":null}'
   }
-  const service = createService(api, { models: ["local/a", "local/b"] }, "/project")
+  const service = createService(api, { models: ["local/a", "local/b"], escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   const older = service.predict(request, new AbortController().signal)
   await new Promise(resolve => setImmediate(resolve))
@@ -1043,7 +1192,7 @@ test("group fallback rechecks concurrent health before calling later groups", as
     if (attempted.length === 1) return new Promise((_resolve, reject) => { failFirst = reject })
     throw Object.assign(new Error("PRIVATE"), { status: 403 })
   }
-  const service = createService(api, { models: ["local/a", "local/b"] }, "/project")
+  const service = createService(api, { models: ["local/a", "local/b"], escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   const older = service.predict(request, new AbortController().signal)
   await new Promise(resolve => setImmediate(resolve))
@@ -1134,7 +1283,7 @@ test("an old success cannot promote a candidate after it leaves and returns to i
     if (attempted.length === 1) return new Promise(resolve => { finish = resolve })
     return '{"prompt":null}'
   }
-  const service = createService(api, { models: ["local/Free*", "local/*"] }, "/project")
+  const service = createService(api, { models: ["local/Free*", "local/*"], escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   const pending = service.predict(request, new AbortController().signal)
   await new Promise(resolve => setImmediate(resolve))
@@ -1188,7 +1337,7 @@ test("nested groups preserve independent ranking and free-first recovery without
     return '{"prompt":null}'
   }
   api.notice = message => { notices.push(message) }
-  const service = createService(api, { models: [["local/a#low", "local/b#low"], ["local/c#low", "local/d#low"]] }, "/project")
+  const service = createService(api, { models: [["local/a#low", "local/b#low"], ["local/c#low", "local/d#low"]], escalation: "off" }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   assert.equal((await service.predict(request, new AbortController().signal)).reason, "no_suggestion")
   assert.deepEqual(attempted, ["a", "b", "c", "d"])

@@ -47,6 +47,30 @@ test("shell/menu traits, a different editor, and typed input prevent native ghos
   adapter.dispose()
 })
 
+test("terminal activity frames retain the prefix and stop changing when withdrawn", async t => {
+  let now = 0
+  t.mock.method(Date, "now", () => now)
+  await using screen = await createTestRenderer({ width: 30, height: 8 })
+  const editor = new TextareaRenderable(screen.renderer, { width: 30, height: 6, placeholder: "Original placeholder" })
+  editor.traits = Object.assign({ capture: ["tab"] as const }, { owner: "opencode", role: "prompt" })
+  screen.renderer.root.add(editor); editor.focus()
+  const adapter = createTerminalAdapter(screen.renderer)
+  const value = { message: "", activity: { kind: "alternative" as const, name: "長い Model Display Name" } }
+  for (const [time, frame] of [[0, "▰▱▱"], [200, "▱▰▱"], [400, "▱▱▰"]] as const) {
+    now = time
+    adapter.communicate(value)
+    assert.equal(editor.placeholder, "\uFFFB" + frame + " 長い Model Display Name")
+    await screen.renderOnce()
+    assert.match(screen.captureCharFrame(), /Model Display Name/)
+    assert.equal(editor.plainText, "")
+  }
+  adapter.communicate(undefined)
+  assert.equal(editor.placeholder, "Original placeholder")
+  now = 1000
+  adapter.dispose()
+  assert.equal(editor.placeholder, "Original placeholder")
+})
+
 test("terminal shortcut requests historical state without enabling automatic generation or submitting", async () => {
   await using screen = await createTestRenderer({ width: 60, height: 8 })
   let submissions = 0
@@ -81,7 +105,10 @@ test("terminal shortcut requests historical state without enabling automatic gen
   } finally { if (typeof stop === "function") stop() }
 })
 
-test("terminal communications pass Tab through and only the request shortcut escalates", async () => {
+test("terminal communications pass Tab through and only the request shortcut escalates", async t => {
+  const previous = process.env.OPENCODE_CLI_CONFIG_CONTENT
+  process.env.OPENCODE_CLI_CONFIG_CONTENT = '{"animations":false}'
+  t.after(() => { if (previous === undefined) delete process.env.OPENCODE_CLI_CONFIG_CONTENT; else process.env.OPENCODE_CLI_CONFIG_CONTENT = previous })
   await using screen = await createTestRenderer({ width: 80, height: 12 })
   let submissions = 0
   const editor = new TextareaRenderable(screen.renderer, { width: 80, height: 8, onSubmit: () => { submissions++ } })
@@ -89,25 +116,32 @@ test("terminal communications pass Tab through and only the request shortcut esc
   screen.renderer.root.add(editor); editor.focus()
   const session = { id: "ses_test", time: { idle: 2 }, location: { directory: "/project" } }
   const requests: any[] = []
+  let finish!: (reply: any) => void
   const commands = new Map<string, any>()
   const stop = tui.setup!({
     renderer: screen.renderer, location: session.location, app: { version: "test" },
     data: { on: () => () => {}, session: { get: () => session, status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } },
-    client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }), predict: async (input: any) => { requests.push(input); return input.escalation ? { text: "Run the tests." } : { reason: "no_suggestion", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "next" }, name: "Next model" } } }, events: { on: () => () => {} } }) },
+    client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }), predict: async (input: any) => { requests.push(input); return input.escalation ? new Promise(resolve => { finish = resolve }) : { text: "Original prediction. 😀", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "next" }, name: "Next model" } } }, events: { on: () => () => {} } }) },
     ui: { router: { current: () => ({ type: "session", sessionID: "ses_test" }) }, toast: { show() { throw Error("unexpected abstention toast") } } },
     keymap: { layer: (factory: () => any) => { for (const command of factory().commands) commands.set(command.id, command) } },
   } as any)
   try {
     await new Promise(resolve => setImmediate(resolve)); await screen.renderOnce()
     const frame = screen.captureCharFrame()
-    assert.match(frame, /Ask another model/)
-    assert.match(frame, /Alt\+Shift\+P/)
-    assert.match(frame, /paid\/next/)
-    assert.match(frame, /quota/)
+    assert.match(frame, /Original prediction/)
+    assert.doesNotMatch(frame, /Ask another|Alt\+Shift|quota|Next model/)
     assert.equal(editor.plainText, "")
-    assert.equal(commands.get("predictions.accept").run(), false)
     assert.equal(requests.length, 1)
     commands.get("predictions.request-shortcut").run()
+    await screen.renderOnce()
+    assert.equal(editor.placeholder, "\uFFFB… Next model")
+    assert.match(screen.captureCharFrame(), /… Next model/)
+    assert.doesNotMatch(screen.captureCharFrame(), /Original prediction|Asking|quota/)
+    assert.equal(commands.get("predictions.accept").run(), false)
+    assert.equal(editor.plainText, "")
+    commands.get("predictions.request-shortcut").run()
+    assert.equal(requests.length, 2)
+    finish({ text: "Run the tests." })
     await new Promise(resolve => setImmediate(resolve))
     assert.equal(requests[1].escalation, "next")
     assert.equal(requests[1].manual, true)

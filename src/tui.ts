@@ -4,11 +4,28 @@ import { startClient } from "./client.ts"
 import { Predictions } from "./rpc.ts"
 import type { Reply, Status } from "./service.ts"
 import { pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
+import { readFileSync } from "node:fs"
+import { homedir } from "node:os"
+import { join } from "node:path"
 
 export default Plugin.define({
   id: "opencode-predictions.tui",
   setup(ctx) {
-    const adapter = createTerminalAdapter(ctx.renderer)
+    let checkedMotion = -Infinity
+    let reducedMotion = true
+    const adapter = createTerminalAdapter(ctx.renderer, () => {
+      if (Date.now() - checkedMotion < 2000) return reducedMotion
+      checkedMotion = Date.now()
+      try {
+        let settings: { animations?: boolean } = {}
+        try { settings = JSON.parse(readFileSync(join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode", "cli.json"), "utf8")) }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+        const inline = JSON.parse(process.env.OPENCODE_CLI_CONFIG_CONTENT ?? "{}")
+        const animations = inline.animations ?? settings.animations
+        reducedMotion = animations !== undefined && animations !== true
+      } catch { reducedMotion = true }
+      return reducedMotion
+    })
     const session = () => { const route = ctx.ui.router.current(); return route.type === "session" ? ctx.data.session.get(route.sessionID) : undefined }
     const location = () => session()?.location ?? ctx.location ?? ctx.data.location.default()
     const client = startClient({
