@@ -1,15 +1,18 @@
+import { communicationText, type Communication } from "../controller.ts"
+
 export type Composer = { text(): string; focused(): boolean; quotable(): boolean; setText(text: string): void; focus(): void }
 // DOM anchoring is the only private Desktop surface; draft writes use the host Composer API.
 export function createDesktopAdapter(document: Document, composer: () => Composer | undefined) {
   const window = document.defaultView!
   let composing = false
   let overlay: HTMLDivElement | undefined
+  let communication: HTMLDivElement | undefined
   let placeholder: HTMLElement | undefined
   let originalVisibility = ""
   const visible = (element: Element) => element.getClientRects().length > 0 && window.getComputedStyle(element).visibility !== "hidden"
-  const anchor = (): HTMLElement | undefined => {
+  const anchor = (focused = true): HTMLElement | undefined => {
     const matches = [...document.querySelectorAll<HTMLElement>('[data-component="composer-editor"][contenteditable="true"]')].filter(visible)
-    return matches.length === 1 && matches[0] === document.activeElement ? matches[0] : undefined
+    return matches.length === 1 && (!focused || matches[0] === document.activeElement) ? matches[0] : undefined
   }
   const clear = () => {
     overlay?.remove(); overlay = undefined
@@ -30,6 +33,22 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
   return {
     eligible,
     read: () => composer()?.text() ?? "",
+    communicate(value: Communication | undefined) {
+      const element = anchor(false)
+      if (!value || !element || composer()?.text()) { communication?.remove(); communication = undefined; return }
+      const owner = element.closest('[data-component="composer"]') ?? element.parentElement!
+      if (!communication || communication.parentElement !== owner) {
+        communication?.remove()
+        communication = document.createElement("div")
+        communication.setAttribute("data-opencode-communication", "")
+        communication.setAttribute("role", "status")
+        communication.setAttribute("aria-live", "polite")
+        Object.assign(communication.style, { padding: "8px 16px", font: window.getComputedStyle(element).font, whiteSpace: "pre-wrap", overflowWrap: "anywhere", color: "var(--v2-text-text-base, inherit)" })
+        owner.append(communication)
+      }
+      const text = communicationText(value)
+      if (communication.textContent !== text) communication.textContent = text
+    },
     paint(text: string | undefined): boolean {
       if (!text || !eligible()) { clear(); return false }
       const element = anchor()!
@@ -65,6 +84,7 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
     },
     dispose() {
       clear()
+      communication?.remove(); communication = undefined
       document.removeEventListener("compositionstart", compositionStart, true)
       document.removeEventListener("compositionend", compositionEnd, true)
     },

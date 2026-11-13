@@ -27,7 +27,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
         res.end(JSON.stringify({ error: { message: "PRIVATE fixture provider failure", type: "server_error" } }))
         return
       }
-      const content = prediction ? '{"prompt":"Run the targeted tests."}' : "I fixed the assertion. The tests have not been run yet."
+      const content = prediction ? behavior.predictionOutputs?.[input.model] ?? '{"prompt":"Run the targeted tests."}' : "I fixed the assertion. The tests have not been run yet."
       const base = { id: "chatcmpl-fixture", created: Math.floor(Date.now() / 1000), model: "fixture" }
       if (input.stream) {
         res.writeHead(200, { "Content-Type": "text/event-stream" })
@@ -46,7 +46,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
     $schema: "https://opencode.ai/config.json",
     model: "fixture/model",
     plugins: [{ package: packagePath, options: { models: "fixture/model", timeoutMs: 8000, obsolete: true, ...options } }],
-    providers: { fixture: { name: "Fixture", env: ["FIXTURE_API_KEY"], package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${provider.address().port}/v1` }, models: { model: { name: "Fixture Flash", capabilities: { tools: false }, limit: { context: 32768, output: 2048 } } } } },
+    providers: { fixture: { name: "Fixture", env: ["FIXTURE_API_KEY"], package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${provider.address().port}/v1` }, models: Object.fromEntries([...new Set(["model", ...Object.keys(behavior.predictionOutputs ?? {})])].map(id => [id, { name: id === "model" ? "Fixture Flash" : "Fixture " + id, capabilities: { tools: false }, limit: { context: 32768, output: 2048 } }])) } },
   }
   const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: process.env.TMPDIR ?? root, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }

@@ -11,6 +11,7 @@ export function reasonNotice(reason: string | undefined): Notice | undefined {
   const info: Record<string, [string, string]> = {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
+    escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
     context_unavailable: ["No completed response to predict from", "Finish an assistant response with usable conversation text, then request a prediction."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."],
@@ -36,7 +37,7 @@ export function statusNotice(status: Status): Notice | undefined {
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason)
     // Validation messages describe field types, never the supplied option values.
-    const validation = /^(Plugin options|enabled|automatic|debug|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
+    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true }
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` }
@@ -48,6 +49,7 @@ export function formatStatus(status: Status | undefined, details: { lastNotice?:
   if (notice) lines.push(notice.message)
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`)
+    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic — at most one additional model call; may consume paid provider quota." : status.escalation === "manual" ? "Manual — Ask another model uses the displayed provider's quota." : "Off"}`)
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : [])
     for (const [index, group] of groups.entries()) {
       lines.push(`Group ${index + 1}: ${group.selectors}`)

@@ -71,3 +71,9 @@ test("disabled predictions still warn about unknown options without hiding the d
   assert.match(view.summary, /State: Predictions are turned off/)
   assert.match(view.summary, /Unknown option ignored: typo/)
 })
+test("status explains automatic escalation quota and its one-extra-call limit", () => {
+  const view = formatStatus({ enabled: true, automatic: false, escalation: "automatic", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }, {})
+  assert.match(view.summary, /escalation/i)
+  assert.match(view.summary, /one additional model call/i)
+  assert.match(view.summary, /quota/i)
+})

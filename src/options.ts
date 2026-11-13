@@ -1,17 +1,19 @@
 export type ModelRef = { providerID: string; id: string; variant?: string }
-export type Options = { enabled: boolean; models?: readonly string[]; timeoutMs: number; contextTurns: number; automatic: boolean; debug: boolean }
+export type Options = { enabled: boolean; models?: readonly string[]; timeoutMs: number; contextTurns: number; automatic: boolean; debug: boolean; escalation: "off" | "manual" | "automatic" }
 export type OptionsResult = { ok: true; value: Options; warnings: string[] } | { ok: false; reason: string; warnings: string[] }
 
 export function parseOptions(input: unknown = {}): OptionsResult {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] }
   const raw = input as Record<string, unknown>
-  const fields = ["enabled", "models", "timeoutMs", "contextTurns", "automatic", "debug"]
+  const fields = ["enabled", "models", "timeoutMs", "contextTurns", "automatic", "debug", "escalation"]
   const warnings = Object.keys(raw).filter(key => !fields.includes(key)).map(key => `Unknown option ignored: ${key}`)
   const invalid = (reason: string): OptionsResult => ({ ok: false, reason, warnings })
   for (const name of ["enabled", "automatic", "debug"]) {
     if (raw[name] !== undefined && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`)
   }
   const timeoutMs = raw.timeoutMs ?? 8000
+  const escalation = raw.escalation === undefined ? "manual" : raw.escalation
+  if (escalation !== "off" && escalation !== "manual" && escalation !== "automatic") return invalid('escalation must be "off", "manual", or "automatic"')
   const contextTurns = raw.contextTurns ?? 3
   if (typeof timeoutMs !== "number" || !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 2147483647) return invalid("timeoutMs must be a positive integer within the timer limit")
   if (typeof contextTurns !== "number" || !Number.isInteger(contextTurns) || contextTurns < 1 || contextTurns > 5) return invalid("contextTurns must be an integer from 1 to 5")
@@ -31,5 +33,5 @@ export function parseOptions(input: unknown = {}): OptionsResult {
       models.push(text.trim())
     }
   }
-  return { ok: true, value: { enabled: raw.enabled as boolean ?? true, ...(raw.models === undefined ? {} : { models }), timeoutMs, contextTurns, automatic: raw.automatic as boolean ?? true, debug: raw.debug as boolean ?? false }, warnings }
+  return { ok: true, value: { enabled: raw.enabled as boolean ?? true, ...(raw.models === undefined ? {} : { models }), timeoutMs, contextTurns, automatic: raw.automatic as boolean ?? true, debug: raw.debug as boolean ?? false, escalation }, warnings }
 }

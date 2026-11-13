@@ -80,3 +80,39 @@ test("terminal shortcut requests historical state without enabling automatic gen
     assert.equal(submissions, 0)
   } finally { if (typeof stop === "function") stop() }
 })
+
+test("terminal communications pass Tab through and only the request shortcut escalates", async () => {
+  await using screen = await createTestRenderer({ width: 80, height: 12 })
+  let submissions = 0
+  const editor = new TextareaRenderable(screen.renderer, { width: 80, height: 8, onSubmit: () => { submissions++ } })
+  editor.traits = Object.assign({ capture: ["tab"] as const }, { owner: "opencode", role: "prompt" })
+  screen.renderer.root.add(editor); editor.focus()
+  const session = { id: "ses_test", time: { idle: 2 }, location: { directory: "/project" } }
+  const requests: any[] = []
+  const commands = new Map<string, any>()
+  const stop = tui.setup!({
+    renderer: screen.renderer, location: session.location, app: { version: "test" },
+    data: { on: () => () => {}, session: { get: () => session, status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } },
+    client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }), predict: async (input: any) => { requests.push(input); return input.escalation ? { text: "Run the tests." } : { reason: "no_suggestion", escalation: { token: "next", group: 2, model: { providerID: "paid", id: "next" }, name: "Next model" } } }, events: { on: () => () => {} } }) },
+    ui: { router: { current: () => ({ type: "session", sessionID: "ses_test" }) }, toast: { show() { throw Error("unexpected abstention toast") } } },
+    keymap: { layer: (factory: () => any) => { for (const command of factory().commands) commands.set(command.id, command) } },
+  } as any)
+  try {
+    await new Promise(resolve => setImmediate(resolve)); await screen.renderOnce()
+    const frame = screen.captureCharFrame()
+    assert.match(frame, /Ask another model/)
+    assert.match(frame, /Alt\+Shift\+P/)
+    assert.match(frame, /paid\/next/)
+    assert.match(frame, /quota/)
+    assert.equal(editor.plainText, "")
+    assert.equal(commands.get("predictions.accept").run(), false)
+    assert.equal(requests.length, 1)
+    commands.get("predictions.request-shortcut").run()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(requests[1].escalation, "next")
+    assert.equal(requests[1].manual, true)
+    assert.equal(commands.get("predictions.accept").run(), undefined)
+    assert.equal(editor.plainText, "Run the tests.")
+    assert.equal(submissions, 0)
+  } finally { if (typeof stop === "function") stop() }
+})

@@ -2,10 +2,23 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { parseOptions } from "../src/options.ts"
 
+test("escalation defaults to manual and rejects unsupported policies", () => {
+  const defaults = parseOptions({})
+  assert.ok(defaults.ok)
+  assert.equal(defaults.value.escalation, "manual")
+  for (const escalation of ["off", "manual", "automatic"]) {
+    const result = parseOptions({ escalation })
+    assert.ok(result.ok)
+    assert.equal(result.value.escalation, escalation)
+    assert.deepEqual(result.warnings, [])
+  }
+  for (const escalation of [null, false, 1, "always", {}, []]) assert.equal(parseOptions({ escalation }).ok, false)
+})
+
 test("model selector preserves nested model IDs and explicit reasoning", () => {
   assert.deepEqual(parseOptions({ models: "openai/team/model#high" }), {
     ok: true,
-    value: { enabled: true, models: ["openai/team/model#high"], timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false },
+    value: { enabled: true, models: ["openai/team/model#high"], timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false, escalation: "manual" },
     warnings: [],
   })
 })
@@ -27,7 +40,7 @@ test("unknown options warn without disabling supported options", () => {
 test("missing model remains unselected, and disabling/manual controls survive parsing", () => {
   const result = parseOptions({ enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1 })
   assert.ok(result.ok)
-  assert.deepEqual(result.value, { enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1, debug: false })
+  assert.deepEqual(result.value, { enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1, debug: false, escalation: "manual" })
 })
 
 test("debug defaults false and accepts only booleans", () => {
