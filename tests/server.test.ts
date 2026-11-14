@@ -723,7 +723,7 @@ test("final structured notices preserve safe failure detail and compatibility me
   assert.match(reply.notice!.title, /authentication failed/)
   assert.match(reply.notice!.message, /Reconnect.*reload/)
   assert.deepEqual(final, reply.notice)
-  assert.equal(service.status().pluginVersion, "0.1.0")
+  assert.equal(service.status().pluginVersion, "0.2.0")
   assert.equal(service.status().feedbackRevision, 1)
 })
 

@@ -213,13 +213,13 @@ var encoder = new TextEncoder();
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.1.0",
+  version: "0.2.0",
   description: "Next-prompt predictions for OpenCode Desktop and CLI",
   type: "module",
   license: "MIT",
   repository: { type: "git", url: "https://github.com/fcoouto/opencode-predictions.git" },
   engines: { node: ">=26.4.0" },
-  files: ["dist", "README.md", "LICENSE"],
+  files: ["dist", "README.md", "readme-demo.svg", "LICENSE"],
   exports: {
     ".": "./dist/index.js",
     "./tui": "./dist/tui.js",
