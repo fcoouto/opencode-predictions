@@ -102,7 +102,7 @@ if the shortcut is not delivered, use **Predict next prompt** from the command p
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
-| `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one extra call after abstention. |
+| `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one abstention-triggered transition. Errors fall back automatically in all modes. |
 | `enabled` | `true` | Enable predictions. |
 | `debug` | `false` | Show safe per-model failures, fallback progress, and queue decisions. |
 
@@ -116,14 +116,15 @@ Only enabled models supporting the requested variant are selected.
 ### Progress and alternative predictions
 
 Press **Alt+Shift+P** again after a prediction or a no-suggestion response to try
-the next untried eligible model in the current group, then later groups. Each action
-permits at most one additional stateless generation request. OpenCode/provider
+the next untried eligible model in the current group, then later groups. Provider
+errors, invalid output and model timeouts automatically advance through remaining
+untried eligible models, including during an alternative request. OpenCode/provider
 transport retries may make additional HTTP attempts for that same model; this SDK
 does not expose retry control. Models are not repeated within a
 prediction cycle, including models called by ordinary initial error fallback.
 
 While generating, a compact activity indicator replaces prediction text. An
-alternative request also shows the model's display name, for example
+request also shows the actual attempted model's display name, for example
 `￻▱▰▱ Fixture Flash`. Indicators start with `￻` (U+FFFB). The moving block means local activity, not completion percentage
 or proof that the provider is healthy. Desktop respects reduced motion; CLI respects
 the existing `animations` preference in `cli.json` and `OPENCODE_CLI_CONFIG_CONTENT`.
@@ -132,18 +133,19 @@ Unreadable CLI motion settings use a static indicator.
 The original prediction is temporarily withdrawn but retained internally. **Tab
 passes through normally while status is visible**: it cannot insert status or accept
 the hidden original, and does not itself cancel the request. Success shows the new
-prediction; abstention, error or timeout restores the original. Tab accepts real text
+prediction; abstention or terminal failure restores the original. Tab accepts real text
 again once it is visible. No action button is shown. Without a prediction, a muted
 placeholder identifies the abstaining model and the next alternative:
 
 ```text
 [First Model] provided no prediction.
-Use Option+Shift+P to escalate it to [Next Model].
+Option+Shift+P: try [Next Model].
 ```
 
 macOS uses **Option+Shift+P**; other platforms show **Alt+Shift+P**. The actual
 shortcut binding is unchanged. The second line appears only when an alternative
-exists. This is placeholder communication, not draft text: it does not extend the
+exists and a model actually returned `{"prompt":null}`. Metadata refresh never
+claims model abstention. This is placeholder communication, not draft text: it does not extend the
 composer and cannot be accepted with Tab. Typing dismisses it. A legacy service
 without source-model metadata shows a generic no-prediction message instead.
 With no alternatives, a brief **No alternatives available.** message precedes restoration.
@@ -162,20 +164,26 @@ pending work and clears status; late results cannot overwrite the draft.
 - **`"manual"` (default):** stop after a prediction or abstention. The shortcut
   requests an alternative, current group first. Skip blocked/cooling candidates
   and empty groups; never wrap to earlier groups within a cycle.
-- **`"automatic"`:** valid abstention permits one additional model call in the
-  current group first. If that model also abstains, another explicit action is
+- **`"automatic"`:** valid abstention permits one automatic transition in the
+  current group first. Provider errors during that transition still fall through.
+  If the next working model also abstains, another explicit action is
   needed to go further. This is not a loop until some model produces text.
 
 `automatic: false` controls only how the initial request starts. Combining it with
-`escalation: "automatic"` means a manual request can still make an extra call.
+`escalation: "automatic"` means a manual initial request can still advance after abstention.
 Group order expresses preference, not guaranteed quality or price. Every model call
 may consume its provider's quota, including paid quota. Cancellation does not
 guarantee avoiding provider charges. Pending status names the model; it is not an
 advance pricing confirmation.
 
-An escalation action stops on text, abstention or error; it does not start another
-error-fallback chain. Its `timeoutMs` budget includes validation and generation.
-Ordinary initial requests retain their existing per-model timeout and error fallback.
+Text or genuine abstention stops error fallback. Errors advance automatically
+without asking for another shortcut. Each model attempt and metadata phase is
+bounded by `timeoutMs`; a multi-model action can therefore take longer than one
+timeout and consume quota on several models. Cancellation and stale context stop
+the chain immediately.
+When all eligible models fail, concise communication gives a recognized cause and
+one recovery instruction, not a next-model hint. Unknown causes remain generic;
+**Prediction status and preview** retains safe per-model details.
 Abstention remains a healthy response, not a cooldown or failure penalty.
 If the offered manual target becomes unavailable, the offer refreshes without
 silently calling a different model. Old, duplicate, or changed-context offers do

@@ -41,7 +41,7 @@ export default Plugin.define({
         const value = session()
         if (!value || value.id !== state.sessionID || !value.location) return { reason: "stale" }
         const rpc = value.server.client.rpc(Predictions)
-        const stop = rpc.events.on("progress", event => { if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice(String(event.data.message), event.data.notice as Notice | undefined) })
+        const stop = rpc.events.on("progress", event => { if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice(String(event.data.message), event.data.notice as Notice | undefined, typeof event.data.modelName === "string" ? event.data.modelName : undefined) })
         try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...(manual ? { manual: true } : {}), ...(escalation ? { escalation } : {}) }, { location: value.location, signal }) as Reply } finally { stop() }
       },
       paint: adapter.paint,

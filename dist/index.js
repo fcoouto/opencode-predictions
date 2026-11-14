@@ -39,7 +39,7 @@ var Predictions = Rpc.define({
   },
   events: {
     progress: {
-      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" }, notice }, required: ["requestID", "sessionID", "message"], additionalProperties: false }
+      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" }, modelName: { type: "string" }, notice }, required: ["requestID", "sessionID", "message"], additionalProperties: false }
     }
   }
 });
@@ -218,7 +218,7 @@ var package_default = {
 var pluginVersion = package_default.version;
 var feedbackRevision = 1;
 function reasonNotice(reason) {
-  if (!reason || ["cancelled", "stale"].includes(reason)) return;
+  if (!reason || ["cancelled", "stale", "escalation_refreshed"].includes(reason)) return;
   const info = {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
@@ -231,7 +231,7 @@ function reasonNotice(reason) {
   if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true };
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true };
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." };
-  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The model did not respond within the configured timeout. Check model availability in Prediction status and preview before requesting again." };
+  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The prediction did not finish within the configured timeout. Check model availability in Prediction status and preview before requesting again." };
   return { code: "service_unavailable", severity: "error", title: "Prediction service unavailable", message: "Predictions could not complete. Check the OpenCode service connection, then request a prediction again. Open Prediction status and preview for details." };
 }
 function statusNotice(status) {
@@ -392,10 +392,11 @@ function createService(api, rawOptions, directory) {
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) };
     const caller = parent;
     let deadline;
-    const limitEscalation = () => {
+    const limitAttempt = () => {
       deadline = AbortSignal.timeout(options.timeoutMs);
       parent = AbortSignal.any([caller, deadline]);
     };
+    limitAttempt();
     let offered;
     let extraCall = false;
     const key = JSON.stringify([request.sessionID, request.completion]);
@@ -404,13 +405,11 @@ function createService(api, rawOptions, directory) {
     const refreshing = request.escalation === "refresh";
     if (refreshing) {
       if (!request.manual || options.escalation === "off" || !cycle) return { reason: "escalation_unavailable" };
-      limitEscalation();
     } else if (request.escalation !== void 0) {
       offered = offers.get(request.escalation);
       if (!request.manual || options.escalation === "off" || !offered || offered.cycle !== cycle || offered.cycle.pending) return { reason: "escalation_unavailable" };
       offers.delete(request.escalation);
       extraCall = true;
-      limitEscalation();
     }
     if (options.escalation === "off") cycle = void 0;
     if (cycle?.pending) return { reason: "escalation_unavailable" };
@@ -437,15 +436,15 @@ function createService(api, rawOptions, directory) {
     try {
       parent.throwIfAborted();
       const work = async () => {
-        const session = await api.session(request.sessionID, parent);
+        const session = await abortable(() => api.session(request.sessionID, parent), parent);
         const reason = check(session);
         if (reason) return { reason };
-        refresh(await api.models(parent));
+        refresh(await abortable(() => api.models(parent), parent));
         configured = groups.flat();
         if (!configured.length) return { reason: "model_unavailable" };
         parent.throwIfAborted();
         if (configured.every((model) => !!skip(model))) return { reason: "no_models_eligible" };
-        const messages = [...await api.context(request.sessionID, parent)];
+        const messages = [...await abortable(() => api.context(request.sessionID, parent), parent)];
         const records = messages.map((value) => value && typeof value === "object" ? value : {});
         const last = records.findLast((value) => value.type === "user" || value.type === "assistant" || value.type === "idle" || value.type === "compaction" && value.status !== "failed");
         if (request.manual === true && last?.type === "assistant" && last.time?.completed !== void 0) {
@@ -465,27 +464,31 @@ function createService(api, rawOptions, directory) {
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns);
         if (!prompt) return { reason: "context_unavailable" };
         if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" };
-        if ((continuing || refreshing) && !offered) return { reason: "no_suggestion" };
+        if ((continuing || refreshing) && !offered) return { reason: "escalation_refreshed" };
         let chain = groups.flatMap((queue, group) => queue.map((model) => ({ ...model, group }))).filter((model) => model.group >= progress.group && !progress.tried.has(candidateKey(model)));
         if (offered) {
           const target = chain.find((model) => model.group + 1 === offered.offer.group && candidateKey(model) === candidateKey(offered.offer.model) && !skip(model));
-          if (!target) return { reason: "no_suggestion" };
-          chain = [target];
+          if (!target) return { reason: "escalation_refreshed" };
+          chain = [target, ...chain.filter((model) => model !== target && model.group >= target.group)];
         }
         const ownership = new Map(owners);
         let failure = "no_models_eligible";
+        const details = /* @__PURE__ */ new Set();
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted();
+          limitAttempt();
+          const candidate = chain[index];
+          if (skip(candidate) || owners.get(candidateKey(candidate)) !== ownership.get(candidateKey(candidate))) continue;
+          const { name, group, ...model } = candidate;
+          await abortable(() => Promise.resolve(api.progress?.(name, request)), parent);
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
           parent.throwIfAborted();
           if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" };
-          const candidate = chain[index];
-          if (skip(candidate)) continue;
-          const { name, group, ...model } = candidate;
+          if (skip(candidate) || owners.get(candidateKey(candidate)) !== ownership.get(candidateKey(candidate))) continue;
           progress.group = group;
           progress.tried.add(candidateKey(model));
-          const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)]);
+          const signal = parent;
           let generating = true;
           try {
             const output = await abortable(() => api.generate(model, prompt, signal), signal);
@@ -509,7 +512,6 @@ function createService(api, rawOptions, directory) {
               const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate2, next2) => next2 > index && !progress.tried.has(candidateKey(candidate2)) && !skip(candidate2)) : -1;
               if (next !== -1) {
                 extraCall = true;
-                limitEscalation();
                 index = next - 1;
                 continue;
               }
@@ -518,36 +520,35 @@ function createService(api, rawOptions, directory) {
             throw new Error("Invalid prediction response");
           } catch (error) {
             const timedOut = signal.aborted;
-            if (!caller.aborted && deadline?.aborted && generating) {
-              const key3 = candidateKey(model);
-              const until2 = Date.now() + 6e4;
-              if ((skipped.get(key3)?.until ?? 0) < until2) skipped.set(key3, { until: until2, reason: `Timed out after ${options.timeoutMs} ms.` });
-              move(model, false, group, ownership);
-            }
+            caller.throwIfAborted();
+            if (timedOut && !generating) throw error;
+            if (timedOut) limitAttempt();
             parent.throwIfAborted();
             const changed2 = check(await abortable(() => api.session(request.sessionID, parent), parent));
             if (changed2) return { reason: changed2 };
             parent.throwIfAborted();
             failure = timedOut ? "timeout" : "generation_failed";
             const policy = timedOut ? { detail: `Timed out after ${options.timeoutMs} ms.`, delayMs: 6e4, modelWide: false } : failurePolicy(error);
+            details.add(policy.detail);
             const key2 = policy.modelWide ? modelKey(model) : candidateKey(model);
             const until = Date.now() + policy.delayMs;
             if ((skipped.get(key2)?.until ?? 0) < until) skipped.set(key2, { until, reason: policy.detail });
             move(model, false, group, ownership, policy.modelWide);
-            if (extraCall) break;
             if (options.debug) {
               const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
               const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
               const entry = skip(model);
               const minutes = Math.ceil((entry.until - Date.now()) / 6e4);
               const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`;
-              await api.notice?.(`${message}
+              await abortable(() => Promise.resolve(api.notice?.(`${message}
 Reason: ${policy.detail}
-Queue: ${queue}`, request);
+Queue: ${queue}`, request)), parent);
             }
           }
         }
-        return { reason: failure };
+        const cause = [...details];
+        const recovery = cause.length && cause.every((detail) => /authentication failed/.test(detail)) ? "Reconnect the provider, then reload the server plugin." : cause.length && cause.every((detail) => /quota|usage limit/.test(detail)) ? "Wait for quota to reset; check Prediction status and preview." : "Open Prediction status and preview for causes and recovery.";
+        return { reason: failure, ...cause.length ? { notice: { code: failure, severity: "error", title: cause.length === 1 ? cause[0] : "All prediction models failed.", message: recovery } } : {} };
       };
       const reply = await abortable(async () => {
         const reply2 = await work();
@@ -559,13 +560,13 @@ Queue: ${queue}`, request);
           const selectors = new Set(options.models.flatMap((group) => group.split(",").map((value) => value.trim())));
           const single = configured[0];
           const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
-          reply2.notice = statusNotice(status()) ?? reasonNotice(reply2.reason);
+          reply2.notice ??= statusNotice(status()) ?? reasonNotice(reply2.reason);
           await abortable(() => Promise.resolve(api.notice?.(message, request, reply2.notice)), parent);
         }
         return reply2;
-      }, parent);
+      }, caller);
       lastOutcome = reply.text ? "suggestion" : reply.reason;
-      if (reply.text || ["no_suggestion", "generation_failed", "timeout"].includes(reply.reason ?? "")) {
+      if (reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "")) {
         const escalation2 = nextOffer(request, progress);
         if (escalation2) reply.escalation = escalation2;
       }
@@ -596,6 +597,9 @@ var index_default = Plugin.define({
       generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
       notice: async (message, request, notice2) => {
         if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...notice2 ? { notice: notice2 } : {} });
+      },
+      progress: async (modelName, request) => {
+        if (request.requestID) await registration.events.emit("progress", { message: "", modelName, requestID: request.requestID, sessionID: request.sessionID });
       }
     }, ctx.options, ctx.location.directory);
     const registration = await ctx.rpc.register(Predictions, {

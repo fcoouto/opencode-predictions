@@ -12,6 +12,7 @@ export type ServiceAPI = {
   models(signal: AbortSignal): Promise<readonly CatalogModel[]>
   generate(model: ModelRef, prompt: string, signal: AbortSignal): Promise<string>
   notice?(message: string, request: Request, notice?: Notice): void | Promise<void>
+  progress?(modelName: string, request: Request): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
 export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
@@ -154,7 +155,8 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) }
     const caller = parent
     let deadline: AbortSignal | undefined
-    const limitEscalation = () => { deadline = AbortSignal.timeout(options.timeoutMs); parent = AbortSignal.any([caller, deadline]) }
+    const limitAttempt = () => { deadline = AbortSignal.timeout(options.timeoutMs); parent = AbortSignal.any([caller, deadline]) }
+    limitAttempt()
     let offered: Offer | undefined
     let extraCall = false
     const key = JSON.stringify([request.sessionID, request.completion])
@@ -163,13 +165,11 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     const refreshing = request.escalation === "refresh"
     if (refreshing) {
       if (!request.manual || options.escalation === "off" || !cycle) return { reason: "escalation_unavailable" }
-      limitEscalation()
     } else if (request.escalation !== undefined) {
       offered = offers.get(request.escalation)
       if (!request.manual || options.escalation === "off" || !offered || offered.cycle !== cycle || offered.cycle.pending) return { reason: "escalation_unavailable" }
       offers.delete(request.escalation)
       extraCall = true
-      limitEscalation()
     }
     if (options.escalation === "off") cycle = undefined
     if (cycle?.pending) return { reason: "escalation_unavailable" }
@@ -196,15 +196,15 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     try {
       parent.throwIfAborted()
       const work = async (): Promise<Reply> => {
-        const session = await api.session(request.sessionID, parent)
+        const session = await abortable(() => api.session(request.sessionID, parent), parent)
         const reason = check(session)
         if (reason) return { reason }
-        refresh(await api.models(parent))
+        refresh(await abortable(() => api.models(parent), parent))
         configured = groups!.flat()
         if (!configured.length) return { reason: "model_unavailable" }
         parent.throwIfAborted()
         if (configured.every(model => !!skip(model))) return { reason: "no_models_eligible" }
-        const messages = [...await api.context(request.sessionID, parent)]
+        const messages = [...await abortable(() => api.context(request.sessionID, parent), parent)]
         const records = messages.map(value => value && typeof value === "object" ? value as { type?: string; status?: string; outcome?: string; finish?: string; content?: unknown; time?: { completed?: unknown } } : {})
         const last = records.findLast(value => value.type === "user" || value.type === "assistant" || value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
         if (request.manual === true && last?.type === "assistant" && last.time?.completed !== undefined) {
@@ -224,27 +224,31 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns)
         if (!prompt) return { reason: "context_unavailable" }
         if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" }
-        if ((continuing || refreshing) && !offered) return { reason: "no_suggestion" }
+        if ((continuing || refreshing) && !offered) return { reason: "escalation_refreshed" }
         let chain = groups!.flatMap((queue, group) => queue.map(model => ({ ...model, group }))).filter(model => model.group >= progress.group && !progress.tried.has(candidateKey(model)))
         if (offered) {
           const target = chain.find(model => model.group + 1 === offered.offer.group && candidateKey(model) === candidateKey(offered.offer.model) && !skip(model))
-          if (!target) return { reason: "no_suggestion" }
-          chain = [target]
+          if (!target) return { reason: "escalation_refreshed" }
+          chain = [target, ...chain.filter(model => model !== target && model.group >= target.group)]
         }
         const ownership = new Map(owners)
         let failure = "no_models_eligible"
+        const details = new Set<string>()
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted()
+          limitAttempt()
+          const candidate = chain[index]
+          if (skip(candidate) || owners.get(candidateKey(candidate)) !== ownership.get(candidateKey(candidate))) continue
+          const { name, group, ...model } = candidate
+          await abortable(() => Promise.resolve(api.progress?.(name, request)), parent)
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent))
           if (changed) return { reason: changed }
           parent.throwIfAborted()
           if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" }
-          const candidate = chain[index]
-          if (skip(candidate)) continue
-          const { name, group, ...model } = candidate
+          if (skip(candidate) || owners.get(candidateKey(candidate)) !== ownership.get(candidateKey(candidate))) continue
           progress.group = group
           progress.tried.add(candidateKey(model))
-          const signal = AbortSignal.any([parent, AbortSignal.timeout(options.timeoutMs)])
+          const signal = parent
           let generating = true
           try {
             const output = await abortable(() => api.generate(model, prompt, signal), signal)
@@ -260,40 +264,43 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             if (abstained) {
               if (!skip(model)) move(model, true, group, ownership)
               const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate, next) => next > index && !progress.tried.has(candidateKey(candidate)) && !skip(candidate)) : -1
-              if (next !== -1) { extraCall = true; limitEscalation(); index = next - 1; continue }
+              if (next !== -1) { extraCall = true; index = next - 1; continue }
               return { reason: "no_suggestion", ...(options.escalation !== "off" ? { modelName: name } : {}) }
             }
             throw new Error("Invalid prediction response")
           } catch (error) {
             const timedOut = signal.aborted
-            if (!caller.aborted && deadline?.aborted && generating) {
-              const key = candidateKey(model)
-              const until = Date.now() + 60000
-              if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: `Timed out after ${options.timeoutMs} ms.` })
-              move(model, false, group, ownership)
-            }
+            caller.throwIfAborted()
+            if (timedOut && !generating) throw error
+            if (timedOut) limitAttempt()
             parent.throwIfAborted()
             const changed = check(await abortable(() => api.session(request.sessionID, parent), parent))
             if (changed) return { reason: changed }
             parent.throwIfAborted()
             failure = timedOut ? "timeout" : "generation_failed"
             const policy = timedOut ? { detail: `Timed out after ${options.timeoutMs} ms.`, delayMs: 60000, modelWide: false } : failurePolicy(error)
+            details.add(policy.detail)
             const key = policy.modelWide ? modelKey(model) : candidateKey(model)
             const until = Date.now() + policy.delayMs
             if ((skipped.get(key)?.until ?? 0) < until) skipped.set(key, { until, reason: policy.detail })
             move(model, false, group, ownership, policy.modelWide)
-            if (extraCall) break
             if (options.debug) {
               const next = chain.slice(index + 1).find(candidate => !skip(candidate))
               const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`
               const entry = skip(model)!
               const minutes = Math.ceil((entry.until - Date.now()) / 60000)
               const queue = entry.until === Infinity ? "Blocked until the server plugin reloads." : `Paused for ${minutes} minute${minutes === 1 ? "" : "s"}.`
-              await api.notice?.(`${message}\nReason: ${policy.detail}\nQueue: ${queue}`, request)
+              await abortable(() => Promise.resolve(api.notice?.(`${message}\nReason: ${policy.detail}\nQueue: ${queue}`, request)), parent)
             }
           }
         }
-        return { reason: failure }
+        const cause = [...details]
+        const recovery = cause.length && cause.every(detail => /authentication failed/.test(detail))
+          ? "Reconnect the provider, then reload the server plugin."
+          : cause.length && cause.every(detail => /quota|usage limit/.test(detail))
+            ? "Wait for quota to reset; check Prediction status and preview."
+            : "Open Prediction status and preview for causes and recovery."
+        return { reason: failure, ...(cause.length ? { notice: { code: failure, severity: "error", title: cause.length === 1 ? cause[0] : "All prediction models failed.", message: recovery } } : {}) }
       }
       const reply = await abortable(async (): Promise<Reply> => {
         const reply = await work()
@@ -307,13 +314,13 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
           const message = Math.max(configured.length, selectors.size) > 1
             ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.")
             : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`
-          reply.notice = statusNotice(status()) ?? reasonNotice(reply.reason)
+          reply.notice ??= statusNotice(status()) ?? reasonNotice(reply.reason)
           await abortable(() => Promise.resolve(api.notice?.(message, request, reply.notice)), parent)
         }
         return reply
-      }, parent)
+      }, caller)
       lastOutcome = reply.text ? "suggestion" : reply.reason
-      if (reply.text || ["no_suggestion", "generation_failed", "timeout"].includes(reply.reason ?? "")) {
+      if (reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "")) {
         const escalation = nextOffer(request, progress)
         if (escalation) reply.escalation = escalation
       }

@@ -94,9 +94,9 @@ for (const kind of ["invalid", "temporary"] as const) test(`real isolated Deskto
   } finally { await app.close() }
 })
 
-for (const outcome of ["success", "abstention", "error", "timeout", "typing", "empty"]) test(`real isolated Desktop compact alternative status and ${outcome} recovery`, { timeout: 100000 }, async () => {
+for (const outcome of ["success", "abstention", "error", "timeout", "typing", "empty", "fallback"]) test(`real isolated Desktop compact alternative status and ${outcome} recovery`, { timeout: 100000 }, async () => {
   await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [["fixture/model", "fixture/second"]], escalation: "manual", timeoutMs: outcome === "timeout" ? 1000 : 8000 }, { predictionOutputs: { model: outcome === "empty" ? '{"prompt":null}' : '{"prompt":"Original prediction."}', second: outcome === "abstention" ? '{"prompt":null}' : '{"prompt":"Run the targeted tests."}' }, predictionDelayMs: { model: 600, second: 2000 }, predictionStatuses: outcome === "error" ? { second: 503 } : {} })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [outcome === "fallback" ? ["fixture/model", "fixture/second", "fixture/third"] : ["fixture/model", "fixture/second"]], escalation: "manual", timeoutMs: outcome === "timeout" ? 1000 : 8000 }, { predictionOutputs: { model: outcome === "empty" ? '{"prompt":null}' : '{"prompt":"Original prediction."}', second: outcome === "abstention" ? '{"prompt":null}' : '{"prompt":"Run the targeted tests."}', third: '{"prompt":"Run the targeted tests."}' }, predictionDelayMs: { model: 600, second: 2000, third: 1500 }, predictionStatuses: outcome === "error" ? { second: 503 } : outcome === "fallback" ? { second: 401 } : {} })
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
   const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
   try {
@@ -111,12 +111,12 @@ for (const outcome of ["success", "abstention", "error", "timeout", "typing", "e
     await editor.press("Enter")
     const communication = page.locator("[data-opencode-communication]")
     await communication.waitFor({ state: "visible", timeout: 15000 })
-    assert.match(await communication.innerText(), /^\uFFFB[▰▱]{3}$/)
+    assert.match(await communication.innerText(), /^\uFFFB[▰▱]{3}(?: Fixture Flash)?$/)
     const ghost = page.locator("[data-opencode-prediction]")
     if (outcome === "empty") {
       const height = await editor.evaluate(element => element.closest('[data-component="composer"]')!.getBoundingClientRect().height)
       const shortcut = process.platform === "darwin" ? "Option+Shift+P" : "Alt+Shift+P"
-      const text = `[Fixture Flash] provided no prediction.\nUse ${shortcut} to escalate it to [Fixture second].`
+      const text = `[Fixture Flash] provided no prediction.\n${shortcut}: try [Fixture second].`
       await page.waitForFunction(text => document.querySelector("[data-opencode-communication]")?.textContent === text, text)
       assert.equal(await communication.innerText(), text)
       assert.equal(await editor.evaluate(element => element.closest('[data-component="composer"]')!.getBoundingClientRect().height), height)
@@ -142,6 +142,12 @@ for (const outcome of ["success", "abstention", "error", "timeout", "typing", "e
     await editor.press("Tab")
     assert.equal(await editor.innerText(), "")
     await editor.focus()
+    if (outcome === "fallback") {
+      await page.waitForFunction(() => document.querySelector("[data-opencode-communication]")?.textContent?.endsWith(" Fixture third"))
+      assert.match(await communication.innerText(), /^\uFFFB[▰▱]{3} Fixture third$/)
+      assert.equal(await ghost.count(), 0)
+      assert.equal(await editor.innerText(), "")
+    }
     if (outcome === "typing") {
       await editor.fill("my own prompt")
       await communication.waitFor({ state: "hidden" })
@@ -150,12 +156,15 @@ for (const outcome of ["success", "abstention", "error", "timeout", "typing", "e
       await editor.fill("")
     }
     await ghost.waitFor({ state: "visible", timeout: 15000 })
-    const expected = outcome === "success" || outcome === "empty" ? "Run the targeted tests." : "Original prediction."
+    const expected = ["success", "empty", "fallback"].includes(outcome) ? "Run the targeted tests." : "Original prediction."
     assert.equal(await ghost.innerText(), expected)
     const generated = fixture.calls.filter(isPredictionCall).slice(calls)
     assert.ok(generated.length >= 1)
-    assert.ok(generated.every(call => call.model === "second"), "provider retries cannot move to another model")
-    if (outcome !== "error") assert.equal(generated.length, 1)
+    if (outcome === "fallback") assert.deepEqual(generated.map(call => call.model), ["second", "third"])
+    else {
+      assert.ok(generated.every(call => call.model === "second"), "no eligible alternative remains after second")
+      if (outcome !== "error") assert.equal(generated.length, 1)
+    }
     await editor.press("Tab")
     assert.equal(await editor.innerText(), expected)
     assert.equal(await page.evaluate(() => (window as any).__predictionFixture.users()), users)

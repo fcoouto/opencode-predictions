@@ -58,11 +58,13 @@ test("automatic escalation makes only one extra call and off preserves stop-on-n
   assert.deepEqual(off.attempted, ["a"])
 })
 
-test("an escalation error does not fall through to more models", async () => {
+test("automatic abstention transition falls through provider errors until a real null", async () => {
   const f = escalationFixture("automatic")
   f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "b") throw new Error("unavailable"); return '{"prompt":null}' }
-  assert.equal((await f.run()).reason, "generation_failed")
-  assert.deepEqual(f.attempted, ["a", "b"])
+  const reply = await f.run()
+  assert.equal(reply.reason, "no_suggestion")
+  assert.equal(reply.modelName, "c")
+  assert.deepEqual(f.attempted, ["a", "b", "c"])
   assert.equal(f.service.status().candidates?.find(model => model.id === "b")?.state, "cooling")
 })
 
@@ -87,7 +89,7 @@ test("a changed manual target refreshes the offer without silently spending on a
   f.api.models = async () => ["a", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
   const reply = await f.run({ manual: true, escalation: first.escalation!.token })
   assert.deepEqual(f.attempted, ["a"])
-  assert.equal(reply.reason, "no_suggestion")
+  assert.equal(reply.reason, "escalation_refreshed")
   assert.equal(reply.escalation?.model.id, "d")
   assert.equal(reply.escalation?.group, 3)
 })
@@ -219,14 +221,121 @@ test("initial fallback attempts remain tried after cooldown and catalog recovery
   assert.deepEqual(f.attempted, ["a", "b", "c", "d"])
 })
 
-test("recoverable alternative errors return the next offer without hidden fallback", async () => {
+test("alternative errors exhaust remaining models without offering manual error fallback", async () => {
   const f = escalationFixture()
   const first = await f.run()
   f.api.generate = async model => { f.attempted.push(model.id); throw Error("temporary") }
   const second = await f.run({ manual: true, escalation: first.escalation!.token })
   assert.equal(second.reason, "generation_failed")
-  assert.equal(second.escalation?.model.id, "c")
-  assert.deepEqual(f.attempted, ["a", "b"])
+  assert.equal(second.escalation, undefined)
+  assert.deepEqual(f.attempted, ["a", "b", "c", "d"])
+  assert.match(second.notice?.title ?? "", /Model request failed/)
+  assert.match(second.notice?.message ?? "", /Prediction status and preview/)
+})
+
+test("manual alternative error fallback keeps current-group precedence and stops on text or null", async () => {
+  for (const output of ['{"prompt":"Use c."}', '{"prompt":null}']) {
+    const f = escalationFixture()
+    const first = await f.run()
+    f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "b") throw Object.assign(Error("PRIVATE credentials"), { reason: "authentication", status: 401 }); return output }
+    const reply = await f.run({ manual: true, escalation: first.escalation!.token })
+    assert.deepEqual(f.attempted, ["a", "b", "c"])
+    assert.equal(reply.text ?? reply.reason, output.includes("null") ? "no_suggestion" : "Use c.")
+    assert.equal(reply.escalation?.model.id, "d")
+    assert.equal(f.service.status().candidates?.find(model => model.id === "b")?.state, "blocked")
+    assert.equal(JSON.stringify(reply).includes("PRIVATE"), false)
+  }
+})
+
+test("a timed-out alternative cools down and automatically tries the next model", async () => {
+  const f = escalationFixture()
+  const service = createService(f.api, { models: [["local/a", "local/b"], "local/c"], timeoutMs: 20 }, "/project")
+  const first = await service.predict(f.request, new AbortController().signal)
+  f.api.generate = async model => { f.attempted.push(model.id); return model.id === "b" ? new Promise(() => {}) : '{"prompt":"Recovered."}' }
+  const reply = await Promise.race([
+    service.predict({ ...f.request, manual: true, escalation: first.escalation!.token }, new AbortController().signal),
+    new Promise<{ text?: string }>(resolve => setTimeout(() => resolve({}), 200)),
+  ])
+  assert.equal(reply.text, "Recovered.")
+  assert.deepEqual(f.attempted, ["a", "b", "c"])
+  assert.equal(service.status().candidates?.find(model => model.id === "b")?.state, "cooling")
+})
+
+test("error fallback stops immediately on cancellation or changed completion", async () => {
+  for (const change of ["cancel", "stale"]) {
+    const f = escalationFixture()
+    const first = await f.run()
+    const abort = new AbortController()
+    f.api.generate = async model => { f.attempted.push(model.id); if (change === "cancel") abort.abort(); else f.advance(); throw Error("failed") }
+    const reply = await f.service.predict({ ...f.request, manual: true, escalation: first.escalation!.token }, abort.signal)
+    assert.equal(reply.reason, change === "cancel" ? "cancelled" : "stale")
+    assert.deepEqual(f.attempted, ["a", "b"])
+    assert.equal(reply.escalation, undefined)
+  }
+})
+
+test("metadata refresh does not claim another model abstained", async () => {
+  const f = escalationFixture()
+  await f.run()
+  const reply = await f.run({ manual: true, escalation: "refresh" })
+  assert.equal(reply.reason, "escalation_refreshed")
+  assert.equal(reply.modelName, undefined)
+  assert.equal(reply.escalation?.model.id, "b")
+  assert.deepEqual(f.attempted, ["a"])
+})
+
+test("exhausted authentication errors give safe cause and recovery without another offer", async () => {
+  const f = escalationFixture()
+  f.api.generate = async model => { f.attempted.push(model.id); throw Object.assign(Error("PRIVATE token"), { reason: "authentication", status: 401 }) }
+  const reply = await f.run()
+  assert.deepEqual(f.attempted, ["a", "b", "c", "d"])
+  assert.equal(reply.escalation, undefined)
+  assert.match(reply.notice?.title ?? "", /authentication failed/)
+  assert.match(reply.notice?.message ?? "", /Reconnect.*reload/)
+  assert.equal(JSON.stringify(reply).includes("PRIVATE"), false)
+})
+
+test("actual attempted model progress is published even with debug off", async () => {
+  const f = escalationFixture()
+  const names: string[] = []
+  f.api.progress = async modelName => { names.push(modelName) }
+  const first = await f.run()
+  f.api.generate = async model => { f.attempted.push(model.id); if (model.id === "b") throw Error("temporary"); return '{"prompt":null}' }
+  await f.run({ manual: true, escalation: first.escalation!.token })
+  assert.deepEqual(names, ["a", "b", "c"])
+})
+
+test("context changes while publishing model progress prevent further generation", async () => {
+  const f = escalationFixture()
+  const first = await f.run()
+  f.api.progress = async () => { f.advance() }
+  const reply = await f.run({ manual: true, escalation: first.escalation!.token })
+  assert.equal(reply.reason, "stale")
+  assert.deepEqual(f.attempted, ["a"])
+})
+
+test("alternative fallback skips models removed by a concurrent catalog refresh", async () => {
+  for (const removeDuring of ["generation", "progress"]) {
+    const f = escalationFixture()
+    const first = await f.run()
+    const remove = async () => {
+      f.api.models = async () => ["a", "b", "d"].map(id => ({ providerID: "local", id, enabled: true, variants: [{ id: "low" }] }))
+      await f.service.inspect(new AbortController().signal)
+    }
+    f.api.generate = async model => {
+      f.attempted.push(model.id)
+      if (model.id === "b") {
+        if (removeDuring === "generation") await remove()
+        throw Error("temporary")
+      }
+      return '{"prompt":"Use d."}'
+    }
+    f.api.progress = async name => { if (removeDuring === "progress" && name === "c") await remove() }
+    const reply = await f.run({ manual: true, escalation: first.escalation!.token })
+    assert.equal(reply.text, "Use d.")
+    assert.deepEqual(f.attempted, ["a", "b", "d"], removeDuring)
+    assert.equal(reply.escalation, undefined)
+  }
 })
 
 test("concurrent initial requests reserve one cycle before metadata awaits", async () => {
@@ -567,7 +676,8 @@ test("final structured notices preserve safe failure detail and compatibility me
   api.notice = (_message, _request, notice) => { final = notice }
   const service = createService(api, { models: "local/model" }, "/project")
   const reply = await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
-  assert.match(reply.notice!.message, /authentication.*Check.*provider connection/s)
+  assert.match(reply.notice!.title, /authentication failed/)
+  assert.match(reply.notice!.message, /Reconnect.*reload/)
   assert.deepEqual(final, reply.notice)
   assert.equal(service.status().pluginVersion, "0.1.0")
   assert.equal(service.status().feedbackRevision, 1)
@@ -987,15 +1097,15 @@ test("catalog growth and status polling preserve working-first priority and keep
   assert.deepEqual(service.status().candidates?.map(model => model.id), ["c", "a", "d", "b"])
 })
 
-test("a provider rejection does not turn into a timeout during a slow session recheck", async () => {
+test("a slow failure recheck times out without changing unverified model health", async () => {
   const { api } = fixture()
   const session = api.session
   let checks = 0
   api.session = async (id, signal) => { if (++checks === 3) await new Promise(resolve => setTimeout(resolve, 30)); return session(id, signal) }
   api.generate = async () => { throw Object.assign(new Error("Forbidden"), { status: 403 }) }
   const service = createService(api, { models: "local/model", timeoutMs: 10 }, "/project")
-  assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "generation_failed")
-  assert.equal(service.status().candidates?.[0].state, "blocked")
+  assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "timeout")
+  assert.equal(service.status().candidates?.[0].state, "ready")
 })
 
 test("request-specific thinking-budget errors do not impose model-wide budget cooldowns", async t => {

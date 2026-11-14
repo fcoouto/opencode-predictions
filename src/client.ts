@@ -7,7 +7,7 @@ export type ClientHost = {
   scope(): string | undefined
   state(): ClientState | undefined
   status(signal: AbortSignal): Promise<Status>
-  predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice) => void, manual?: boolean, escalation?: string): Promise<Reply>
+  predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice, modelName?: string) => void, manual?: boolean, escalation?: string): Promise<Reply>
   paint(text: string | undefined): boolean
   insert(text: string): boolean
   focus(): void
@@ -98,20 +98,25 @@ export function startClient(host: ClientHost) {
       const progress = (message: string) => log(text => host.show({ code: "progress", severity: "info", title: "Prompt predictions", message: text }), message)
       const live = () => !disposed && !signal.aborted && epoch === generation && host.scope() === location && host.state()?.key === state.key && !host.state()?.draft
       const flight = { signal, scope: location, epoch: generation, explicit }
-      const deadline = escalation ? AbortSignal.timeout(cache?.timeoutMs ?? 8000) : undefined
-      const requestSignal = deadline ? AbortSignal.any([signal, deadline]) : signal
+      const deadline = new AbortController()
+      let timer: ReturnType<typeof setTimeout>
+      // Allow a model attempt plus bounded validation; renew only on actual model progress.
+      const renew = () => { clearTimeout(timer); timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? 8000) * 2) }
+      renew()
+      const requestSignal = AbortSignal.any([signal, deadline.signal])
       predicting = flight
       try {
         let reply: Reply
         try {
-          reply = await abortable(() => host.predict(state, crypto.randomUUID(), requestSignal, (message, notice) => {
-            if (!live() || requestSignal.aborted) return
+          reply = await abortable(() => host.predict(state, crypto.randomUUID(), requestSignal, (message, notice, modelName) => {
+            if (predicting !== flight || !live() || requestSignal.aborted) return
+            if (modelName) { renew(); controller.progress(modelName); return }
             if (notice) { final = notice; return }
             if (modern) progress(message)
             else if (debug) { legacyProgress.push(message); if (legacyProgress.length > 32) legacyProgress.shift() }
           }, explicit, escalation), requestSignal)
         } catch {
-          const reason = deadline?.aborted && !signal.aborted ? "timeout" : "service_unavailable"
+          const reason = deadline.signal.aborted && !signal.aborted ? "timeout" : "service_unavailable"
           reply = { reason, notice: reasonNotice(reason) }
         }
         if (!live()) {
@@ -133,12 +138,17 @@ export function startClient(host: ClientHost) {
         if (notice && notice.severity !== "info") {
           record().requestFailure = notice
           announce(notice, explicit)
-        } else if (notice && explicit && !(reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice, true)
+        } else if (notice && explicit && !(["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "") && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice, true)
         if (cache?.escalation && cache.escalation !== "off") {
-          return { ...reply, communication: { message: reply.text || controller.preview() ? "" : reply.reason === "no_suggestion" ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction." : "Prediction failed.", offer: reply.escalation } }
+          const refreshed = reply.reason === "escalation_refreshed" || escalation === "refresh"
+          const abstained = reply.reason === "no_suggestion" && !refreshed
+          const message = reply.text || controller.preview() || refreshed || ["stale", "cancelled"].includes(reply.reason ?? "") ? ""
+            : abstained ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction."
+              : notice ? `${notice.title}\n${reply.reason === "generation_failed" ? notice.message : "Open Prediction status and preview for recovery."}` : ""
+          return { ...reply, communication: { message, offer: reply.text || abstained || refreshed ? reply.escalation : undefined } }
         }
         return reply
-      } finally { if (predicting === flight) predicting = undefined }
+      } finally { clearTimeout(timer!); if (predicting === flight) predicting = undefined }
     },
   })
   const load = () => {

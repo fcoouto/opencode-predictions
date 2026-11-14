@@ -80,7 +80,7 @@ try:
     elif os.environ.get("PREDICTIONS_ALTERNATIVE_OUTCOME"):
         outcome = os.environ["PREDICTIONS_ALTERNATIVE_OUTCOME"]
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
-        wait_placeholder("\ufffb…")
+        wait_placeholder("\ufffb…", contains=True)
         wait_placeholder("Original prediction.")
         observe("")
         os.write(master, b"\x1b[112;4u")
@@ -94,6 +94,9 @@ try:
         observe("")
         os.write(master, b"\t")
         observe("")
+        if outcome == "fallback":
+            wait_placeholder("\ufffb… Fixture third")
+            observe("")
         if outcome == "typing":
             os.write(master, b"my own prompt")
             observe("my own prompt")
@@ -101,7 +104,7 @@ try:
             pump_until(lambda: time.monotonic() >= end, 4)
             observe("my own prompt")
             os.write(master, b"\x01\x0b")
-        expected = "Run the targeted tests." if outcome == "success" else "Original prediction."
+        expected = "Run the targeted tests." if outcome in ("success", "fallback") else "Original prediction."
         wait_placeholder(expected)
         observe("")
         os.write(master, b"\t")
@@ -110,7 +113,7 @@ try:
     elif os.environ.get("PREDICTIONS_ESCALATION_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
         shortcut = "Option+Shift+P" if sys.platform == "darwin" else "Alt+Shift+P"
-        wait_placeholder("[Fixture Flash] provided no prediction.\nUse " + shortcut + " to escalate it to [Fixture second].")
+        wait_placeholder("[Fixture Flash] provided no prediction.\n" + shortcut + ": try [Fixture second].")
         assert b"Run the targeted tests." not in output
         observe("")
         os.write(master, b"\t")
