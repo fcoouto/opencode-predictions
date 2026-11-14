@@ -137,6 +137,11 @@ or proof that the provider is healthy. Desktop respects reduced motion; CLI resp
 the existing `animations` preference in `cli.json` and `OPENCODE_CLI_CONFIG_CONTENT`.
 Unreadable CLI motion settings use a static indicator.
 
+In Desktop, real predictions temporarily grow the empty composer to fit up to six
+visible lines above its controls. Longer previews end with an ellipsis; **Tab still
+accepts the full prediction**, not the shortened preview. Dismissal, typing or status
+messages release the reserved space. Progress and no-prediction messages stay compact.
+
 The original prediction is temporarily withdrawn but retained internally. **Tab
 passes through normally while status is visible**: it cannot insert status or accept
 the hidden original, and does not itself cancel the request. Success shows the new
