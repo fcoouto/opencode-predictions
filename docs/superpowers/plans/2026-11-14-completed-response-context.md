@@ -37,7 +37,7 @@
 - [x] Make the smallest collector/validation/copy changes. Run `npm test`; expect all green.
 - [x] Replay the three identified history snapshots in memory with local stub generation. Expect each case to reach the stub and show a prediction, with no private record content in the prompt.
 - [x] Run `npm run check`, `npm run test:package`, relevant server/native checks and whitespace checks; expect all green.
-- [ ] Commit, run one independent review, fix material findings test-first, then create and merge the PR after CI.
+- [x] Commit, run one independent review and resolve material findings before authorized PR merge after CI.
 
 ## Implementation verification
 
@@ -47,3 +47,4 @@
 - Three original real-history snapshots: old code rejected all three in automatic and manual mode; fixed code reached exactly one local stub call per mode and displayed the prediction without the hint.
 - Real histories stayed in memory; live requests were GET-only. Synthetic, reasoning and compaction-summary text did not reach the stub prompt.
 - Server RPC: 4/4. Focused isolated Desktop: 1/1. Focused CLI PTY: 1/1, run sequentially.
+- Independent read-only review approved the implementation with no Critical, Important or Minor findings. The reviewer ran 182 local tests and 12 additional synthetic checks. PR merge after CI is authorized; installation remains excluded.
