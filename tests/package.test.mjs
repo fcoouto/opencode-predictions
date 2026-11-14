@@ -12,6 +12,7 @@ test("packed contents include working entries and exclude local data and install
   const files = JSON.parse(stdout)[0].files.map(file => file.path)
   for (const path of [...Object.values(pkg.exports), pkg.bin["opencode-predictions-pilot"]]) assert.ok(files.includes(path.replace(/^\.\//, "")), path)
   assert.ok(files.includes("LICENSE") && files.includes("README.md"))
+  assert.ok(files.includes("readme-demo.svg"), "README interaction diagram must ship with the package")
   assert.equal(files.some(path => /^(tests|src|node_modules|\.test-artifacts|\.env)(\/|$)/.test(path)), false)
   // npm also prepares Git dependencies when a "build" script exists, even with prebuilt bundles.
   for (const hook of ["preinstall", "install", "postinstall", "prepare", "prepack", "build"]) assert.equal(pkg.scripts[hook], undefined)
