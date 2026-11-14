@@ -43,19 +43,21 @@ const encoder = new TextEncoder()
 export function buildPrompt(turns: Turn[], count: number): string | undefined {
   const selected = turns.slice(-count).map(turn => ({ user: turn.user.join("\n\n"), assistant: turn.assistant.join("\n\n") }))
   if (!selected.length) return undefined
-  const format = (values: typeof selected) => directive + JSON.stringify(values)
+  const latestUser = turns.findLast(turn => turn.user.some(text => text.trim()))?.user.join("\n\n") ?? ""
+  const format = (values: typeof selected, retainedUser = values.some(turn => turn.user.trim()) ? "" : latestUser) => directive + JSON.stringify(retainedUser ? [{ user: retainedUser, assistant: "" }, ...values] : values)
   while (selected.length > 1 && encoder.encode(format(selected)).length > 32768) selected.shift()
   if (encoder.encode(format(selected)).length <= 32768) return format(selected)
   const current = selected[0]
   const user = Array.from(current.user)
   const assistant = Array.from(current.assistant)
+  const retainedUser = Array.from(current.user.trim() ? "" : latestUser)
   const excerpt = (text: string[], limit: number) => text.length <= limit ? text.join("") : text.slice(0, Math.ceil(limit / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit / 2)).join("")
   let low = 1
-  let high = Math.max(user.length, assistant.length)
+  let high = Math.max(user.length, assistant.length, retainedUser.length)
   let result = ""
   while (low <= high) {
     const limit = Math.floor((low + high) / 2)
-    const prompt = format([{ user: excerpt(user, limit), assistant: excerpt(assistant, limit) }])
+    const prompt = format([{ user: excerpt(user, limit), assistant: excerpt(assistant, limit) }], excerpt(retainedUser, limit))
     if (encoder.encode(prompt).length <= 32768) { result = prompt; low = limit + 1 } else high = limit - 1
   }
   return result || undefined
