@@ -97,7 +97,7 @@ function collectTurns(messages) {
         if (part.type === "text" && typeof part.text === "string" && part.text.trim()) turn.assistant.push(part.text);
       }
     } else if (message.type === "idle") {
-      if (message.outcome !== "interrupted" && turn.user.length && turn.assistant.length) turns.push(turn);
+      if (message.outcome !== "interrupted" && turn.assistant.length) turns.push(turn);
       turn = { user: [], assistant: [] };
     }
   }
@@ -223,7 +223,7 @@ function reasonNotice(reason) {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
-    context_unavailable: ["No completed response to predict from.", "Finish an assistant response with usable conversation text, then request a prediction."],
+    context_unavailable: ["Prediction unavailable for this response.", "Continue typing your next prompt."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
   };
@@ -448,10 +448,10 @@ function createService(api, rawOptions, directory) {
         const records = messages.map((value) => value && typeof value === "object" ? value : {});
         const last = records.findLast((value) => value.type === "user" || value.type === "assistant" || value.type === "idle" || value.type === "compaction" && value.status !== "failed");
         if (request.manual === true && last?.type === "assistant" && last.time?.completed !== void 0) {
-          const content = Array.isArray(last.content) ? last.content : [];
+          const content2 = Array.isArray(last.content) ? last.content : [];
           const start2 = records.findLastIndex((value) => value.type === "user" || value.type === "idle" || value.type === "compaction" && value.status !== "failed");
           const pending = records.slice(start2 + 1).some((value) => Array.isArray(value.content) && value.content.some((part) => part?.type === "tool" && !["completed", "error"].includes(part.state?.status)));
-          if (last.finish === "tool-calls" || pending || !content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim())) return { reason: "context_unavailable" };
+          if (last.finish === "tool-calls" || pending || !content2.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim())) return { reason: "context_unavailable" };
           const boundary = { type: "idle", outcome: session.outcome };
           messages.push(boundary);
           records.push(boundary);
@@ -459,7 +459,8 @@ function createService(api, rawOptions, directory) {
         const idle = records.findLastIndex((value) => value.type === "idle");
         const start = records.slice(0, idle).findLastIndex((value) => value.type === "idle" || value.type === "compaction" && value.status !== "failed");
         const response = records.slice(start + 1, idle).findLast((value) => value.type === "assistant");
-        if (idle < 0 || records[idle].outcome === "interrupted" || response?.time?.completed === void 0 || records.slice(idle + 1).some((value) => value.type === "user" || value.type === "assistant")) return { reason: "context_unavailable" };
+        const content = Array.isArray(response?.content) ? response.content : [];
+        if (idle < 0 || records[idle].outcome === "interrupted" || response?.time?.completed === void 0 || !content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.trim()) || records.slice(idle + 1).some((value) => value.type === "user" || value.type === "assistant")) return { reason: "context_unavailable" };
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" };
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns);
         if (!prompt) return { reason: "context_unavailable" };

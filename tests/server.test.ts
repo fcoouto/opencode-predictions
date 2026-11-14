@@ -634,6 +634,50 @@ test("a completed current response without usable conversation text cannot fall 
   }
 })
 
+for (const shape of ["synthetic continuation", "reply after compaction", "multiple synthetic continuations"]) {
+  test(`completed assistant-only context permits ${shape} with local generation only`, async () => {
+    for (const manual of [false, true]) for (const marked of [true, false]) {
+      if (!manual && !marked) continue
+      const { api, calls } = fixture()
+      const reply = { type: "assistant", time: { completed: 2 }, finish: "stop", content: [{ type: "reasoning", text: "PRIVATE reasoning" }, { type: "tool", state: { status: "completed", content: "PRIVATE output" } }, { type: "text", text: "Current visible reply." }] }
+      const history = [
+        { type: "user", text: "Earlier visible goal." },
+        { type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Earlier visible reply." }] },
+        { type: "idle", outcome: "succeeded" },
+        ...(shape === "reply after compaction" ? [{ type: "compaction", status: "completed", summary: "PRIVATE summary" }] : [{ type: "synthetic", text: "PRIVATE continuation" }]),
+        ...(shape === "multiple synthetic continuations" ? [{ type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Working visible step." }] }, { type: "synthetic", text: "PRIVATE additional continuation" }] : []),
+        reply,
+        ...(marked ? [{ type: "idle", outcome: "succeeded" }] : []),
+      ]
+      const before = structuredClone(history)
+      api.context = async () => history
+      const result = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual }, new AbortController().signal)
+      assert.equal(result.text, "Run the tests.", `${manual ? "manual" : "automatic"}, ${marked ? "idle" : "historical"}`)
+      assert.equal(calls.length, 1)
+      const payload = JSON.parse(calls[0].prompt.split("Conversation:\n")[1])
+      assert.equal(payload.at(-1).user, "")
+      assert.match(payload.at(-1).assistant, /Current visible reply\./)
+      assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+      if (shape === "reply after compaction") assert.equal(calls[0].prompt.includes("Earlier visible"), false)
+      assert.deepEqual(history, before, "generation must not edit history")
+    }
+  })
+}
+
+test("assistant-only context never borrows intermediate text for an unusable final response", async () => {
+  for (const manual of [false, true]) for (const content of [[], [{ type: "text", text: " " }], [{ type: "reasoning", text: "PRIVATE" }], [{ type: "tool", state: { status: "completed" } }]]) {
+    const { api, calls } = fixture()
+    api.context = async () => [
+      { type: "synthetic", text: "PRIVATE continuation" },
+      { type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Earlier intermediate text." }] },
+      { type: "assistant", time: { completed: 2 }, content },
+      { type: "idle", outcome: "succeeded" },
+    ]
+    assert.equal((await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual }, new AbortController().signal)).reason, "context_unavailable")
+    assert.equal(calls.length, 0)
+  }
+})
+
 test("timeout returns even when provider ignores abort, and errors do not retry", async () => {
   const { api } = fixture()
   let attempts = 0

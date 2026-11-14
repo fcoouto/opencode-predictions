@@ -18,7 +18,7 @@ export function collectTurns(messages: readonly unknown[]): Turn[] {
         if (part.type === "text" && typeof part.text === "string" && part.text.trim()) turn.assistant.push(part.text)
       }
     } else if (message.type === "idle") {
-      if (message.outcome !== "interrupted" && turn.user.length && turn.assistant.length) turns.push(turn)
+      if (message.outcome !== "interrupted" && turn.assistant.length) turns.push(turn)
       turn = { user: [], assistant: [] }
     }
   }

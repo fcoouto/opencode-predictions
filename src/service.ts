@@ -219,7 +219,8 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         const idle = records.findLastIndex(value => value.type === "idle")
         const start = records.slice(0, idle).findLastIndex(value => value.type === "idle" || (value.type === "compaction" && value.status !== "failed"))
         const response = records.slice(start + 1, idle).findLast(value => value.type === "assistant")
-        if (idle < 0 || records[idle].outcome === "interrupted" || response?.time?.completed === undefined || records.slice(idle + 1).some(value => value.type === "user" || value.type === "assistant")) return { reason: "context_unavailable" }
+        const content = Array.isArray(response?.content) ? response.content : []
+        if (idle < 0 || records[idle].outcome === "interrupted" || response?.time?.completed === undefined || !content.some(part => part?.type === "text" && typeof part.text === "string" && part.text.trim()) || records.slice(idle + 1).some(value => value.type === "user" || value.type === "assistant")) return { reason: "context_unavailable" }
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" }
         const prompt = buildPrompt(collectTurns(messages), options.contextTurns)
         if (!prompt) return { reason: "context_unavailable" }
