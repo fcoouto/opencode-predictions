@@ -42,10 +42,10 @@ test("real CLI PTY leaves communication unadopted and escalates only on the manu
   assert.equal(fixture.calls.filter(call => !isPredictionCall(call)).length, initial)
 })
 
-for (const outcome of ["success", "abstention", "error", "timeout", "typing"]) test(`real CLI PTY compact alternative status and ${outcome} recovery`, { timeout: 80000 }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [["fixture/model", "fixture/second"]], escalation: "manual", timeoutMs: outcome === "timeout" ? 1200 : 8000 }, {
-    predictionOutputs: { model: '{"prompt":"Original prediction."}', second: outcome === "abstention" ? '{"prompt":null}' : '{"prompt":"Run the targeted tests."}' },
-    predictionDelayMs: { model: 600, second: 2500 }, predictionStatuses: outcome === "error" ? { second: 503 } : {},
+for (const outcome of ["success", "abstention", "error", "timeout", "typing", "fallback"]) test(`real CLI PTY compact alternative status and ${outcome} recovery`, { timeout: 80000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [outcome === "fallback" ? ["fixture/model", "fixture/second", "fixture/third"] : ["fixture/model", "fixture/second"]], escalation: "manual", timeoutMs: outcome === "timeout" ? 1200 : 8000 }, {
+    predictionOutputs: { model: '{"prompt":"Original prediction."}', second: outcome === "abstention" ? '{"prompt":null}' : '{"prompt":"Run the targeted tests."}', third: '{"prompt":"Run the targeted tests."}' },
+    predictionDelayMs: { model: 600, second: 2500, third: 1500 }, predictionStatuses: outcome === "error" ? { second: 503 } : outcome === "fallback" ? { second: 401 } : {},
   })
   const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
   await fixture.api.session.prompt({ sessionID: session.id, text: "Fix the assertion." })
@@ -59,7 +59,10 @@ for (const outcome of ["success", "abstention", "error", "timeout", "typing"]) t
   assert.equal(JSON.parse(stdout).compactValidated, true)
   const generated = fixture.calls.filter(isPredictionCall)
   assert.equal(generated[0].model, "model")
-  assert.ok(generated.slice(1).every(call => call.model === "second"), "provider retries cannot move to another model")
-  if (outcome !== "error") assert.equal(generated.length, 2)
+  if (outcome === "fallback") assert.deepEqual(generated.map(call => call.model), ["model", "second", "third"])
+  else {
+    assert.ok(generated.slice(1).every(call => call.model === "second"), "no eligible alternative remains after second")
+    if (outcome !== "error") assert.equal(generated.length, 2)
+  }
   assert.equal(fixture.calls.filter(call => !isPredictionCall(call)).length, initial)
 })

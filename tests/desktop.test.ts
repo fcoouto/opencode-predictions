@@ -112,7 +112,7 @@ test("Desktop abstention is a faint macOS placeholder, never an extra composer s
       const style = getComputedStyle(status)
       return { text: status.textContent, opacity: Number(style.opacity), sameHeight: composer.getBoundingClientRect().height === height, draft: w.editor.textContent, buttons: composer.querySelectorAll("button").length }
     })
-    assert.equal(state.text, "[First Model] provided no prediction.\nUse Option+Shift+P to escalate it to [Second Model].")
+    assert.equal(state.text, "[First Model] provided no prediction.\nOption+Shift+P: try [Second Model].")
     assert.ok(state.opacity < 1)
     assert.equal(state.sameHeight, true)
     assert.equal(state.draft, "")

@@ -4,7 +4,7 @@ import { Plugin } from "@opencode/plugin/tui";
 // src/controller.ts
 function communicationText(value, reducedMotion = false, shortcut = "Alt+Shift+P") {
   if (!value.activity) return value.message && value.offer ? `${value.message}
-Use ${shortcut} to escalate it to [${value.offer.name}].` : value.message;
+${shortcut}: try [${value.offer.name}].` : value.message;
   const indicator = reducedMotion ? "\u2026" : ["\u25B0\u25B1\u25B1", "\u25B1\u25B0\u25B1", "\u25B1\u25B1\u25B0"][Math.floor(Date.now() / 200) % 3];
   return "\uFFFB" + indicator + (value.activity.kind === "alternative" ? " " + value.activity.name : "");
 }
@@ -12,6 +12,7 @@ function createController(io) {
   let current = { eligible: false, draft: "" };
   let pending;
   let staged;
+  let modelName;
   let transient;
   let timer;
   const results = /* @__PURE__ */ new Map();
@@ -28,7 +29,7 @@ function createController(io) {
   };
   const paint = () => {
     const result = !disposed && !current.draft && current.key ? results.get(current.key) : void 0;
-    const activity = staged ?? (pending ? result?.communication?.offer ? { kind: "alternative", name: result.communication.offer.name } : { kind: "initial" } : void 0);
+    const activity = pending && modelName ? { kind: "alternative", name: modelName } : staged ?? (pending ? result?.communication?.offer ? { kind: "alternative", name: result.communication.offer.name } : { kind: "initial" } : void 0);
     const message = transient && transient.key === current.key ? transient.message : void 0;
     visible = io.paint(current.eligible && !activity && !message ? result?.text : void 0);
     io.communicate?.(!current.draft && !disposed ? activity ? { ...result?.communication, message: "", activity, pending: true } : message ? { message } : result?.communication : void 0);
@@ -42,6 +43,7 @@ function createController(io) {
     pending?.abort();
     pending = void 0;
     staged = void 0;
+    modelName = void 0;
     clearTransient();
     visible = false;
     io.paint(void 0);
@@ -95,7 +97,7 @@ function createController(io) {
           const text = reply.text || results.get(key)?.text;
           const next = reply.communication ?? (reply.escalation ? { message: "", offer: reply.escalation } : !reply.text && communication ? { message: text ? "" : "No suggestion." } : void 0);
           results.set(key, { text, communication: next });
-          noAlternatives = refreshing && reply.reason === "no_suggestion" && !next?.offer;
+          noAlternatives = refreshing && reply.reason === "escalation_refreshed" && !next?.offer;
         }
       } catch {
         if (!request.signal.aborted && current.key === key) {
@@ -106,6 +108,7 @@ function createController(io) {
         if (pending === request) {
           pending = void 0;
           staged = void 0;
+          modelName = void 0;
           if (noAlternatives) exhausted();
           else paint();
         }
@@ -123,6 +126,12 @@ function createController(io) {
     stage(activity) {
       staged = activity;
       paint();
+    },
+    progress(name) {
+      if (pending && !pending.signal.aborted) {
+        modelName = name;
+        paint();
+      }
     },
     preview() {
       return current.key ? results.get(current.key)?.text : void 0;
@@ -248,7 +257,7 @@ var package_default = {
 var pluginVersion = package_default.version;
 var feedbackRevision = 1;
 function reasonNotice(reason) {
-  if (!reason || ["cancelled", "stale"].includes(reason)) return;
+  if (!reason || ["cancelled", "stale", "escalation_refreshed"].includes(reason)) return;
   const info = {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
@@ -261,7 +270,7 @@ function reasonNotice(reason) {
   if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true };
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true };
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." };
-  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The model did not respond within the configured timeout. Check model availability in Prediction status and preview before requesting again." };
+  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The prediction did not finish within the configured timeout. Check model availability in Prediction status and preview before requesting again." };
   return { code: "service_unavailable", severity: "error", title: "Prediction service unavailable", message: "Predictions could not complete. Check the OpenCode service connection, then request a prediction again. Open Prediction status and preview for details." };
 }
 function statusNotice(status) {
@@ -285,7 +294,7 @@ function formatStatus(status, details) {
   if (notice2) lines.push(notice2.message);
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`);
-    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic \u2014 at most one additional model call after abstention; may consume paid provider quota." : status.escalation === "manual" ? "Manual \u2014 Alt+Shift+P tries an untried model using its provider's quota." : "Off"}`);
+    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic \u2014 at most one abstention-triggered transition; errors continue through untried models and may consume paid provider quota." : status.escalation === "manual" ? "Manual \u2014 Alt+Shift+P tries an untried model using its provider's quota; errors fall back automatically." : "Off"}`);
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : []);
     for (const [index, group] of groups.entries()) {
       lines.push(`Group ${index + 1}: ${group.selectors}`);
@@ -427,14 +436,25 @@ function startClient(host) {
       const progress = (message) => log((text) => host.show({ code: "progress", severity: "info", title: "Prompt predictions", message: text }), message);
       const live = () => !disposed && !signal.aborted && epoch === generation && host.scope() === location && host.state()?.key === state.key && !host.state()?.draft;
       const flight = { signal, scope: location, epoch: generation, explicit };
-      const deadline = escalation2 ? AbortSignal.timeout(cache?.timeoutMs ?? 8e3) : void 0;
-      const requestSignal = deadline ? AbortSignal.any([signal, deadline]) : signal;
+      const deadline = new AbortController();
+      let timer;
+      const renew = () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? 8e3) * 2);
+      };
+      renew();
+      const requestSignal = AbortSignal.any([signal, deadline.signal]);
       predicting = flight;
       try {
         let reply;
         try {
-          reply = await abortable(() => host.predict(state, crypto.randomUUID(), requestSignal, (message, notice3) => {
-            if (!live() || requestSignal.aborted) return;
+          reply = await abortable(() => host.predict(state, crypto.randomUUID(), requestSignal, (message, notice3, modelName) => {
+            if (predicting !== flight || !live() || requestSignal.aborted) return;
+            if (modelName) {
+              renew();
+              controller.progress(modelName);
+              return;
+            }
             if (notice3) {
               final = notice3;
               return;
@@ -446,7 +466,7 @@ function startClient(host) {
             }
           }, explicit, escalation2), requestSignal);
         } catch {
-          const reason = deadline?.aborted && !signal.aborted ? "timeout" : "service_unavailable";
+          const reason = deadline.signal.aborted && !signal.aborted ? "timeout" : "service_unavailable";
           reply = { reason, notice: reasonNotice(reason) };
         }
         if (!live()) {
@@ -470,12 +490,17 @@ function startClient(host) {
         if (notice2 && notice2.severity !== "info") {
           record().requestFailure = notice2;
           announce(notice2, explicit);
-        } else if (notice2 && explicit && !(reply.reason === "no_suggestion" && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice2, true);
+        } else if (notice2 && explicit && !(["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "") && cache?.escalation && cache.escalation !== "off" && host.communicate)) announce(notice2, true);
         if (cache?.escalation && cache.escalation !== "off") {
-          return { ...reply, communication: { message: reply.text || controller.preview() ? "" : reply.reason === "no_suggestion" ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction." : "Prediction failed.", offer: reply.escalation } };
+          const refreshed = reply.reason === "escalation_refreshed" || escalation2 === "refresh";
+          const abstained = reply.reason === "no_suggestion" && !refreshed;
+          const message = reply.text || controller.preview() || refreshed || ["stale", "cancelled"].includes(reply.reason ?? "") ? "" : abstained ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction." : notice2 ? `${notice2.title}
+${reply.reason === "generation_failed" ? notice2.message : "Open Prediction status and preview for recovery."}` : "";
+          return { ...reply, communication: { message, offer: reply.text || abstained || refreshed ? reply.escalation : void 0 } };
         }
         return reply;
       } finally {
+        clearTimeout(timer);
         if (predicting === flight) predicting = void 0;
       }
     }
@@ -647,7 +672,7 @@ var Predictions = Rpc.define({
   },
   events: {
     progress: {
-      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" }, notice }, required: ["requestID", "sessionID", "message"], additionalProperties: false }
+      schema: { type: "object", properties: { requestID: { type: "string" }, sessionID: { type: "string" }, message: { type: "string" }, modelName: { type: "string" }, notice }, required: ["requestID", "sessionID", "message"], additionalProperties: false }
     }
   }
 });
@@ -703,7 +728,7 @@ var tui_default = Plugin.define({
         if (!value || value.id !== state.sessionID) return { reason: "stale" };
         const rpc = ctx.client.rpc(Predictions);
         const stop = rpc.events.on("progress", (event) => {
-          if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice2(String(event.data.message), event.data.notice);
+          if (event.data.requestID === requestID && event.data.sessionID === state.sessionID) notice2(String(event.data.message), event.data.notice, typeof event.data.modelName === "string" ? event.data.modelName : void 0);
         });
         try {
           return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...manual ? { manual: true } : {}, ...escalation2 ? { escalation: escalation2 } : {} }, { location: value.location, signal });

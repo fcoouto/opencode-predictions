@@ -7,7 +7,7 @@ export type Notice = { code: string; severity: "info" | "warning" | "error"; tit
 export type StatusView = { summary: string; details: string }
 
 export function reasonNotice(reason: string | undefined): Notice | undefined {
-  if (!reason || ["cancelled", "stale"].includes(reason)) return
+  if (!reason || ["cancelled", "stale", "escalation_refreshed"].includes(reason)) return
   const info: Record<string, [string, string]> = {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
@@ -20,7 +20,7 @@ export function reasonNotice(reason: string | undefined): Notice | undefined {
   if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true }
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true }
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." }
-  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The model did not respond within the configured timeout. Check model availability in Prediction status and preview before requesting again." }
+  if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The prediction did not finish within the configured timeout. Check model availability in Prediction status and preview before requesting again." }
   return { code: "service_unavailable", severity: "error", title: "Prediction service unavailable", message: "Predictions could not complete. Check the OpenCode service connection, then request a prediction again. Open Prediction status and preview for details." }
 }
 
@@ -49,7 +49,7 @@ export function formatStatus(status: Status | undefined, details: { lastNotice?:
   if (notice) lines.push(notice.message)
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`)
-    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic — at most one additional model call after abstention; may consume paid provider quota." : status.escalation === "manual" ? "Manual — Alt+Shift+P tries an untried model using its provider's quota." : "Off"}`)
+    lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic — at most one abstention-triggered transition; errors continue through untried models and may consume paid provider quota." : status.escalation === "manual" ? "Manual — Alt+Shift+P tries an untried model using its provider's quota; errors fall back automatically." : "Off"}`)
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : [])
     for (const [index, group] of groups.entries()) {
       lines.push(`Group ${index + 1}: ${group.selectors}`)

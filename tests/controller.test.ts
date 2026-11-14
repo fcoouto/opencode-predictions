@@ -13,7 +13,7 @@ test("activity indicators carry the requested leading character, never real pred
 
 test("abstention placeholder names the source and target and uses the host shortcut label", () => {
   const value = { message: "[First Model] provided no prediction.", offer }
-  assert.equal(communicationText(value), "[First Model] provided no prediction.\nUse Alt+Shift+P to escalate it to [Next model].")
+  assert.equal(communicationText(value), "[First Model] provided no prediction.\nAlt+Shift+P: try [Next model].")
 })
 
 test("plugin communications never accept via Tab and an explicit request consumes the offered token", async () => {

@@ -2,6 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { startClient as createClient, type ClientState, type ClientHost } from "../src/client.ts"
 import type { Status } from "../src/service.ts"
+import { communicationText, type Communication } from "../src/controller.ts"
 
 function startClient(host: Omit<ClientHost, "scope" | "openStatus" | "show"> & { show(message: string): void }) {
   return createClient({ ...host, scope: () => "local/project", openStatus() {}, show: notice => host.show(notice.message) })
@@ -465,7 +466,7 @@ test("exhausted local authority can refresh without generation when an untried m
     predict: async (_state, _id, _signal, _notice, _manual, token) => {
       calls++; tokens.push(token)
       if (calls === 1) { modelCalls++; return { text: "Original prediction." } }
-      if (calls === 2) return { reason: "no_suggestion", escalation: offer }
+      if (calls === 2) return { reason: "escalation_refreshed", escalation: offer }
       modelCalls++; return { text: "Replacement." }
     },
     paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show() {}, openStatus() {},
@@ -480,6 +481,129 @@ test("exhausted local authority can refresh without generation when an untried m
     client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
     assert.deepEqual(tokens, [undefined, "refresh", "recovered"])
     assert.equal(ghost, "Replacement.")
+  } finally { client.dispose() }
+})
+
+test("failure communication shows cause and recovery but never a next-model hint", async () => {
+  for (const reason of ["generation_failed", "timeout", "service_unavailable", "escalation_refreshed"]) {
+    let message: Communication | undefined
+    const notices: string[] = []
+    const client = createClient({
+      scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+      status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+      predict: async () => ({ reason, ...(reason === "generation_failed" ? { notice: { code: reason, severity: "error" as const, title: "Provider authentication failed.", message: "Reconnect the provider, then reload the server plugin." } } : {}), escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second Model" } }),
+      paint: () => false, insert: () => { assert.fail("communication must not be adopted") }, focus() {}, show: notice => { notices.push(notice.title) }, openStatus() {},
+      communicate: value => { message = value },
+    })
+    try {
+      await new Promise(resolve => setImmediate(resolve))
+      const text = message ? communicationText(message) : ""
+      assert.equal(text.includes("Second Model"), false, reason)
+      assert.equal(text.includes("provided no prediction"), false, reason)
+      assert.equal(client.accept(), false)
+      if (reason === "generation_failed") {
+        assert.match(text, /authentication failed/)
+        assert.match(text, /Reconnect/)
+      } else if (reason === "escalation_refreshed") {
+        assert.equal(text, "")
+        assert.deepEqual(notices, [], "refresh is not a service failure")
+      }
+      else {
+        assert.match(text, reason === "timeout" ? /timed out/i : /service unavailable/i)
+        assert.match(text, /Prediction status and preview/)
+      }
+    } finally { client.dispose() }
+  }
+})
+
+test("live fallback progress names actual model, preserves prefix, and ignores stale events", async () => {
+  let draft = ""
+  let message: Communication | undefined
+  let progress!: Parameters<ClientHost["predict"]>[3]
+  const shown: string[] = []
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft }),
+    status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], feedbackRevision: 1 }),
+    predict: async (_state, _id, _signal, notice) => { progress = notice; return new Promise(() => {}) },
+    paint: () => false, insert: () => true, focus() {}, show: notice => { shown.push(notice.message) }, openStatus() {},
+    communicate: value => { message = value },
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    progress("", undefined, "First Model")
+    assert.equal(communicationText(message!, true), "\uFFFB… First Model")
+    await client.status()
+    assert.equal(communicationText(message!, true), "\uFFFB… First Model", "polls must not overwrite actual model")
+    progress("", undefined, "Fallback Model")
+    assert.equal(communicationText(message!, true), "\uFFFB… Fallback Model")
+    assert.deepEqual(shown, [], "model progress is not a toast or debug notice")
+    draft = "typed"
+    progress("", undefined, "Late Model")
+    client.accept()
+    assert.equal(message, undefined)
+  } finally { client.dispose() }
+})
+
+test("a multi-model alternative is not cut off by the old single-model client deadline", async () => {
+  let calls = 0
+  let ghost: string | undefined
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => ({ enabled: true, automatic: false, escalation: "manual", debug: false, timeoutMs: 20, contextTurns: 3, version: "one", warnings: [], candidates: ["a", "b", "c"].map(id => ({ providerID: "local", id, name: id, state: "ready" as const })) }),
+    predict: async () => {
+      if (++calls === 1) return { text: "Original.", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "b" } }
+      await new Promise(resolve => setTimeout(resolve, 35))
+      return { text: "Recovered." }
+    },
+    paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    assert.equal(ghost, "Recovered.")
+  } finally { client.dispose() }
+})
+
+test("progress from a settled request cannot rename the next alternative", async () => {
+  const callbacks: Parameters<ClientHost["predict"]>[3][] = []
+  let message: Communication | undefined
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async (_state, _id, _signal, notice) => {
+      callbacks.push(notice)
+      return callbacks.length === 1 ? { text: "Original.", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second" } } : new Promise(() => {})
+    },
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {}, communicate: value => { message = value },
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut()
+    await new Promise(resolve => setImmediate(resolve))
+    callbacks[1]("", undefined, "Second")
+    callbacks[0]("", undefined, "Old Model")
+    assert.equal(communicationText(message!, true), "\uFFFB… Second")
+  } finally { client.dispose() }
+})
+
+test("legacy metadata refresh cannot create abstention guidance", async () => {
+  let calls = 0
+  let message: Communication | undefined
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => ({ enabled: true, automatic: false, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async () => ++calls === 1 ? { reason: "no_suggestion", modelName: "First" } : { reason: "no_suggestion", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second" } },
+    paint: () => false, insert: () => true, focus() {}, show() {}, openStatus() {}, communicate: value => { message = value },
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.match(communicationText(message!), /First.*provided no prediction/)
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(communicationText(message!), "")
+    assert.equal(message?.offer?.name, "Second", "refresh may update shortcut authority without claiming abstention")
   } finally { client.dispose() }
 })
 

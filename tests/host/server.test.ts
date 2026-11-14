@@ -54,3 +54,29 @@ test("real server RPC preserves the abstaining display name for placeholder comm
   assert.equal(reply.modelName, "Fixture Flash")
   assert.equal(reply.escalation?.name, "Fixture second")
 })
+
+test("real server RPC falls through alternative errors, stops at null and keeps refresh distinct", { timeout: 60000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [["fixture/model", "fixture/second", "fixture/third"], "fixture/fourth"] }, {
+    predictionOutputs: { model: '{"prompt":"Original."}', second: '{"prompt":null}', third: '{"prompt":null}', fourth: '{"prompt":"Recovered."}' },
+    predictionStatuses: { second: 401 },
+  })
+  const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
+  await fixture.api.session.prompt({ sessionID: session.id, text: "Fix the assertion." })
+  await fixture.api.session.wait({ sessionID: session.id })
+  const completed = await fixture.api.session.get({ sessionID: session.id })
+  const history = await fixture.api.session.context({ sessionID: session.id })
+  const rpc = fixture.api.rpc(Predictions)
+  const input = { sessionID: session.id, completion: completed.time.idle!, requestID: crypto.randomUUID() }
+  const first = await rpc.predict(input, { location: session.location }) as Reply
+  const second = await rpc.predict({ ...input, manual: true, escalation: first.escalation!.token }, { location: session.location }) as Reply
+  assert.equal(second.reason, "no_suggestion")
+  assert.equal(second.modelName, "Fixture third")
+  assert.equal(second.escalation?.model.id, "fourth")
+  assert.deepEqual(fixture.calls.filter(isPredictionCall).map(call => call.model), ["model", "second", "third"])
+  const refreshed = await rpc.predict({ ...input, manual: true, escalation: "refresh" }, { location: session.location }) as Reply
+  assert.equal(refreshed.reason, "escalation_refreshed")
+  assert.equal(refreshed.modelName, undefined)
+  assert.equal(fixture.calls.filter(isPredictionCall).length, 3)
+  assert.equal((await rpc.predict({ ...input, manual: true, escalation: refreshed.escalation!.token }, { location: session.location }) as Reply).text, "Recovered.")
+  assert.deepEqual(await fixture.api.session.context({ sessionID: session.id }), history)
+})

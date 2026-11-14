@@ -11,6 +11,7 @@ export default Plugin.define({
       models: async signal => (await ctx.model.list(undefined, { signal })).data,
       generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
       notice: async (message, request, notice) => { if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...(notice ? { notice } : {}) }) },
+      progress: async (modelName, request) => { if (request.requestID) await registration.events.emit("progress", { message: "", modelName, requestID: request.requestID, sessionID: request.sessionID }) },
     }, ctx.options, ctx.location.directory)
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input as Request, context.signal),
