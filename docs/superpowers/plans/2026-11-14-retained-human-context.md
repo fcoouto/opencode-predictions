@@ -85,7 +85,7 @@
 
   Reuse the existing OpenCode session-context read pattern for `ses_e257c7d01ffdu4pmqA5olDFBF2`. Call only `collectTurns()` and `buildPrompt()` locally. Assert the donation-comparison request, grouped README steering, and final response survive; report booleans and byte counts only. If the existing service is unavailable, report that limitation and use a sanitized structural fixture instead. Never invoke generation or commit the transcript.
 
-- [ ] **Step 9: Review and commit.**
+- [x] **Step 9: Review and commit.**
 
   Review source, tests, documentation, and generated diff against the spec. Obtain an independent whole-branch review using the chosen execution method. Fix only in-scope findings, rerun affected gates, and commit the verified files with `fix: retain human intent in prediction context`.
 
@@ -110,3 +110,12 @@
 ## Plan Self-Review
 
 The task covers each spec behavior and all five Review Focus cases. Public function signatures and JSON record shape stay unchanged. No UI, provider, or dependency API changes are required.
+
+## Implementation Verification
+
+- Baseline: 230 tests passed. Eight new regressions failed before the fix; focused checks then passed 111/111.
+- Full verification: 239 tests, typecheck, production bundle, package validation, and whitespace checks passed.
+- Installed packed-package server RPC checks passed 4/4; repeat build was byte-identical.
+- Local replay retained grouped human intent and the latest reply in a 3,693-byte prompt, without provider calls or storing the transcript.
+- Independent whole-branch review found no Critical, Important, or Minor issues and judged the change ready to merge.
+- Collector, prediction directive, parser, service behavior, installed plugin, and global settings remain unchanged.
