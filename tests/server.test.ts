@@ -664,6 +664,38 @@ for (const shape of ["synthetic continuation", "reply after compaction", "multip
   })
 }
 
+test("generation retains displaced grouped human intent through completed assistant-only continuations", async () => {
+  for (const manual of [false, true]) {
+    const { api, calls } = fixture()
+    const history = [
+      { type: "user", text: "Compare the payment routes.", files: [{ content: "PRIVATE attachment" }] },
+      { type: "user", text: "Meanwhile, merge the README." },
+      { type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Older reply outside the window." }] },
+      { type: "idle", outcome: "succeeded" },
+      ...["First update.", "Second update.", "Latest reply."].flatMap(text => [
+        { type: "synthetic", text: "PRIVATE continuation" },
+        { type: "system", text: "PRIVATE system" },
+        { type: "assistant", time: { completed: 2 }, content: [{ type: "reasoning", text: "PRIVATE reasoning" }, { type: "tool", state: { status: "completed", content: "PRIVATE tool" } }, { type: "text", text }] },
+        { type: "idle", outcome: "succeeded" },
+      ]),
+    ]
+    const before = structuredClone(history)
+    api.context = async () => history
+    const result = await createService(api, { models: "local/model", contextTurns: 3 }, "/project").predict({ sessionID: "ses_test", completion: 2, manual }, new AbortController().signal)
+    assert.equal(result.text, "Run the tests.")
+    assert.equal(calls.length, 1)
+    assert.deepEqual(JSON.parse(calls[0].prompt.split("Conversation:\n")[1]), [
+      { user: "Compare the payment routes.\n\nMeanwhile, merge the README.", assistant: "" },
+      { user: "", assistant: "First update." },
+      { user: "", assistant: "Second update." },
+      { user: "", assistant: "Latest reply." },
+    ])
+    assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+    assert.ok(Buffer.byteLength(calls[0].prompt) <= 32768)
+    assert.deepEqual(history, before)
+  }
+})
+
 test("assistant-only context never borrows intermediate text for an unusable final response", async () => {
   for (const manual of [false, true]) for (const content of [[], [{ type: "text", text: " " }], [{ type: "reasoning", text: "PRIVATE" }], [{ type: "tool", state: { status: "completed" } }]]) {
     const { api, calls } = fixture()

@@ -153,8 +153,13 @@ use the latest completed turn with usable conversation text, even when historica
 completion markers are missing. They still require an idle chat and empty, eligible
 input; an unfinished or interrupted latest turn cannot reuse an older answer.
 A completed assistant reply with visible text is sufficient even when a continuation
-or compaction leaves no new user message. User text is included when available;
-synthetic instructions, tool output, reasoning and compaction summaries remain excluded.
+or compaction leaves no new user message. If assistant-only continuations fill the
+recent-turn window, the latest eligible human request is retained separately,
+including grouped steering messages but not that older turn's assistant replies.
+Under the 32,768-byte prompt limit, older optional turns are dropped first; retained
+human text and the latest response use marked excerpts when needed.
+This preserves context but does not guarantee the model uses the correct speaker perspective.
+Synthetic instructions, tool output, reasoning and compaction summaries remain excluded.
 Predictions never borrow text across a successful compaction boundary or reuse an
 older answer when the latest response is unfinished or has no usable visible text.
 If usable context is genuinely missing, the prompt says **Prediction unavailable
@@ -177,7 +182,7 @@ uses a `20000` ms timeout; the plugin default is `8000` ms.
 | --- | --- | --- |
 | `models` | unset | Required. Selector text for one ranking group, or an ordered array of selector groups. |
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
-| `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
+| `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. The latest eligible human request is also retained when absent from that window. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
 | `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one abstention-triggered transition. Errors fall back automatically in all modes. |
 | `enabled` | `true` | Enable predictions. |
@@ -445,8 +450,10 @@ check resolved candidates before use. Timeouts and cancellation do not guarantee
 the provider stops generating or billing. Two clients viewing the same session
 can independently incur prediction costs.
 
-The selected provider receives recent user and assistant text, which may contain
-sensitive information. Tool output, reasoning, attachments, instruction payloads,
+The selected provider receives recent user and assistant text and, when needed,
+the latest eligible human request from before that window, within the same
+compaction boundary. This text may contain sensitive information.
+Tool output, reasoning, attachments, instruction payloads,
 synthetic messages, other sessions, and unsent drafts are excluded. Oversized
 context uses marked excerpts that may omit details.
 
