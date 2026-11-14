@@ -12,7 +12,7 @@ export function reasonNotice(reason: string | undefined): Notice | undefined {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
-    context_unavailable: ["No completed response to predict from", "Finish an assistant response with usable conversation text, then request a prediction."],
+    context_unavailable: ["No completed response to predict from.", "Finish an assistant response with usable conversation text, then request a prediction."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."],
   }
