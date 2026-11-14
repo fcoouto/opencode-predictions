@@ -516,6 +516,22 @@ test("failure communication shows cause and recovery but never a next-model hint
   }
 })
 
+test("missing context shows usable recovery instead of denying an existing completed reply", async () => {
+  let message: Communication | undefined
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async () => ({ reason: "context_unavailable", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second Model" } }),
+    paint: () => false, insert: () => { assert.fail("communication is not draft text") }, focus() {}, show() {}, openStatus() {}, communicate: value => { message = value },
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(communicationText(message!), "Prediction unavailable for this response.\nContinue typing your next prompt.")
+    assert.equal(client.accept(), false)
+    assert.equal(message?.offer, undefined)
+  } finally { client.dispose() }
+})
+
 test("live fallback progress names actual model, preserves prefix, and ignores stale events", async () => {
   let draft = ""
   let message: Communication | undefined

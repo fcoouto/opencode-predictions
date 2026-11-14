@@ -20,6 +20,25 @@ test("unusable older records do not disable current context; compaction summarie
   assert.deepEqual(collectTurns([user("stopped"), assistant("partial"), { type: "idle", outcome: "interrupted" }]), [])
 })
 
+test("completed assistant-only turns retain visible text without treating synthetic records as user intent", () => {
+  const messages = [
+    { type: "synthetic", text: "PRIVATE continuation instruction" },
+    { ...assistant("Visible reply."), content: [{ type: "reasoning", text: "PRIVATE reasoning" }, { type: "tool", state: { content: "PRIVATE tool output" } }, { type: "text", text: "Visible reply." }] },
+    idle,
+  ]
+  assert.deepEqual(collectTurns(messages), [{ user: [], assistant: ["Visible reply."] }])
+  assert.equal(buildPrompt(collectTurns(messages), 3)?.includes("PRIVATE"), false)
+})
+
+test("assistant-only replies after compaction cannot inherit earlier user text or compaction summaries", () => {
+  const messages = [user("PRIVATE earlier goal"), assistant("PRIVATE earlier reply"), idle, { type: "compaction", status: "completed", summary: "PRIVATE summary" }, assistant("Current visible reply."), idle]
+  assert.deepEqual(collectTurns(messages), [{ user: [], assistant: ["Current visible reply."] }])
+  assert.equal(buildPrompt(collectTurns(messages), 3)?.includes("PRIVATE"), false)
+  assert.deepEqual(collectTurns([assistant("unfinished", false), idle]), [])
+  assert.deepEqual(collectTurns([assistant("interrupted"), { type: "idle", outcome: "interrupted" }]), [])
+  assert.deepEqual(collectTurns([user("Unanswered."), idle]), [])
+})
+
 test("newest turns stay ordered and configured history count is respected", () => {
   const turns = Array.from({ length: 5 }, (_, i) => ({ user: [`user-${i}`], assistant: [`answer-${i}`] }))
   const prompt = buildPrompt(turns, 3)!

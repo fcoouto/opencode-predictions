@@ -87,7 +87,14 @@ Manual requests also work with older chats: the shortcut and command-palette act
 use the latest completed turn with usable conversation text, even when historical
 completion markers are missing. They still require an idle chat and empty, eligible
 input; an unfinished or interrupted latest turn cannot reuse an older answer.
-Automatic prediction requirements are unchanged.
+A completed assistant reply with visible text is sufficient even when a continuation
+or compaction leaves no new user message. User text is included when available;
+synthetic instructions, tool output, reasoning and compaction summaries remain excluded.
+Predictions never borrow text across a successful compaction boundary or reuse an
+older answer when the latest response is unfinished or has no usable visible text.
+If usable context is genuinely missing, the prompt says **Prediction unavailable
+for this response. Continue typing your next prompt.**, rather than claiming that
+no completed reply exists or treating the status dialog as recovery.
 
 The prediction shortcut also works with `"automatic": false`. In the CLI, your
 terminal must forward the combination distinctly, for example through CSI-u/Kitty
