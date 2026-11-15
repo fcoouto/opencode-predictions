@@ -10,6 +10,8 @@ Add `githubPRContext: false` to parsed plugin defaults and technical status. Set
 
 Only inspect links in the already selected and byte-bounded conversation JSON, after its literal delimiter. Never scan the directive or standing guidance from the global context file. Do not scan discarded turns, compaction summaries, tool output, reasoning, instructions, attachments, or other sessions. Prefer the two most recently mentioned distinct PRs. Fetch no comments, diffs, files, or nested links. Support only explicit HTTPS `github.com/{owner}/{repo}/pull/{number}` links, with optional query/fragment and surrounding Markdown punctuation.
 
+Reject URL matches touching a conversation-excerpt boundary: truncating a PR number must not create a different accessible PR target. Capture model ownership before awaiting enrichment so concurrent catalog removal or transfer cannot authorize a stale generation.
+
 ## Retrieval and credentials
 
 Use a new shared server helper. Obtain an existing active github.com credential through `gh auth token --hostname github.com --no-refresh`, with no shell, prompting, account changes, or token persistence. If CLI/auth is unavailable, public requests may proceed anonymously; private failures are omitted.

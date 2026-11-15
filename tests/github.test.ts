@@ -122,6 +122,34 @@ test("discarded turns and compaction summaries never supply PR links", async () 
   assert.equal(f.credentials, 0)
 })
 
+test("conversation excerpt boundaries cannot turn a truncated PR number into another PR", async () => {
+  const f = fixture()
+  f.token = "FAKE_PRIVATE_CREDENTIAL"
+  const marker = "\n[excerpt: middle omitted]\n"
+  const delimiter = "\nConversation:\n"
+  const probe = prompt("x".repeat(60000))
+  const headLength = JSON.parse(probe.slice(probe.lastIndexOf(delimiter) + delimiter.length))[0].assistant.split(marker)[0].length
+  const partial = "https://github.com/acme/project/pull/123"
+  const original = "x".repeat(headLength - partial.length) + partial + "45 " + "x".repeat(60000)
+  const selected = prompt(original)
+  const text = JSON.parse(selected.slice(selected.lastIndexOf(delimiter) + delimiter.length))[0].assistant
+  assert.ok(text.split(marker)[0].endsWith(partial), "fixture must truncate the real PR12345 URL after PR123")
+  assert.deepEqual(await f.load("one", selected, signal()), [])
+  assert.equal(f.credentials, 0)
+  assert.equal(f.calls.length, 0)
+})
+
+test("URLs touching either excerpt boundary are skipped while complete distant links remain usable", async () => {
+  const marker = "\n[excerpt: middle omitted]\n"
+  for (const text of [url + marker + "tail", "head" + marker + url]) {
+    const f = fixture()
+    assert.deepEqual(await f.load("one", prompt(text), signal()), [])
+    assert.equal(f.calls.length, 0)
+  }
+  const f = fixture()
+  assert.equal((await f.load("one", prompt(url + " complete reference." + marker + "tail"), signal())).length, 1)
+})
+
 test("cache entries expire and are isolated by session and credential", async () => {
   const f = fixture()
   f.token = "ACCOUNT_A"

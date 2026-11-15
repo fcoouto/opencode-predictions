@@ -181,6 +181,24 @@ test("error fallback reuses enriched context without another PR lookup per model
   assert.ok(f.calls[0].prompt.includes("No execution allowance was granted."))
 })
 
+test("catalog removal during PR retrieval prevents generation even if the model later returns", async () => {
+  for (const restored of [false, true]) {
+    const f = githubFixture()
+    let available = true
+    const models = f.api.models
+    f.api.models = async signal => available ? models(signal) : []
+    const service = createService(f.api, { models: "local/model", githubPRContext: true }, "/project")
+    f.api.githubPRContext = async (_sessionID, _prompt, signal) => {
+      available = false
+      await service.inspect(signal)
+      if (restored) { available = true; await service.inspect(signal) }
+      return []
+    }
+    await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    assert.equal(f.calls.length, 0, restored ? "removed-and-returned model must not regain old request ownership" : "removed model must not receive generation")
+  }
+})
+
 function escalationFixture(escalation = "manual") {
   const { api, advance } = fixture()
   const attempted: string[] = []

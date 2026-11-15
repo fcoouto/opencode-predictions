@@ -58,9 +58,18 @@
 - [x] Wire `src/index.ts` with one helper instance per service setup. No auth/network side effects during factory creation.
 - [x] Document settings and private-PR disclosure; keep the user's actual setting unchanged.
 - [x] Run focused and full tests, typecheck, bundle, package validation, whitespace and repeat-build checks. Run isolated installed-package server checks; default-off path must remain compatible.
-- [ ] Commit, obtain independent whole-branch security/code review, fix in-scope findings with RED→GREEN proof, and rerun affected gates.
-- [ ] Report verified local branch and any remaining limits. Do not push, merge, enable, or update installed plugin without a new request.
+- [x] Commit, obtain independent whole-branch security/code review, fix in-scope findings with RED→GREEN proof, and rerun affected gates.
+- [x] Report verified local branch and any remaining limits. Do not push, merge, enable, or update installed plugin without a new request.
 
 ## Self-Review
 
 All five review conditions map to helper or service tests. GitHub/CLI documentation was fetched from official sources; Context7 was unavailable due quota. The user selected the proposed approach and explicitly said to proceed, so no repeated approval or execution-method question is required.
+
+## Final Verification
+
+- Baseline: 267 tests. Final suite: 296/296, with typecheck, production bundle, package validation, whitespace, and repeat-build checks passing.
+- Fresh packed installation: server checks 5/5; installed bundle byte-matched the final source build.
+- Independent review identified two Important findings: ownership capture after retrieval could admit removed models, and excerpted URLs could select another PR number.
+- Both findings were reproduced in three failing tests, fixed at their responsible layers, and verified GREEN with the full suite. No findings remain unresolved; no second review was requested after the test-proven fix pass.
+- Pure prompt logic remains browser-safe; authentication/network code is server-only. Existing concise-prediction and global-context-file behavior remains unchanged.
+- No live PRs or credentials were read, no paid prediction was made, and the user's settings/installed plugin were not changed. Feature remains off by default on the local feature branch.

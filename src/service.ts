@@ -252,6 +252,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
           if (!target) return { reason: "escalation_refreshed" }
           chain = [target, ...chain.filter(model => model !== target && model.group >= target.group)]
         }
+        const ownership = new Map(owners)
         if (options.githubPRContext && api.githubPRContext) {
           const sourceSignal = AbortSignal.any([parent, AbortSignal.timeout(2000)])
           try {
@@ -259,7 +260,6 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             prompt = appendGitHubContext(prompt, sources)
           } catch { parent.throwIfAborted() }
         }
-        const ownership = new Map(owners)
         let failure = "no_models_eligible"
         const details = new Set<string>()
         for (let index = 0; index < chain.length; index++) {
