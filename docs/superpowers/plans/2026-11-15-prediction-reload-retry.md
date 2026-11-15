@@ -76,7 +76,7 @@
 
   Run `npm run check`, `npm run test:package`, `git diff --check`, repeat-bundle consistency, and isolated installed-package server, Desktop, and CLI gates sequentially. Require passing output. Commit with `fix: recover prediction requests after settings reload`.
 
-- [ ] **Step 7: Obtain final Opus review.**
+- [x] **Step 7: Obtain final Opus review.**
 
   Use a fresh `claude-agent/opus` reviewer on the complete branch, spec, plan, and evidence. Fix only in-scope findings with RED→GREEN proof and rerun affected gates. Require Opus approval before delivery.
 
@@ -98,4 +98,6 @@ All spec constraints and five Review Focus cases map to tests. The plan incorpor
 - Final focused controller/client/server tests passed 156/156. Full suite passed 248/248, with typecheck, bundle, package validation, and whitespace checks passing.
 - Packed installation passed 27 host checks sequentially: server RPC 4/4, Desktop 13/13, CLI PTY 10/10. Repeat build was byte-identical.
 - Runtime edits are limited to `src/controller.ts`; service/client/context/model resolution and dependencies are unchanged.
-- Opus approved the design and cost-safety amendment. Final code review is the remaining pre-delivery gate.
+- Opus approved the design, cost-safety amendment, and final code with no Critical or Important findings. The reviewer independently reran all 248 tests and typechecking, and inspected Desktop/CLI bundle alignment.
+- Deferred optional minors: an existing missing exhaustion notice after typing without text, an exact mid-generation cancellation test beyond current indirect coverage, and normalizing the private optional authority flag to a strict boolean.
+- CI remains the final delivery gate. Installed-package checks were verified natively, not repeated by the read-only reviewer.
