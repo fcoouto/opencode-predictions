@@ -43,6 +43,8 @@ as ghost text. Take it, edit it, or keep typing your own.
 The default directive asks for one concise next step toward your current goal,
 rather than guessing your exact next words. It prioritizes explicitly unfinished
 work or delivery gaps without inventing facts or bundling optional tasks.
+When a recommendation or single scoped approval request clearly continues your
+task, it favors a short contextual reply instead of repeating the proposal.
 
 ## How to install
 
