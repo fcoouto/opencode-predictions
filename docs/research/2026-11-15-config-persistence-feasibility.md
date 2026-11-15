@@ -1,5 +1,11 @@
 # Predictions Setup: Config Persistence Feasibility
 
+## Approved local-write boundary amendment
+
+The user approved `docs/superpowers/specs/2026-11-15-predictions-setup-local-save-design.md`. Future setup writes use private same-user local IPC, not network Save RPC. Desktop requires the host-owned main-process `sameMachine` check; initial CLI writes require independently qualified standalone private-server provenance. Shared-service, explicit-server, remote, conflicting, and unprovable CLI origins remain read-only.
+
+The source/filesystem GO below does not qualify these new origin or IPC gates. Task 4 must record actual native-origin and local Save/reload evidence before enabling a writable case. A builder check rejected relayable network challenge signing; matching metadata or a relayed signature cannot substitute for a trusted native origin anchor. This amendment preserves the accepted external-editor limitation and every existing writer safeguard.
+
 ## Amended Task 1 Verdict: Scoped GO — Review Corrections Verified
 
 The approved best-effort gate permits production implementation **only for the verified writable subset below**. Task 2 adds the store and Task 3 exposes metadata-only read/preview RPC; public save RPC, lifecycle, and UI remain unbuilt. The initial GO was suspended after checkpoint review exposed a preservation defect and missing production failure-path coverage. The correction checks below restore only this scoped GO, not feature or release approval. The original strict NO-GO remains recorded below.

@@ -2,6 +2,8 @@
 
 Status: approved design with best-effort editing of existing global JSON/JSONC and the residual external-editor race accepted. Native execution may resume at the amended implementation gate below and Task 1 of the aligned implementation plan. The original strict feasibility verdict is historical evidence; no remaining check is marked passed by this amendment.
 
+Approved local-write amendment: `docs/superpowers/specs/2026-11-15-predictions-setup-local-save-design.md`. It replaces network Save RPC with private local IPC, requires Desktop main-process `sameMachine` verification, and limits initial CLI writes to independently qualified `--standalone` sessions. Shared-service, explicit-server, remote, and unprovable CLI connections remain read-only. The original UX and persistence safeguards remain binding.
+
 ## Intent and confirmed scope
 
 Let users manage every existing prediction setting without finding or editing a hidden JSON file. The user selected a native Desktop settings page and an equivalent interactive CLI menu, both opened by **Predictions Setup**.

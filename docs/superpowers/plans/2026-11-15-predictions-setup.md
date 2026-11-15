@@ -4,19 +4,24 @@
 
 **Goal:** Add Predictions Setup for all seven existing settings in Desktop and interactive CLI, with best-effort global-only configuration editing.
 
-**Architecture:** Prove a scoped server-side JSON/JSONC writer against the approved best-effort gate, accepting the disclosed residual external-editor race. Then share server-owned settings operations and one client-side draft model between a native Desktop settings page and CLI menus. Existing JSON/JSONC configuration remains the only settings source.
+**Architecture:** Use the qualified server-side JSON/JSONC writer and shared draft model, retaining the accepted external-editor race. Read and preview use inspection-only network RPC; Save uses private local IPC behind independently verified native-host origin gates. Existing JSON/JSONC configuration remains the only settings source.
 
 **Tech Stack:** TypeScript, Node `>=26.4.0`, Node test runner, `@opencode/plugin` and `@opencode/client` `2.2.6`, Solid, existing OpenCode GUI/TUI controls, Playwright and PTY host fixtures.
 
 **Spec:** `docs/superpowers/specs/2026-11-15-predictions-setup-design.md`
 
-> **Resume native execution at amended Task 1.** The approved best-effort policy supersedes the former absolute external-editor guarantee. Reuse existing fixture/tests and historical evidence; do not repeat completed research or treat risk acceptance as a GO. Task 2 still requires a new scoped GO under the amended gate. No implementation or verification has been resumed by this documentation update.
+**Approved amendment:** `docs/superpowers/specs/2026-11-15-predictions-setup-local-save-design.md`
+
+> **Current resume point: Task 4.** Tasks 1–3 are committed and complete in the execution ledger. Task 4 has uncommitted lifecycle/editor work and passing checkpoint checks, not completed Save qualification. The local-IPC design and narrower initial CLI scope are approved; this amended implementation plan awaits confirmation before new implementation. Preserve the selected native execution method and do not repeat completed tasks.
 
 ## Global Constraints
 
 - Order: **Behavior**, **Models**, **Advanced**. Behavior labels: **Enable Predictions**, **Predict After Replies**, **Escalation Mode**.
 - Add **Predictions Setup** to the Predictions command group without a default shortcut. Desktop also gets a native searchable **Predictions** settings page.
 - Global configuration on the selected server only; overridden, ambiguous, or unsafe configurations are read-only. Never write the local client config for a remote server.
+- No network Save or proof-signing RPC. Desktop writes require main-process `ServerEndpoint.sameMachine === true`. CLI writes require independently qualified `--standalone` private-server provenance; shared-service, explicit-server, overridden, conflicting, and unprovable launches remain read-only.
+- Use a same-user Unix socket in a private `0700` temporary directory with socket mode `0600`. The client derives paths from its own canonical temporary directory and a strict opaque ID, never a server-supplied path. Unsafe or unavailable local IPC is read-only.
+- Native origin authorization precedes socket access and repeats before dispatch. Metadata, PID, loopback URLs, launch flags alone, and relayed signatures are not proof of selected-server locality.
 - Preserve comments, unrelated formatting, other plugins, unknown options, package references, omitted defaults, and unchanged settings.
 - Serialize all supported setup writers addressing the same file; reject stale drafts and detected changes before replacement. Use atomic replacement and one rotating private server-local recovery copy outside active config discovery; backup failure aborts the write.
 - The user accepted the last-check/replacement race with external or other non-cooperating writers, including possible loss of unrelated edits. Backups cannot guarantee capturing those edits. This exception does not weaken any cooperating-writer or source-integrity safeguard.
@@ -33,6 +38,8 @@
 - Reload interrupts the save response: distinguish durable-but-not-active from failure without issuing a second blind write; Task 4 tests reconciliation.
 - Saving changes or client reload re-arms the same completed turn: no surprise generation, even with `automatic: true`; Tasks 4 and 7 test this.
 - A user changes servers while editing or receives late metadata: no cross-server save, discarded draft, stale preview, or composer mutation; Tasks 3, 5, and 6 test this.
+- A remote/proxy target advertises a local authority or relays its responses: reject it at the native origin gate before socket access. Task 4 owns negative host and transport tests; Tasks 5–7 retain rendered and installed coverage.
+- Temporary-path differences, long socket paths, stale sockets, unsafe permissions, or disappearing authority: stay read-only or report an uncertain save accurately, never scan or switch targets. Task 4 owns these tests.
 
 ## File Structure and Responsibilities
 
@@ -45,6 +52,9 @@
 | New `src/setup-service.ts`, `tests/setup-service.test.ts` | Server validation, metadata-only preview, and delegation to persistence. |
 | `src/models.ts`, `tests/models.test.ts` | Shared grouped resolution; retain existing single-group resolver. |
 | `src/rpc.ts`, `src/index.ts`, `src/service.ts` | Typed setup transport, actual config activation, service cleanup. |
+| New `src/setup-local.ts`, `tests/setup-local.test.ts`, `tests/host/setup-local.test.ts` | Bounded same-user Unix socket protocol, server lifecycle, local client, origin qualification and real Save/reload proof. No config writes outside the existing server service. |
+| New `src/setup-ipc.ts`, `src/setup-main.ts`, `src/setup-gui-api.ts`, `tests/setup-main.test.ts` | Window-safe IPC contract, Desktop main-process origin gate, and pinned window `SetupAPI` adapter. |
+| New `src/setup-tui-api.ts`, `tests/setup-tui-api.test.ts` | Qualified standalone CLI origin gate and pinned `SetupAPI` adapter; other launch modes inspect only. |
 | `src/client.ts`, `src/controller.ts`, related tests | Suppress same-turn regeneration and invalidate stale suggestions/offers. |
 | New `src/setup-gui.ts`, `tests/setup-gui.test.ts`; existing `src/gui.ts` | Native Desktop settings page, model editor, entry points. Use `.ts` and existing `createComponent` pattern, not a JSX/build migration. |
 | New `src/setup-tui.ts`, `tests/setup-tui.test.ts`; existing `src/tui.ts` | Native select/prompt CLI menus and entry points. No custom terminal renderer. |
@@ -157,7 +167,7 @@
 - `createSetupService(store: ConfigStore, models: (signal: AbortSignal) => Promise<readonly CatalogModel[]>, current: () => { options: unknown; version: string }): { read(signal: AbortSignal): Promise<SetupSnapshot>; preview(fields: SettingsInput, signal: AbortSignal): Promise<SetupPreview> }`.
 - RPC methods `settings({}) -> SetupSnapshot` and `previewSettings({ fields }) -> SetupPreview`; every call uses the selected server/location.
 - Draft helpers in `src/setup.ts`: `readGroups(fields: SettingsInput): string[][] | undefined`, `patchGroups(groups: string[][] | undefined): SettingsInput`, and `changedFields(original: SettingsInput, draft: SettingsInput): SettingsInput`.
-- `patchGroups(undefined)` produces a changed-field `models: undefined` deletion marker locally. Encode deletion as `removeModels: true` in the later save RPC, not JSON `undefined`; reject `removeModels` combined with `fields.models`. No other reset/deletion UI is added.
+- `patchGroups(undefined)` produces a changed-field `models: undefined` deletion marker locally. Encode deletion as `removeModels: true` in the later local Save request, not JSON `undefined`; reject `removeModels` combined with `fields.models`. No other reset/deletion UI is added.
 
 - [ ] **Step 1: Add failing normalization and metadata-only tests.**
   For absent models, text, arrays, nested arrays, wildcards, and overlapping variants, assert:
@@ -183,21 +193,47 @@
   git commit -m "feat: add prediction setup drafts and model previews"
   ```
 
-## Task 4: Save, Activation, and Zero Surprise Generation
+## Task 4: Local Save, Activation, and Zero Surprise Generation
 
-**Files:** Modify `src/setup.ts`, `src/setup-service.ts`, `src/rpc.ts`, `src/index.ts`, `src/service.ts`, `src/client.ts`, `src/controller.ts`; extend setup/service/client/controller tests and `tests/host/persistence.test.ts`.
+**Files:** Preserve current changes to `src/setup.ts`, `src/setup-service.ts`, `src/index.ts`, `src/service.ts`, `src/client.ts`, `src/controller.ts`, `src/gui.ts`, `src/tui.ts` and their tests. Create `src/setup-local.ts`, `src/setup-ipc.ts`, `src/setup-main.ts`, `src/setup-gui-api.ts`, `src/setup-tui-api.ts`, `tests/setup-local.test.ts`, `tests/setup-main.test.ts`, `tests/setup-tui-api.test.ts`, and `tests/host/setup-local.test.ts`. Extend `src/rpc.ts`, `tests/host/{fixture.mjs,persistence.test.ts,lifecycle.test.ts,terminal.py}`, native observers, and the existing feasibility report as needed.
+
+**Resume state:** Keep the existing RED/GREEN evidence and 277/277 project, 173/173 focused, and 15/15 host checkpoint results as history. They do not prove the new boundary or actual Save. Add RED tests only for new or uncovered behavior.
 
 **Interfaces:**
 - `SaveInput = { revision: string; fields: SettingsInput; removeModels?: true }`.
 - `SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }`.
-- RPC `saveSettings(input: SaveInput) -> SaveResult`; fixed schemas, known fields only, no client filesystem target.
+- No network `saveSettings` method and no proof-signing RPC. Network `settings` returns inspection-only `writable: false`; preserve an existing source refusal reason or use `"Saving requires a verified local setup connection."`.
+- Add `SetupLocation = { directory: string; workspaceID?: string }` and optional `SetupSnapshot.localAuthority?: { id: string }` in `src/setup.ts`. Authority IDs match `/^[0-9a-f]{16}$/` and use eight random bytes; they are locators, not credentials or origin proof. An exclusive directory-creation collision refuses that authority rather than reusing a directory.
 - Extend `createSetupService` with `save(input: SaveInput, signal: AbortSignal): Promise<SaveResult>`.
 - `SetupAPI = { read(signal: AbortSignal): Promise<SetupSnapshot>; preview(fields: SettingsInput, signal: AbortSignal): Promise<SetupPreview>; save(input: SaveInput, signal: AbortSignal): Promise<SaveResult> }`.
 - `SetupState = { snapshot?: SetupSnapshot; fields: SettingsInput; groups?: string[][]; issues: SetupIssue[]; preview?: SetupPreview; dirty: boolean; loading: boolean; previewing: boolean; saving: boolean; lastSave?: SaveResult; error?: string }`; error contains fixed safe copy.
 - `createSetupEditor(api: SetupAPI, changed: () => void): SetupEditor`; methods `state(): Readonly<SetupState>`, `load(): Promise<void>`, `change(fields: SettingsInput): void`, `setGroups(groups: string[][] | undefined): void`, `preview(): Promise<void>`, `save(): Promise<SaveResult>`, `discard(): void`, `dispose(): void`. Pin one API target per editor instance.
 - Add `createService(...).dispose(): void`, `createController(...).invalidate(): void`, and `client.invalidate(options?: { suppressAutomatic?: boolean }): void`.
+- `startLocalSetup(location: SetupLocation, api: Pick<SetupAPI, "read" | "save">): Promise<{ id: string; dispose(): Promise<void> } | undefined>` in `src/setup-local.ts`. Refuse creation unless the server-local source is qualified.
+- `LocalSetupTarget = { id: string; serviceVersion: string; location: SetupLocation }`; `readLocalSetup(target: LocalSetupTarget, signal: AbortSignal): Promise<SetupSnapshot>` and `saveLocalSetup(target: LocalSetupTarget, input: SaveInput, signal: AbortSignal): Promise<SaveResult>`. These Node-only calls require a previously established host-origin gate; no public client-supplied locality flag creates one.
+- The local JSON-line protocol carries exactly one read or Save per connection, the pinned authority ID/version/location, and `SaveInput` for Save. No config path, package name, signing key, or origin flag is accepted. Set a `65536`-byte request limit, `8388608`-byte response limit, `16` concurrent connections per authority, and a `10000` ms operation deadline. Oversized requests refuse dispatch; exceeding a response/time bound may follow a committed write and must trigger readback, never a repeat. Larger metadata responses must fail safely rather than be truncated.
+- Derive the socket as `join(await realpath(tmpdir()), "pp-" + id, "s")`; reject socket paths exceeding `100` UTF-8 bytes. Create only the new authority directory, never a discovered directory. Refuse symlinked, incorrectly owned, or incorrectly permissioned authority paths.
+- `SetupLocal` in `src/setup-ipc.ts` is a window-safe `Ipc` contract under `"opencode-predictions.setup"` with `read({ serverID, location }) -> SetupSnapshot` and `save({ serverID, location, input }) -> SaveResult`. Use fixed portable host schemas and preserve server validation of all Save fields.
+- `registerSetupMain(ctx: Parameters<GUIPlugin.MainSetup>[0]): () => void` in `src/setup-main.ts`; resolve the exact server through `ctx.serverEndpoints.get(serverID)` and require `sameMachine`. Bind socket operations to its current endpoint and `Caller.signal`. Import `GUIPlugin` as the SDK's `Plugin` namespace.
+- `createGUISetupAPI(ctx: Parameters<GUIPlugin.Setup>[0], target: { serverID: string; location: SetupLocation }): SetupAPI` in `src/setup-gui-api.ts`; local read/Save use `ctx.main(SetupLocal)`, preview uses the pinned selected-server RPC. Never retarget an instance or accept a renderer-supplied endpoint/credential.
+- `createTUISetupAPI(ctx: TUIPlugin.Context, location: SetupLocation): SetupAPI` in `src/setup-tui-api.ts`. Read/preview inspect the selected client. Enable local reads/Save only with the standalone-origin mechanism actually qualified in Step 1; absence or loss of that mechanism returns read-only.
 
-- [ ] **Step 1: Add RED tests for save lifecycle and interrupted acknowledgements.**
+- [ ] **Step 1: Qualify the native origin anchors before implementing writable adapters.**
+  Extend synthetic observer probes and `tests/host/setup-local.test.ts`. Record how pinned Desktop main establishes `sameMachine`; prove it rejects other ports, unknown server IDs, and remote/proxy selections. For CLI, inspect actual private-server creation and selected-client binding under `--standalone`; cover conflicting `--server` flags, every remote endpoint override recognized by the pinned launcher, and available reconnect/target-change paths. Do not infer provenance from a matching PID or the presence of one argument. Keep secrets out of probe output.
+  Run `node --test --test-concurrency=1 --test-name-pattern="setup origin" tests/host/setup-local.test.ts`. Expected: actual-host observations identify a trusted origin mechanism for every case enabled for writing, and explicit remote/shared/ambiguous cases are denied. Record the exact mechanism and invalidation conditions in the existing feasibility report. If standalone origin cannot be established, keep CLI read-only and report that gate as blocked, not passed. Do not weaken the approved gate or invent a signed challenge substitute.
+
+- [ ] **Step 2: Add RED tests for local transport, native adapters, and remaining Save lifecycle behavior.**
+  Name the native-boundary regressions `Desktop main denies non-sameMachine setup before socket access`, `CLI setup denies unqualified launch origins before socket access`, and `relayed local metadata cannot authorize a selected remote server`. Their observable assertions include:
+  ```ts
+  assert.equal(remoteSnapshot.writable, false)
+  assert.equal((await remoteAPI.save(input, signal)).kind, "read_only")
+  assert.equal(socketConnectionsAfterAttempt, socketConnectionsBeforeAttempt)
+  assert.equal(await readFile(localConfigFile, "utf8"), originalLocalBytes)
+  ```
+  In `tests/setup-local.test.ts`, assert a qualified local read can be writable, malformed IDs and arbitrary paths cannot connect, and unsafe owner/mode/symlink/overlong paths cannot dispatch. Exercise extra fields, wrong authority/version/location, oversized or unterminated frames, connection limits/timeouts, cancellation, disposal, authority replacement, and stale socket files. A metadata response larger than `65536` bytes but within `8388608` bytes must round-trip; a response exceeding its own bound must fail safely. Inspect actual temporary directory/socket modes and cleanup. No recovery/config contents or raw socket errors may appear in responses.
+  Allocate a short fixture-owned `TMPDIR` under the harness-approved temporary root for socket tests and propagate it to both native client and server. Keep config HOME/XDG paths in the existing fixture. Never use the user's runtime directory, delete unknown stale sockets, or shorten an overlong path by silently falling back to `/tmp`.
+  In `tests/setup-main.test.ts` and `tests/setup-tui-api.test.ts`, assert origin denial occurs before any local transport call, even when a remote/proxy fixture advertises a real local authority and relays all local metadata. Pin server/location for the editor lifetime and reject endpoint/authority replacement during dispatch. Missing IPC and unsupported hosts must preserve inspection without falling back to client file writes.
+  Add real network assertions that `saveSettings` and proof-signing methods are absent, and network `settings.writable === false` even for a qualified source. Update Task 3's former source-only writability assertion to distinguish usable local write permission.
   Assert validation precedes writing, conflicts/failures preserve draft, saving unchanged values does not write, and invalid drafts cannot save. With automatic mode on, assert:
   ```ts
   assert.equal(generateCallsAfterSave, generateCallsBeforeSave)
@@ -206,24 +242,29 @@
   assert.equal(composerDraft, "my existing draft")
   assert.equal((await editor.save()).kind, "saved_not_active")
   ```
-  Test cancelled-but-committed writes, reload killing the RPC response, a second client, late progress/results, a service version change detected by polling, and a new completion still predicting normally. Test stale preview responses after another edit and disposed editors ignoring late responses.
+  Test cancelled-but-committed writes, reload killing the socket/main-IPC response, a second authorized local client, late progress/results, a service version change detected by polling, and a new completion still predicting normally. Test stale preview responses after another edit and disposed editors ignoring late responses. Existing passing regressions remain green; do not recreate them or force artificial failures.
 
-- [ ] **Step 2: Run `node --test tests/setup.test.ts tests/setup-service.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts`; expect RED on save and same-turn regeneration.**
+- [ ] **Step 3: Run `node --test tests/setup-local.test.ts tests/setup-main.test.ts tests/setup-tui-api.test.ts tests/setup.test.ts tests/setup-service.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts`; expect RED on the missing boundary/adapters and uncovered Save cases.**
 
-- [ ] **Step 3: Implement server save and shared editor.**
+- [ ] **Step 4: Implement the private boundary, pinned host adapters, server Save, and shared editor.**
+  Use only Step 1's observed native origin mechanisms. Create and advertise an authority only for the server-owned qualified source. The socket server owns its location and delegates read/Save to the existing service; client values never select a config file. Validate the complete local envelope and recheck source eligibility for each operation. Bound buffers and connections before parsing/dispatch, propagate disconnect cancellation, and clean only the directory/socket this instance created. Missing local IPC is read-only, not a guessed path.
+  Keep network RPC inspection-only, without a write or challenge-signing method. The Desktop main bridge independently resolves and rechecks the pinned endpoint's `sameMachine` field; pass `Caller.signal` through operations. GUI window code imports only the IPC contract and adapter, never performs Node I/O itself. CLI standalone permission must come from the qualified native mechanism, not any serialized caller flag.
   Merge only changed keys against a fresh authoritative snapshot, handle explicit model removal, validate the full prospective options, and use the Task 2 write protocol. Keep fresh unknown options intact. Activation must use Task 1's proven watcher/read-back path, not a guessed reload API. Do not emulate persistence by mutating one in-memory service.
-  Verify the requested known-field values in a fresh service before returning `saved`. If reload interrupts the response, the editor reconnects and reads back the global revision and effective fields; it never blindly repeats the write. Return/display saved-not-active when durable bytes are known but activation is unverified. Do not claim rollback or overwrite after an ambiguous outcome.
+  Verify requested known-field values in a fresh service before returning `saved`. If reload interrupts the response, reconnect to the original selected server and rediscover its new local authority only for readback. Compare source/revision, stored fields, effective options, and service version; never repeat the write. Return/display saved-not-active when durable bytes are known but activation is unverified. Do not claim rollback or overwrite after an ambiguous outcome.
 
-- [ ] **Step 4: Implement lifecycle invalidation without charging for Save.**
+- [ ] **Step 5: Complete lifecycle invalidation without charging for Save.**
   Abort service-owned generation on unload, clear old offers, and prevent disposed work from publishing progress/results. `controller.invalidate()` clears cached results, attempted keys, and pending work without editing input. On config/plugin events, suppress automatic prediction for the current `{scope, completion key}` even after reconnect/reload; also detect changed service versions during polling. A new completed turn or explicit request remains eligible.
   Existing `client.invalidate()` immediately calls `tick()`, which can generate; do not reuse it unchanged. Apply suppression before the first refreshed tick, including when the plugin remounts on a completed chat. Prove the host's memory-only reload handoff or another no-persistent-settings mechanism in the host test; if remount suppression cannot be guaranteed, stop this task rather than ship extra calls.
 
-- [ ] **Step 5: Run Task 4 unit tests, `npm run typecheck`, and `node --test tests/host/persistence.test.ts`; expect PASS, verified activation, and no extra generation in either client.**
+- [ ] **Step 6: Prove the boundary and actual Save on the native hosts.**
+  Extend `tests/host/setup-local.test.ts` to write through the production local transport, not the research candidate. Exercise two local clients, a stale revision, watcher-driven reload, cancelled-but-committed acknowledgement loss, new authority discovery, and persisted/effective readback. Verify plain authenticated network calls and remote/proxy origin denials leave active bytes unchanged.
+  Extend native Desktop/CLI lifecycle tests to exercise real Save through the main bridge/qualified standalone adapter with automatic mode on. Preserve composer text, reject old offers and late results, reload the actual predictions TUI module from a fixture-owned copy, and prove both an explicit request and a later completed turn remain eligible. An observer-only source reload does not prove predictions-plugin remount suppression.
+  Run the Step 3 unit command, `npm test`, `npm run typecheck`, `npm run bundle`, then `node --test --test-concurrency=1 tests/host/persistence.test.ts tests/host/lifecycle.test.ts tests/host/setup-local.test.ts`, and `git diff --check`. Expected: every enabled writable case passes with no extra generation, detected stale edits conflict, ambiguous commits reconcile without repeat, and unsupported origins cannot write. Missing host/origin evidence is not a green gate.
 
-- [ ] **Step 6: Commit save and lifecycle behavior.**
-  ```sh
-  git add src/setup.ts src/setup-service.ts src/rpc.ts src/index.ts src/service.ts src/client.ts src/controller.ts tests/setup.test.ts tests/setup-service.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts tests/host/persistence.test.ts
-  git commit -m "feat: apply prediction setup changes without generating"
+- [ ] **Step 7: Commit local Save and lifecycle behavior only after its mandatory gates pass.**
+   ```sh
+   git add src/setup.ts src/setup-service.ts src/setup-local.ts src/setup-ipc.ts src/setup-main.ts src/setup-gui-api.ts src/setup-tui-api.ts src/rpc.ts src/index.ts src/service.ts src/client.ts src/controller.ts src/gui.ts src/tui.ts tests/setup-local.test.ts tests/setup-main.test.ts tests/setup-tui-api.test.ts tests/setup.test.ts tests/setup-service.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts tests/desktop.test.ts tests/terminal.test.ts tests/host/persistence.test.ts tests/host/lifecycle.test.ts tests/host/setup-local.test.ts tests/host/terminal.py tests/host/observer docs/research/2026-11-15-config-persistence-feasibility.md dist
+   git commit -m "feat: apply prediction setup changes without generating"
   ```
 
 ## Task 5: Native Desktop Settings
@@ -233,7 +274,7 @@
 **Interfaces:**
 - `registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void>): () => void` in `src/setup-gui.ts`; define `GUIContext` from the existing `Plugin.define` setup callback's inferred parameter type, using the public pinned SDK declaration confirmed in Task 1. Do not assume an export named `Plugin.SetupContext`.
 - It registers command id `"setup"` with title **Predictions Setup**, settings page id `"predictions"`, and the same page-opening action for recovery/status links. Use `SettingsPage`, native `SettingsLayout`/`SettingsSection`/`SettingsRow` and available inputs from the pinned SDK.
-- One `SetupEditor` per active page/server target. Do not read configuration from GUI storage or Node placeholders in the window process.
+- One `SetupEditor` per active page/server target using Task 4's `createGUISetupAPI`. Do not read configuration from GUI storage or Node placeholders in the window process. Desktop main, not a renderer-supplied flag, grants usable local access.
 
 - [ ] **Step 1: Add failing rendered tests with host components and mocked SetupAPI.**
   Assert exact Behavior labels/order, Models second, Advanced third/collapsed, setup availability without session/completed response, and settings search entries.
@@ -244,6 +285,7 @@
   assert.equal(submittedPrompts, 0)
   ```
   Exercise all seven settings; model/variant selection; group/entry movement; pattern preview; long/duplicate display names; keyboard-only editing; empty/loading/disconnected/read-only states; conflict and saved-not-active messages; unsaved navigation. Assert the non-blocking external-editor/recovery warning is present and introduces no repeated consent dialog. Switching servers must request discard confirmation before creating a new pinned editor, never retarget an old save.
+  Assert remote, other-port, missing-main-IPC, and unknown endpoints render read-only even if their metadata claims a writable source or a real local authority. An endpoint change during Save must not redirect the main-process operation.
 
 - [ ] **Step 2: Run `node --test tests/setup-gui.test.ts tests/desktop.test.ts tests/feedback.test.ts tests/client-feedback.test.ts`; expect RED on the new page and entry points.**
 
@@ -251,6 +293,7 @@
   Load Impeccable's craft floor immediately before UI edits. Verify pinned SDK controls and settings navigation; do not invent props from newer docs. Add searchable model selection and accessible move-up/down/remove actions; preserve focus after movement/removal. Keep provider/model IDs as secondary identifiers, unavailable entries intact, and cost/ranking/escalation explanations adjacent to models.
   Update only configuration-related recovery notices to point at **Predictions Setup**; retain status actions for runtime errors. Add a setup action to the status view without converting it into an editor. If service setup methods are unavailable, show an update/read-only explanation; never fall back to client-side file writes.
   Show the spec's non-blocking external-editor warning beside Save, including possible loss of unrelated edits and incomplete recovery-copy coverage. Do not add repeated consent dialogs or imply saves are conflict-proof. Cover that disclosure in the rendered tests.
+  Use the main-process local adapter only after Task 4's origin qualification. A disconnected or unsupported bridge displays inspection/recovery copy; do not replace it with network Save or window filesystem calls.
 
 - [ ] **Step 4: Run Task 5 tests and `npm run typecheck`; expect PASS.**
   Inspect native render at normal and narrow window widths, both themes, long Unicode names, error state, and keyboard focus. Batch captures under `.test-artifacts/setup-*`; screenshots of mocks alone do not prove native host behavior.
@@ -267,7 +310,7 @@
 
 **Interfaces:**
 - `registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void>): () => void`; derive `TUIContext` from the pinned TUI setup signature if necessary.
-- Palette command id `"predictions.setup"`, title **Predictions Setup**, group **Predictions**, no bind. Menu hierarchy and editors use Task 4's `SetupEditor` through selected server/location RPC.
+- Palette command id `"predictions.setup"`, title **Predictions Setup**, group **Predictions**, no bind. Menus use Task 4's `SetupEditor` and `createTUISetupAPI(ctx, pinnedLocation)`. Read/preview use selected-server RPC; writes use only qualified standalone local IPC.
 - Use existing `ctx.ui.dialog.select`, `prompt`, `confirm`, and `alert`; nested cancel returns to the parent without discarding the shared draft.
 
 - [ ] **Step 1: Add failing scripted-dialog tests.**
@@ -276,17 +319,20 @@
   assert.deepEqual(sectionTitles, ["Behavior", "Models", "Advanced"])
   assert.equal(draftAfterNestedCancel.debug, true)
   assert.equal(conflictPreservesDraft, true)
-  assert.equal(savedOnRemoteServer, true)
-  assert.equal(localConfigWrites, 0)
+   assert.equal(remoteSave.kind, "read_only")
+   assert.equal(clientConfigWrites, 0)
+   assert.equal(["saved", "saved_not_active"].includes(standaloneSave.kind), true)
   assert.equal(composerDraft, "my existing draft")
   ```
   Also test disconnect during save, late metadata, no active session, unavailable service methods, long names/IDs, and read-only explanation. Assert the same non-blocking external-editor/recovery warning as Desktop without a repeated consent dialog.
+  Shared-service, explicit-server, conflicting/overridden launches, and remote/proxy targets must retain inspection but offer no usable Save. Show `"Local setup writes currently require a verified opencode --standalone session."` when the source is otherwise qualified but CLI provenance is not. Do not automatically spawn a replacement server or change the user's launch configuration.
 
 - [ ] **Step 2: Run `node --test tests/setup-tui.test.ts tests/terminal.test.ts tests/notifications.test.ts`; expect RED for setup menu behavior.**
 
 - [ ] **Step 3: Implement section-based native dialogs and recovery/status entry points.**
   Load the craft floor before UI edits. Show **Save changes**, **Discard changes**, and secondary status access at the root. Use explicit named move actions, native searchable selection, and prompts for patterns/numbers. Keep number parsing strict; no `parseInt("8000oops")` acceptance. Preserve draft through submenus and write failures; confirm discard on exit. Keep host navigation keys and Tab behavior outside setup unchanged.
   Show the same non-blocking save warning and fuller external-editor/recovery limitation as Desktop. Test its presence without requiring a second consent dialog.
+  Keep the approved narrow CLI scope visible in the root menu. Read-only recovery explains the launch requirement; it does not silently switch from a selected remote/shared server to a local private server.
 
 - [ ] **Step 4: Run Task 6 tests and `npm run typecheck`; expect PASS.**
   Inspect wide and narrow PTY rendering, focus, wrapped warnings, and long model names with the real host in Task 7.
@@ -300,26 +346,28 @@
 
 ## Task 7: Packed Two-Host Proof and Documentation
 
-**Files:** Modify `tests/host/{server,desktop,terminal}.test.ts`, `tests/host/terminal.py`, `tests/host/observer/{gui,tui}.ts`, `tests/package.test.mjs`, `scripts/test-installed.mjs`, `README.md`; rebuild committed `dist/*`.
+**Files:** Modify `tests/host/{server,desktop,terminal,setup-local,lifecycle}.test.ts`, `tests/host/terminal.py`, `tests/host/observer/{gui,tui}.ts`, `tests/package.test.mjs`, `scripts/test-installed.mjs`, `README.md`; rebuild committed `dist/*`.
 
 **Interfaces:** Use Task 1's real-file fixture and `writeConfig()` for setup host scenarios. Keep existing inline-config scenarios to test read-only override handling. New observer actions may dispatch public setup/status commands and inspect draft/call counts; they must not replace UI-driven saves with direct RPC shortcuts.
 
 - [ ] **Step 1: Add failing end-to-end tests through the public setup controls.**
   Desktop and CLI must each configure all seven settings, reorder groups, save, reopen, and verify config/status after reload. Use two API clients against the same fixture server for cross-client visibility. Preserve synthetic composer input and user-message counts through open/cancel/save/error flows.
-  Include JSONC comments/other plugins, conflict between clients, interrupted acknowledgement, a zero-match warning, remote target attribution, read-only inline/project override, and a no-session setup flow. With `automatic: true` on an existing completed turn, save without new provider calls; then complete a new turn and prove automatic prediction still works.
+   Include JSONC comments/other plugins, conflict between clients, interrupted acknowledgement, a zero-match warning, read-only remote/proxy/shared-service CLI origins, read-only inline/project override, and a no-session setup flow. An advertised local authority or relayed metadata must not bypass native origin checks. With `automatic: true` on an existing completed turn, save without new provider calls; then complete a new turn and prove automatic prediction still works.
 
 - [ ] **Step 2: Run `npm run bundle`, then focused new server, Desktop, and CLI tests sequentially; expect RED until native integration gaps are fixed.**
   Use `node --test --test-name-pattern="setup" tests/host/server.test.ts`, then equivalent Desktop and terminal commands. Use test names containing `setup`. Do not run graphical/PTY host gates concurrently.
 
 - [ ] **Step 3: Finish integration, package checks, and user documentation.**
-  Document both entry points, Behavior/Models/Advanced order, global/server scope, overrides/read-only behavior, Save/Discard, no-generation preview, cost warnings, and conflict/activation recovery. State the accepted external-editor race plainly; explain that recovery copies hold captured pre-save bytes, not guaranteed copies of racing edits. Document private backup location/retention and manual recovery without adding an automatic-restore feature. Keep manual JSON instructions for advanced users.
-  Extend package tests for setup RPC methods and ensure Node-only persistence stays out of the GUI bundle. Add persistence proof to `scripts/test-installed.mjs`; run host files sequentially so the installed gate actually tests the packed artifact, not a workspace-only dependency or inline override.
+   Document both entry points, Behavior/Models/Advanced order, global/server scope, overrides/read-only behavior, Save/Discard, no-generation preview, cost warnings, and conflict/activation recovery. State the accepted external-editor race plainly; explain that recovery copies hold captured pre-save bytes, not guaranteed copies of racing edits. Document private backup location/retention and manual recovery without adding an automatic-restore feature. Keep manual JSON instructions for advanced users.
+   Explain Desktop's own-server requirement and the verified standalone-only CLI writable subset. Shared-service/explicit-server/remote CLI stays read-only; do not describe normal shared-service setup as complete or tell users to change global launch settings.
+   Extend package tests for inspection RPC methods, absence of network Save/proof-signing methods, and the local/main IPC entries. Ensure the server config writer stays out of the GUI bundle; Node socket code for its main-process bridge is expected, while window code performs no Node I/O. Add local persistence, lifecycle, and origin proof to `scripts/test-installed.mjs`; execute host files sequentially and load all parts from the packed artifact, not workspace-linked dependencies or an inline override.
 
 - [ ] **Step 4: Run complete verification and record exact results.**
   ```sh
   npm run check
   npm run test:package
-  node --test tests/host/persistence.test.ts
+   node --test tests/host/persistence.test.ts
+   node --test --test-concurrency=1 tests/host/setup-local.test.ts tests/host/lifecycle.test.ts
   npm run test:host:server
   npm run test:host:desktop
   npm run test:host:terminal
@@ -340,12 +388,15 @@
 
 - Spec coverage: entry points and settings hierarchy in Tasks 5–6; group semantics/validation in Task 3; persistence in Tasks 1–2; save/lifecycle behavior in Task 4; accessibility/states in Tasks 5–7; packed compatibility and documentation in Task 7.
 - Shared interfaces are defined above before consumers. Discovery backend details deliberately depend on a real feasibility verdict, not an assumed write API.
+- Approved local-boundary coverage: Task 4 qualifies native origin anchors, private socket safety, network refusals, relay rejection, and Save/reload behavior. Tasks 5–6 consume its pinned adapters and test user-visible read-only states. Task 7 repeats actual origin/Save checks against the packed artifact.
+- Type consistency: `SaveInput`/`SaveResult`/`SetupAPI` remain shared. `SetupLocation`, `LocalSetupTarget`, `SetupLocal`, and the main/window/TUI factories are defined in Task 4 before UI consumers. No task consumes a public Save or proof-signing RPC.
+- Proportion and unresolved feasibility: fixed transport limits and exact entry points are planning choices, not new plugin options. Standalone provenance is an explicit observed-host gate; a launch flag or test double cannot waive it. A failed gate blocks its writable case rather than authorizing another approach.
 - Every Review Focus condition has an explicit owning test. Preserve external-editor negative characterizations as accepted-limit evidence; do not weaken serialization, stale-detection, or recovery tests for cooperating setup writers.
 - At authoring, no execution had started. The execution record below tracks subsequent work; unchecked steps do not imply a completed feature.
 
 ## Execution Handoff
 
-**Native execution remains selected.** Resume at amended Task 1 using existing progress and evidence. Record a new scoped feasibility verdict before Task 2; stop only if a mandatory, non-waived safeguard fails for an enabled writable case. No further approval of the accepted external-editor risk is needed. Retain one fresh whole-branch review at the end.
+**Native execution remains selected.** After confirmation of this amended plan, resume Task 4 in the existing isolated worktree. Preserve committed Tasks 1–3 and existing Task 4 changes/evidence; qualify native origins before enabling local Save. Do not require another execution-method choice or reopen the accepted external-editor limitation. Retain one fresh whole-branch review at the end.
 
 Do not treat the historical strict NO-GO as a new failure solely because the accepted external-editor race remains reproducible. Do not treat this amended plan as proof that any remaining check has passed.
 
@@ -365,3 +416,5 @@ Do not treat the historical strict NO-GO as a new failure solely because the acc
 - Resumed Task 1 established a scoped GO for the macOS/2.2.6, project-discovery-disabled, canonical absolute-local-entry subset documented in the feasibility report. Separate-process and real-server/Bun coordination, preserved bytes/permissions/recovery, activation/restart, and interrupted-acknowledgement reconciliation now have evidence. Other cases remain read-only; this is permission for Task 2, not production or UI readiness.
 - Checkpoint review of Tasks 1–2 suspended that GO after finding comment-erasing model removal and missing direct production failure-path proof. The correction adds a shared token-aware editor, literal preservation regressions, direct production boundary tests, production process workers, and real-server sole-property deletion coverage. Fresh checks passed 59/59 combined and 242/242 project tests, plus typecheck and bundle. This restores only the documented scoped gate; Tasks 3–7 remain unbuilt and unapproved for release.
 - Task 3 adds shared draft/group helpers and public settings/metadata-preview RPC. Checks passed 256/256 project tests, 121/121 focused checks, and 61/61 combined store/host checks, plus typecheck and bundle. Public RPC tests observe unchanged config bytes and zero provider calls. Save RPC/lifecycle/UI are not yet implemented; remote writes remain disabled under the user's resumption instruction.
+- Task 4 checkpoint added uncommitted controller/service lifecycle safeguards, native memory handoff, event/version suppression, and internal Save/editor contracts. Checks passed 277/277 project, 173/173 focused, and 15/15 actual-host lifecycle/persistence tests, plus typecheck/bundle. These checks did not exercise a public Save or qualify the local boundary.
+- User approved private local Save IPC and the revised, narrower standalone-only initial CLI write scope after a builder check rejected relayable challenge signing. Tasks 4–7 now use trusted native origin gates and inspection-only network RPC. The amended implementation plan awaits confirmation; no local-boundary implementation or new qualification is claimed by this edit.
