@@ -52,6 +52,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
     plugins: [{ package: packagePath, options: { models: "fixture/model", timeoutMs: 8000, obsolete: true, ...options } }],
     providers: { fixture: { name: "Fixture", env: ["FIXTURE_API_KEY"], package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${provider.address().port}/v1` }, models: Object.fromEntries([...new Set(["model", ...Object.keys(behavior.predictionOutputs ?? {})])].map(id => [id, { name: id === "model" ? "Fixture Flash" : "Fixture " + id, capabilities: { tools: false }, limit: { context: 32768, output: 2048 } }])) } },
   }
+  /** @type {NodeJS.ProcessEnv} */
   const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: process.env.TMPDIR ?? root, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
   const configDirectory = join(root, "config", "opencode")
@@ -73,24 +74,39 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   // shortcut: releasing the probe can race with another bind; retry allocation if test collisions recur.
   await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()))
   await writeFile(join(configDirectory, "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
-  const child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd: directory, env, stdio: ["ignore", "pipe", "pipe"] })
+  let child
+  let address = ""
+  let headers = { authorization: "" }
+  /** @type {ReturnType<typeof OpenCode.make>} */
+  let api
   let output = ""
-  child.stdout.on("data", chunk => { output = (output + chunk).slice(-64000) })
-  child.stderr.on("data", chunk => { output = (output + chunk).slice(-64000) })
-  const address = await new Promise((resolveAddress, reject) => {
-    const timeout = setTimeout(() => { child.kill(); provider.close(); reject(new Error("Fixture server did not start: " + output)) }, 45000)
-    const onData = () => { const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)/); if (match && /server password \S+/.test(output)) { clearTimeout(timeout); resolveAddress(match[0]) } }
-    child.stdout.on("data", onData)
-    child.once("error", error => { clearTimeout(timeout); reject(error) })
-    child.once("exit", code => { clearTimeout(timeout); reject(new Error(`Fixture server exited ${code}: ${output}`)) })
-  })
-  const password = output.match(/server password (\S+)/)[1]
-  const headers = { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }
-  const api = OpenCode.make({ baseUrl: address, headers })
+  const start = async () => {
+    output = ""
+    child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd: directory, env, stdio: ["ignore", "pipe", "pipe"] })
+    child.stdout.on("data", chunk => { output = (output + chunk).slice(-64000) })
+    child.stderr.on("data", chunk => { output = (output + chunk).slice(-64000) })
+    address = await new Promise((resolveAddress, reject) => {
+      const timeout = setTimeout(() => { child.kill(); provider.close(); reject(new Error("Fixture server did not start: " + output)) }, 45000)
+      const onData = () => { const match = output.match(/http:\/\/127\.0\.0\.1:(\d+)/); if (match && /server password \S+/.test(output)) { clearTimeout(timeout); resolveAddress(match[0]) } }
+      child.stdout.on("data", onData)
+      child.once("error", error => { clearTimeout(timeout); reject(error) })
+      child.once("exit", code => { clearTimeout(timeout); reject(new Error(`Fixture server exited ${code}: ${output}`)) })
+    })
+    const password = output.match(/server password (\S+)/)[1]
+    headers = { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }
+    api = OpenCode.make({ baseUrl: address, headers })
+  }
+  const stopChild = async () => {
+    if (child.exitCode !== null || child.signalCode !== null) return
+    child.kill("SIGTERM")
+    await Promise.race([once(child, "exit"), new Promise(resolveWait => setTimeout(() => { child.kill("SIGKILL"); resolveWait() }, 3000).unref())])
+  }
+  await start()
   const stop = async () => {
     await Service.stop({ file: join(root, "state", "opencode", "service.json") })
-    child.kill("SIGTERM"); provider.closeAllConnections(); provider.close()
-    if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise(resolveWait => setTimeout(() => { child.kill("SIGKILL"); resolveWait() }, 3000).unref())])
+    await stopChild()
+    provider.closeAllConnections(); provider.close()
   }
-  return { root, directory, env, api, address, calls, get config() { return config }, configFile, writeConfig, headers, output: () => output.replace(/server password \S+/g, "server password [redacted]"), stop, [Symbol.asyncDispose]: stop }
+  const restart = async () => { await stopChild(); await start() }
+  return { root, directory, env, get api() { return api }, get address() { return address }, calls, get config() { return config }, configFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
 }

@@ -1,0 +1,5 @@
+{
+  "name": "prediction-persistence-probe",
+  "type": "module",
+  "exports": { ".": "./index.ts" }
+}

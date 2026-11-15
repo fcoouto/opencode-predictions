@@ -55,7 +55,7 @@
 
 ## Task 1: Config Persistence Feasibility — Mandatory Go/No-Go Gate
 
-**Files:** Reuse and extend `tests/host/fixture.mjs`, `tests/host/persistence.test.ts`, and `docs/research/2026-11-15-config-persistence-feasibility.md`; modify `tests/host-fixture.test.ts` only for newly added fixture behavior. Test-only candidate code stays in the persistence test, not shipping entries.
+**Files:** Reuse and extend `tests/host/fixture.mjs`, `tests/host/persistence.test.ts`, and `docs/research/2026-11-15-config-persistence-feasibility.md`; modify `tests/host-fixture.test.ts` only for newly added fixture behavior. Test-only candidate/probe code stays under `tests/host/`, never in shipping entries. Resumed evidence uses `persistence-candidate.ts`, `persistence-worker.ts`, `persistence-safeguards.test.ts`, `persistence-activation.test.ts`, and `persistence-probe/`. The evaluated JSONC parser is a dev dependency until Task 2.
 
 **Resume state:** Real global JSON/JSONC fixtures, `writeConfig`, local-source discovery, API limitations, and negative external-editor race characterizations already exist. Read their committed evidence and run the existing checks as a baseline. Write new RED tests only for unproved safeguards; do not recreate these deliverables or force passing characterization tests to fail.
 
@@ -85,7 +85,7 @@
   Arrange all inputs inside the synthetic fixture. Include JSON/JSONC, custom config environment settings, both global filenames, npm/Git/local plugin references, duplicate entries, project/inline/managed overrides, malformed files, symlinks/hardlinks, and unwritable targets. Unsupported cases must refuse writes, not disappear from the report.
 
 - [ ] **Step 3: Run RED checks and establish the sandbox.**
-  Run `node --test tests/host-fixture.test.ts tests/host/persistence.test.ts`.
+  Run `node --test --test-concurrency=1 tests/host-fixture.test.ts tests/host/persistence.test.ts tests/host/persistence-safeguards.test.ts tests/host/persistence-activation.test.ts tests/host/server.test.ts`.
   Existing checks should pass as a baseline; new safeguard assertions must fail before candidate support exists. A missing host prerequisite is a recorded blocker, not a passing gate. Install project dependencies with `npm ci` only in the implementation workspace if needed.
 
 - [ ] **Step 4: Implement the minimal test-only candidate and gather evidence.**
@@ -103,7 +103,7 @@
 
 - [ ] **Step 7: Commit the isolated fixture and report checkpoint.**
   ```sh
-  git add tests/host/fixture.mjs tests/host-fixture.test.ts tests/host/persistence.test.ts docs/research/2026-11-15-config-persistence-feasibility.md
+   git add tests/host/fixture.mjs tests/host/persistence-candidate.ts tests/host/persistence-worker.ts tests/host/persistence-safeguards.test.ts tests/host/persistence-activation.test.ts tests/host/persistence-probe package.json package-lock.json docs/research/2026-11-15-config-persistence-feasibility.md docs/superpowers/plans/2026-11-15-predictions-setup.md
   git commit -m "test: establish prediction config persistence feasibility"
   ```
 
@@ -362,3 +362,4 @@ Do not treat the historical strict NO-GO as a new failure solely because the acc
 - No production readiness or successful-save behavior was approved by that review. Tasks 2–7 require a new scoped Task 1 GO under the amended policy.
 - Subsequent design amendment: the user approved option 1, best-effort edits to existing JSON/JSONC, and accepted the residual external-editor race.
 - The user requested gate alignment so execution could resume. The design gate and persistence tasks now use the approved best-effort policy, including recovery copies and serialized supported setup writers. Native execution can resume at Task 1; other persistence and lifecycle checks remain unproved. This documentation edit has not resumed implementation or marked any gate passed.
+- Resumed Task 1 established a scoped GO for the macOS/2.2.6, project-discovery-disabled, canonical absolute-local-entry subset documented in the feasibility report. Separate-process and real-server/Bun coordination, preserved bytes/permissions/recovery, activation/restart, and interrupted-acknowledgement reconciliation now have evidence. Other cases remain read-only; this is permission for Task 2, not production or UI readiness.

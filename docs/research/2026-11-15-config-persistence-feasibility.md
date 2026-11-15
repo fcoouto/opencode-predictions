@@ -1,10 +1,67 @@
 # Predictions Setup: Config Persistence Feasibility
 
+## Amended Task 1 Verdict: Scoped GO
+
+The approved best-effort gate now permits Task 2 **only for the verified writable subset below**. This is feasibility evidence, not a production writer, a completed settings feature, or release approval. The original strict NO-GO remains recorded below.
+
+### Verified writable subset
+
+- macOS, OpenCode CLI/server `2.2.6`, and the pinned plugin/client `2.2.6`.
+- A server launched with the verified ordinary `serve` configuration, synthetic server-owned HOME/XDG paths, and `OPENCODE_DISABLE_PROJECT_CONFIG=1`.
+- Exactly one existing `opencode.json` or `opencode.jsonc` in the server's global directory.
+- One existing object-form entry whose absolute local package path matches the active plugin's server-side resolved source exactly. Its raw options must match the instance's `ctx.options`.
+- Valid, duplicate-key-free UTF-8 JSON/JSONC; an owned, regular, singly linked file and an owned, non-group/world-writable canonical global directory. Unsupported ACLs and indirect paths refuse writes.
+- No explicit/inline/custom-directory override, managed/system source, or automatic global plugin directory.
+
+This deliberately does **not** establish ordinary project discovery, npm/Git/string-form targets, remote machines, embedded/custom system discovery, Linux/Windows, or server `2.3.0` as writable. Task 2 must preserve read-only behavior unless it adds evidence for a wider case.
+
+### New evidence
+
+The candidate is isolated in `tests/host/persistence-candidate.ts`. `tests/host/persistence-probe/` wraps the unchanged production plugin in a test-only server package. It obtains resolved source identity from `ctx.plugin.list()`, options from `ctx.options`, and configuration roots from the **server process**, not client RPC arguments. There is no invented `ctx.config` or unauthenticated self-request.
+
+| Required safeguard | Evidence |
+| --- | --- |
+| Source attribution | Actual server RPC returns the fixture's global source although the calling process has a different HOME. JSON and JSONC both save through the server-side probe. |
+| Syntax/content preservation | Syntax-tree editing with dev-only `jsonc-parser@3.3.1`; an exact-byte assertion removes only the inserted property and recovers the original. Other plugins, comments, package reference, unknown options, omitted defaults, CRLF, tabs, and trailing commas remain. All seven settings and explicit model removal are exercised. |
+| Permission preservation | Active mode `0640` survives replacement; owner/group are carried to staged files. Recovery mode is `0600`. Actual file/directory ACL grants refuse writes; mode-only checks were insufficient because macOS `ls` can display `@` instead of `+`. |
+| Cooperating writers | Deterministic barriers prove one writer commits and the stale second writer conflicts. Separate Node processes share the directory lock. A real OpenCode/Bun writer also waits for an independent Node process and then rejects its stale revision. |
+| Stale changes | Revisions cover validated bytes and source/file identity metadata. Changed bytes before replacement and changed permissions conflict. Local path aliases count toward duplicate-entry detection. |
+| Atomic replacement/recovery | Exclusive temporary files start at `0600`; staged access never exceeds the active document. Atomic rename replaces the active file. One rotating server-local `.predictions-backup` contains captured pre-save bytes, is absent from active config discovery, and is not returned in RPC. |
+| Pre-commit failures | A failed recovery destination, explicit pre-commit interruption, and a real kernel `EACCES` during replacement preserve active bytes and clean temporary/lock files. No automatic restore occurs. |
+| Persistence versus activation | Real JSON/JSONC saves first verify persisted bytes, then observe a changed plugin mount with fresh `ctx.options` and changed production status. A full isolated-server restart retains edited values. A post-commit mismatch reports `written_unverified`, never verified success or rollback. |
+| Lost acknowledgement | The server commits while its reply is delayed; the caller aborts. Fresh reads reconcile the edited options after remount. The file inode and original backup prove no repeated write. |
+| No generation | Every persistence/activation probe observes zero synthetic provider calls, including enabling automatic predictions. This does not cover live GUI/TUI invalidation; those tests still belong to Tasks 4 and 7. |
+| Accepted external-editor race | Both historical and new candidates deterministically lose an edit made after the final comparison. The recovery copy lacks that late edit. Atomic rename and cooperating locks do not remove this accepted limit. |
+
+### Read-only and refusal matrix
+
+Control fixtures are writable before each negative arrangement. The test candidate refuses inline/explicit/custom-directory configuration, simultaneous global filenames, enabled/unverified project discovery, managed paths, wrong or mismatching source/options, duplicate entries/keys and local aliases, malformed JSONC, string-form targets, npm/Git provenance, unwritable files, symlinked active/recovery files, hardlinks, ACLs, writable global directories, and automatic global plugin discovery.
+
+These are real synthetic filesystem refusals plus supplied unsupported-source metadata, **not** successful installations of npm/Git or managed plugins. Distinct-machine remote writes remain disabled and unverified.
+
+The lock is an atomic server-local directory, shared across processes. It covers the complete transaction. It is **never stolen by age**: an abandoned lock times out with no write and requires manual ownership-confirmed recovery. A time-based stale-lock takeover would invalidate this proof. Temporary-file recovery after process/power loss is not an automatic feature.
+
+### Verification and remaining obligations
+
+RED evidence: all six initial safeguard tests failed against the stub; restart failed before fixture support; both real-host save tests failed against a read-only probe; acknowledgement-loss simulation failed before delaying the response. Follow-up RED checks caught alias ambiguity, ACL handling, automatic-discovery ambiguity, unsupported deletion, and inconsistent returned revisions. Cross-process and accepted-limit checks also characterize the implemented primitive; they are not misrepresented as additional RED cycles.
+
+Commands:
+
+```sh
+node --test --test-concurrency=1 tests/host-fixture.test.ts tests/host/persistence.test.ts tests/host/persistence-safeguards.test.ts tests/host/persistence-activation.test.ts tests/host/server.test.ts
+npm test
+npm run typecheck
+npm pack --dry-run --json
+git diff --check
+```
+
+Verified on 2026-11-15: the combined gate passed **33/33**, with no skips; the project suite passed **217/217**; typecheck and `git diff --check` passed. The package dry-run excludes the candidate, probe, tests, fixture configs, backups, and evidence workspace. No production source, user installation/configuration, upstream post, push, or merge changed during this gate.
+
+Task 2 must implement cancellation, fixed safe outcomes, supported-version/topology checks, and production tests rather than copying this prototype unchanged. It must preserve uncertain post-commit outcomes and read back activation separately. Tasks 4–7 still owe live-client suppression, composer/draft preservation, native UI/accessibility, external-editor warnings in both host flows, installed-package checks, and final review. GO does not waive any of them.
+
 ## Original Verdict: NO-GO
 
-**Current status:** the user subsequently approved best-effort JSON/JSONC edits and accepted the residual external-editor race. The amended design is `docs/superpowers/specs/2026-11-15-predictions-setup-design.md`. The findings below remain valid historical evidence under the former guarantee. They do not establish a GO for the amended policy; the remaining safeguards and implementation plan require further work.
-
-Do not start Tasks 2–7 of `docs/superpowers/plans/2026-11-15-predictions-setup.md`.
+The following section describes the former absolute external-editor guarantee. Its instruction to stop was superseded only by the approved amendment and scoped evidence above.
 
 The installed OpenCode server cannot update plugin options through its supported configuration patch. A direct filesystem candidate also failed the then-approved no-lost-update requirement. This was an unsuccessful feasibility gate, not a working settings implementation.
 
