@@ -2,6 +2,25 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createService, type ServiceAPI } from "../src/service.ts"
 import { startClient } from "../src/client.ts"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { readContextFile } from "../src/context-file.ts"
+
+async function contextFixture(t: { after(fn: () => Promise<void>): void }, extra = {}) {
+  const { api, calls, advance } = fixture()
+  const directory = await mkdtemp(join(tmpdir(), "prediction-service-context-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, "global.md")
+  const reads: string[] = []
+  api.contextFile = async (path, signal) => { reads.push(path); return readContextFile(path, signal) }
+  api.models = async () => ["a", "b", "c"].map(id => ({ providerID: "local", id, enabled: true, variants: [] }))
+  const options = { models: "local/a, local/b, local/c", contextFile: path, ...extra }
+  const service = createService(api, options, "/project")
+  const request = { sessionID: "ses_test", completion: 2 }
+  const run = (extra = {}) => service.predict({ ...request, ...extra }, new AbortController().signal)
+  return { api, calls, reads, advance, path, options, service, request, run }
+}
 
 function fixture() {
   const calls: { model: unknown; prompt: string }[] = []
@@ -29,6 +48,142 @@ function escalationFixture(escalation = "manual") {
   const request = { sessionID: "ses_test", completion: 2 }
   return { api, advance, attempted, service, request, run: (extra = {}) => service.predict({ ...request, ...extra }, new AbortController().signal) }
 }
+
+test("global file snapshot survives error fallback and manual alternatives, then updates on a new completion", async t => {
+  const f = await contextFixture(t)
+  await writeFile(f.path, "Use XLSX.")
+  f.api.generate = async (model, prompt) => {
+    f.calls.push({ model, prompt })
+    if (model.id === "a") { await writeFile(f.path, "Use JSON."); throw Error("temporary") }
+    return '{"prompt":"Export XLSX."}'
+  }
+  const first = await f.run()
+  assert.equal(first.text, "Export XLSX.")
+  assert.ok(first.escalation)
+  assert.equal((await f.run({ manual: true, escalation: first.escalation.token })).text, "Export XLSX.")
+  assert.equal(f.calls.length, 3)
+  assert.ok(f.calls.every(call => call.prompt === f.calls[0].prompt && call.prompt.includes('"Use XLSX."') && !call.prompt.includes("Use JSON.")))
+  assert.deepEqual(f.reads, [f.path])
+  f.advance()
+  await f.run({ completion: 3 })
+  assert.ok(f.calls[3].prompt.includes('"Use JSON."'))
+  assert.deepEqual(f.reads, [f.path, f.path])
+  assert.equal(f.service.status().contextFile, f.path)
+  assert.equal(JSON.stringify(f.service.status()).includes("Use JSON."), false)
+})
+
+test("automatic abstention escalation uses the same context snapshot and preserves offers and healthy rankings", async t => {
+  const f = await contextFixture(t, { escalation: "automatic" })
+  await writeFile(f.path, "Use XLSX.")
+  f.api.generate = async (model, prompt) => {
+    f.calls.push({ model, prompt })
+    await writeFile(f.path, "Use JSON.")
+    return '{"prompt":null}'
+  }
+  const reply = await f.run()
+  assert.equal(reply.reason, "no_suggestion")
+  assert.equal(reply.modelName, "b")
+  assert.equal(reply.escalation?.model.id, "c")
+  assert.deepEqual(f.reads, [f.path])
+  assert.equal(f.calls.length, 2)
+  assert.equal(f.calls[0].prompt, f.calls[1].prompt)
+  assert.ok(f.calls[0].prompt.includes('"Use XLSX."'))
+  assert.ok(f.service.status().candidates?.every(model => model.state === "ready"))
+})
+
+test("empty context remains snapshotted and metadata-only refresh never rereads the file", async t => {
+  const f = await contextFixture(t)
+  await writeFile(f.path, "")
+  await f.run()
+  await writeFile(f.path, "New preference.")
+  const refreshed = await f.run({ manual: true, escalation: "refresh" })
+  await f.run({ manual: true, escalation: refreshed.escalation!.token })
+  assert.deepEqual(f.reads, [f.path])
+  assert.equal(f.calls.length, 2)
+  assert.equal(f.calls[0].prompt, f.calls[1].prompt)
+  assert.equal(f.calls[1].prompt.includes("New preference."), false)
+})
+
+test("off-mode explicit refresh and plugin reload read the latest global file", async t => {
+  const f = await contextFixture(t, { escalation: "off" })
+  await writeFile(f.path, "Old preference.")
+  await f.run()
+  await writeFile(f.path, "New preference.")
+  await f.run({ manual: true })
+  const reloaded = createService(f.api, f.options, "/project")
+  await reloaded.predict(f.request, new AbortController().signal)
+  assert.deepEqual(f.reads, [f.path, f.path, f.path])
+  assert.ok(f.calls[0].prompt.includes('"Old preference."'))
+  assert.ok(f.calls[1].prompt.includes('"New preference."'))
+  assert.equal(f.calls[1].prompt, f.calls[2].prompt)
+  assert.notEqual(reloaded.status().version, f.service.status().version)
+})
+
+test("file failures report safe notices before generation without cooling or ranking models and can recover", async t => {
+  for (const [text, reason] of [[undefined, "context_file_unavailable"], ["x".repeat(8193), "context_file_too_large"], ["PRIVATE\u0000", "context_file_invalid"]] as const) {
+    const f = await contextFixture(t)
+    if (text !== undefined) await writeFile(f.path, text)
+    const reply = await f.run()
+    assert.equal(reply.reason, reason)
+    assert.equal(reply.notice?.code, reason)
+    assert.equal(reply.notice?.severity, "error")
+    assert.match(reply.notice?.message ?? "", /contextFile/)
+    assert.equal(f.calls.length, 0)
+    assert.deepEqual(f.service.status().candidates?.map(model => [model.id, model.state]), [["a", "ready"], ["b", "ready"], ["c", "ready"]])
+    assert.equal(f.service.status().lastOutcome, reason)
+    assert.doesNotMatch(JSON.stringify(reply), /PRIVATE|ENOENT/)
+    await f.service.inspect(new AbortController().signal)
+    assert.deepEqual(f.reads, [f.path], "status inspection must not load context")
+    await writeFile(f.path, "Recovered.")
+    assert.equal((await f.run({ manual: true })).text, "Run the tests.")
+    assert.ok(f.calls[0].prompt.includes('"Recovered."'))
+  }
+})
+
+test("unconfigured context does not invoke the reader and missing loader fails closed", async () => {
+  const f = fixture()
+  f.api.contextFile = async () => { throw Error("must not read") }
+  const plain = createService(f.api, { models: "local/model" }, "/project")
+  assert.equal((await plain.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).text, "Run the tests.")
+  delete f.api.contextFile
+  const configured = createService(f.api, { models: "local/model", contextFile: "/global.md" }, "/project")
+  assert.equal((await configured.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).reason, "context_file_unavailable")
+  assert.equal(f.calls.length, 1)
+})
+
+test("cancelled file loading cannot generate or overwrite a newer cycle snapshot", async t => {
+  const f = await contextFixture(t)
+  let release!: (text: string) => void
+  let started!: () => void
+  const loading = new Promise<void>(resolve => { started = resolve })
+  f.api.contextFile = () => { started(); return new Promise(resolve => { release = resolve }) }
+  const controller = new AbortController()
+  const pending = f.service.predict(f.request, controller.signal)
+  await Promise.race([loading, pending.then(() => assert.fail("Configured context reader was not called"))])
+  controller.abort()
+  assert.equal((await pending).reason, "cancelled")
+  assert.equal(f.calls.length, 0)
+  f.api.contextFile = async () => "New snapshot."
+  assert.equal((await f.run()).text, "Run the tests.")
+  release("Obsolete snapshot.")
+  await Promise.resolve()
+  assert.ok(f.calls.every(call => call.prompt.includes('"New snapshot."') && !call.prompt.includes("Obsolete")))
+  assert.ok(f.service.status().candidates?.every(model => model.state === "ready"))
+})
+
+test("file-loading timeout does not penalize models and changed completion still prevents generation", async t => {
+  const f = await contextFixture(t, { timeoutMs: 20 })
+  f.api.contextFile = () => new Promise(() => {})
+  const keepAlive = setTimeout(() => {}, 1000)
+  try {
+    assert.equal((await f.run()).reason, "timeout")
+    assert.equal(f.calls.length, 0)
+    assert.ok(f.service.status().candidates?.every(model => model.state === "ready"))
+    f.api.contextFile = async () => { f.advance(); return "Fresh text." }
+    assert.equal((await f.run()).reason, "stale")
+    assert.equal(f.calls.length, 0)
+  } finally { clearTimeout(keepAlive) }
+})
 
 test("manual escalation exhausts the current group before later groups without penalizing abstention", async () => {
   const f = escalationFixture()

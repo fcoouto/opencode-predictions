@@ -19,6 +19,9 @@ export function reasonNotice(reason: string | undefined): Notice | undefined {
   if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] }
   if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true }
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true }
+  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in the global plugin options and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." }
+  if (reason === "context_file_too_large") return { code: reason, severity: "error", title: "Prediction context file is too large", message: "Reduce the contextFile contents to at most 8192 UTF-8 bytes, then request a prediction again. No model was called." }
+  if (reason === "context_file_invalid") return { code: reason, severity: "error", title: "Prediction context file is not valid text", message: "Save contextFile as UTF-8 text without binary control characters, then request a prediction again. No model was called." }
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." }
   if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The prediction did not finish within the configured timeout. Check model availability in Prediction status and preview before requesting again." }
   return { code: "service_unavailable", severity: "error", title: "Prediction service unavailable", message: "Predictions could not complete. Check the OpenCode service connection, then request a prediction again. Open Prediction status and preview for details." }
@@ -37,7 +40,7 @@ export function statusNotice(status: Status): Notice | undefined {
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason)
     // Validation messages describe field types, never the supplied option values.
-    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
+    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true }
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` }
@@ -49,6 +52,7 @@ export function formatStatus(status: Status | undefined, details: { lastNotice?:
   if (notice) lines.push(notice.message)
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`)
+    if (status.contextFile) lines.push(`Context file: ${status.contextFile}`)
     lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic — at most one abstention-triggered transition; errors continue through untried models and may consume paid provider quota." : status.escalation === "manual" ? "Manual — Alt+Shift+P tries an untried model using its provider's quota; errors fall back automatically." : "Off"}`)
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : [])
     for (const [index, group] of groups.entries()) {

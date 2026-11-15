@@ -9,13 +9,14 @@ export type Session = { id: string; parentID?: string; outcome?: string; time: {
 export type ServiceAPI = {
   session(id: string, signal: AbortSignal): Promise<Session>
   context(id: string, signal: AbortSignal): Promise<readonly unknown[]>
+  contextFile?(path: string, signal: AbortSignal): Promise<string>
   models(signal: AbortSignal): Promise<readonly CatalogModel[]>
   generate(model: ModelRef, prompt: string, signal: AbortSignal): Promise<string>
   notice?(message: string, request: Request, notice?: Notice): void | Promise<void>
   progress?(modelName: string, request: Request): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
-export type Status = { enabled: boolean; models?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
+export type Status = { enabled: boolean; models?: string; contextFile?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
 
 export async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
@@ -60,7 +61,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
   const skipped = new Map<string, { until: number; reason: string }>()
   const outcomes = new Map<string, "working" | "failed">()
   const owners = new Map<string, { group: number }>()
-  type Cycle = { key: string; sessionID: string; completion: number; group: number; tried: Set<string>; pending: boolean; token?: string }
+  type Cycle = { key: string; sessionID: string; completion: number; group: number; tried: Set<string>; pending: boolean; token?: string; background?: string }
   type Offer = { cycle: Cycle; offer: EscalationOffer }
   const cycles = new Map<string, Cycle>()
   const offers = new Map<string, Offer>()
@@ -142,6 +143,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     return {
       enabled: !!options?.enabled && !!options.models,
       ...(options?.models ? { models: options.models.join(", ") } : {}),
+      ...(options?.contextFile ? { contextFile: options.contextFile } : {}),
       ...(groups ? { groups: groups.map((queue, index) => ({ selectors: options!.models![index], candidates: queue.map(queueEntry) })), candidates: candidates!.map(queueEntry) } : {}),
       automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
       escalation: options?.escalation ?? "off",
@@ -222,10 +224,25 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         const content = Array.isArray(response?.content) ? response.content : []
         if (idle < 0 || records[idle].outcome === "interrupted" || response?.time?.completed === undefined || !content.some(part => part?.type === "text" && typeof part.text === "string" && part.text.trim()) || records.slice(idle + 1).some(value => value.type === "user" || value.type === "assistant")) return { reason: "context_unavailable" }
         if (!collectTurns(messages.slice(start + 1, idle + 1)).length) return { reason: "context_unavailable" }
-        const prompt = buildPrompt(collectTurns(messages), options.contextTurns)
-        if (!prompt) return { reason: "context_unavailable" }
         if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" }
         if ((continuing || refreshing) && !offered) return { reason: "escalation_refreshed" }
+        if (options.contextFile && progress.background === undefined) {
+          try {
+            if (!api.contextFile) throw new Error("Context file reader unavailable")
+            const background = await abortable(() => api.contextFile!(options.contextFile!, parent), parent)
+            parent.throwIfAborted()
+            progress.background = background
+          } catch (error) {
+            parent.throwIfAborted()
+            const changed = check(await abortable(() => api.session(request.sessionID, parent), parent))
+            if (changed) return { reason: changed }
+            const code = (error as { code?: unknown } | null)?.code
+            const reason = code === "context_file_too_large" || code === "context_file_invalid" ? code : "context_file_unavailable"
+            return { reason, notice: reasonNotice(reason) }
+          }
+        }
+        const prompt = buildPrompt(collectTurns(messages), options.contextTurns, progress.background)
+        if (!prompt) return { reason: "context_unavailable" }
         let chain = groups!.flatMap((queue, group) => queue.map(model => ({ ...model, group }))).filter(model => model.group >= progress.group && !progress.tried.has(candidateKey(model)))
         if (offered) {
           const target = chain.find(model => model.group + 1 === offered.offer.group && candidateKey(model) === candidateKey(offered.offer.model) && !skip(model))
