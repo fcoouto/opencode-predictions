@@ -68,7 +68,7 @@ function createController(io) {
       if (snapshot.key && snapshot.draft) {
         remember(snapshot.key);
         const result = results.get(snapshot.key);
-        if (result?.text) result.communication = void 0;
+        if (result?.text || result?.authority) result.communication = void 0;
         else results.delete(snapshot.key);
       }
       paint();
@@ -83,7 +83,7 @@ function createController(io) {
         exhausted();
         return;
       }
-      const escalation2 = manual ? communication?.offer?.token ?? (continuation && attempted.has(key) ? "refresh" : void 0) : void 0;
+      const escalation2 = manual ? communication?.offer?.token ?? (continuation && results.get(key)?.authority ? "refresh" : void 0) : void 0;
       const refreshing = manual && !!communication && !communication.offer;
       let noAlternatives = false;
       remember(key);
@@ -96,7 +96,8 @@ function createController(io) {
         if (!disposed && !request.signal.aborted && current.key === key && !current.draft) {
           const text = reply.text || results.get(key)?.text;
           const next = reply.communication ?? (reply.escalation ? { message: "", offer: reply.escalation } : !reply.text && communication ? { message: text ? "" : "No suggestion." } : void 0);
-          results.set(key, { text, communication: next });
+          const authority = !!reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "") || results.get(key)?.authority;
+          results.set(key, { text, communication: next, authority });
           noAlternatives = refreshing && reply.reason === "escalation_refreshed" && !next?.offer;
         }
       } catch {

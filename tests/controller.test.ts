@@ -1,8 +1,131 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { createController, communicationText } from "../src/controller.ts"
+import { createController, communicationText, type ControllerIO } from "../src/controller.ts"
 
 const offer = { token: "offer-one", group: 2, model: { providerID: "paid", id: "model", variant: "low" }, name: "Next model" }
+
+function continuationFixture(predict: ControllerIO["predict"]) {
+  const tokens: (string | undefined)[] = []
+  const inserted: string[] = []
+  let ghost: string | undefined
+  const controller = createController({
+    predict: (signal, token) => { tokens.push(token); return predict(signal, token) },
+    paint: text => { ghost = text; return !!text },
+    insert: text => { inserted.push(text); return true },
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  return { controller, tokens, inserted, ghost: () => ghost }
+}
+
+test("an aborted initial request permits an explicit fresh retry but not another automatic attempt", async () => {
+  let finish!: (reply: { text: string }) => void
+  const f = continuationFixture(async () => f.tokens.length === 1 ? new Promise(resolve => { finish = resolve }) : { text: "Fresh prediction." })
+  try {
+    const pending = f.controller.request()
+    f.controller.update({ eligible: false, draft: "" })
+    f.controller.update({ key: "one", eligible: true, draft: "" })
+    finish({ text: "Late prediction." })
+    await pending
+    assert.equal(f.ghost(), undefined, "late success must not establish authority")
+    await f.controller.request()
+    assert.deepEqual(f.tokens, [undefined])
+    await f.controller.request(true, null, true)
+    assert.deepEqual(f.tokens, [undefined, undefined])
+    assert.equal(f.ghost(), "Fresh prediction.")
+  } finally { f.controller.dispose() }
+})
+
+test("typing and clearing without a server reply permits a fresh manual prediction", async () => {
+  const f = continuationFixture(async () => ({ text: "First prediction." }))
+  try {
+    f.controller.update({ key: "one", eligible: true, draft: "typed" })
+    f.controller.update({ key: "one", eligible: true, draft: "" })
+    await f.controller.request()
+    assert.deepEqual(f.tokens, [], "clearing a draft must not generate automatically")
+    await f.controller.request(true, null, true)
+    assert.deepEqual(f.tokens, [undefined])
+    assert.equal(f.ghost(), "First prediction.")
+  } finally { f.controller.dispose() }
+})
+
+test("initial failures do not establish server continuation authority", async () => {
+  for (const outcome of [{ reason: "generation_failed" }, { reason: "timeout" }, { reason: "service_unavailable" }, new Error("offline")]) {
+    const f = continuationFixture(async () => {
+      if (f.tokens.length > 1) return { text: "Recovered." }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    })
+    try {
+      await f.controller.request()
+      await f.controller.request()
+      assert.deepEqual(f.tokens, [undefined])
+      await f.controller.request(true, null, true)
+      assert.deepEqual(f.tokens, [undefined, undefined])
+      assert.equal(f.ghost(), "Recovered.")
+    } finally { f.controller.dispose() }
+  }
+})
+
+test("established server outcomes retain manual continuation authority across typing", async () => {
+  for (const outcome of [{ text: "Original." }, { reason: "no_suggestion" }, { reason: "escalation_refreshed" }]) {
+    const f = continuationFixture(async () => outcome)
+    try {
+      await f.controller.request()
+      f.controller.update({ key: "one", eligible: true, draft: "typed" })
+      f.controller.update({ key: "one", eligible: true, draft: "" })
+      await f.controller.request(true, null, true)
+      assert.deepEqual(f.tokens, [undefined, "refresh"])
+    } finally { f.controller.dispose() }
+  }
+})
+
+test("ordinary alternative failures preserve established authority and original text", async () => {
+  for (const outcome of [{ reason: "generation_failed" }, { reason: "timeout" }, { reason: "stale" }, { reason: "context_unavailable" }, new Error("offline")]) {
+    const f = continuationFixture(async () => {
+      if (f.tokens.length === 1) return { text: "Original.", escalation: offer }
+      if (outcome instanceof Error) throw outcome
+      return outcome
+    })
+    try {
+      await f.controller.request()
+      await f.controller.request(true, offer.token, true)
+      assert.equal(f.ghost(), "Original.")
+      await f.controller.request(true, null, true)
+      assert.deepEqual(f.tokens, [undefined, offer.token, "refresh"])
+    } finally { f.controller.dispose() }
+  }
+})
+
+test("unavailable continuation preserves real text and cannot restart an established cycle", async () => {
+  const f = continuationFixture(async () => f.tokens.length === 2 ? { reason: "escalation_unavailable" } : { text: "Original." })
+  try {
+    await f.controller.request()
+    await f.controller.request(true, null, true)
+    assert.equal(f.ghost(), "Original.")
+    await f.controller.request()
+    assert.deepEqual(f.tokens, [undefined, "refresh"])
+    assert.equal(f.controller.accept(), true)
+    assert.deepEqual(f.inserted, ["Original."])
+    await f.controller.request(true, null, true)
+    assert.deepEqual(f.tokens, [undefined, "refresh", "refresh"])
+  } finally { f.controller.dispose() }
+})
+
+test("an aborted late unavailable-cycle reply cannot revoke established authority", async () => {
+  let finish!: (reply: { reason: string }) => void
+  const f = continuationFixture(async () => f.tokens.length === 2 ? new Promise(resolve => { finish = resolve }) : { text: "Original." })
+  try {
+    await f.controller.request()
+    const pending = f.controller.request(true, null, true)
+    f.controller.update({ eligible: false, draft: "" })
+    f.controller.update({ key: "one", eligible: true, draft: "" })
+    finish({ reason: "escalation_unavailable" })
+    await pending
+    assert.equal(f.ghost(), "Original.")
+    await f.controller.request(true, null, true)
+    assert.deepEqual(f.tokens, [undefined, "refresh", "refresh"])
+  } finally { f.controller.dispose() }
+})
 
 test("activity indicators carry the requested leading character, never real prediction payloads", () => {
   const activity = { kind: "alternative" as const, name: "Next model" }

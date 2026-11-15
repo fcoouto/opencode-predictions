@@ -422,6 +422,36 @@ test("an evicted client cannot turn stale-token recovery into a fresh paid gener
   } finally { client.dispose() }
 })
 
+test("typing after abstention cannot restart an evicted server cycle", async () => {
+  const f = escalationFixture()
+  f.api.session = async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } })
+  let draft = ""
+  const tokens: (string | undefined)[] = []
+  const reasons: (string | undefined)[] = []
+  const client = startClient({
+    scope: () => "/project", state: () => ({ key: "one", ...f.request, eligible: true, draft }),
+    status: async signal => ({ ...await f.service.inspect(signal), automatic: false }),
+    predict: async (state, requestID, signal, _notice, manual, escalation) => {
+      tokens.push(escalation)
+      const reply = await f.service.predict({ sessionID: state.sessionID, completion: state.completion, requestID, manual, escalation }, signal)
+      reasons.push(reply.reason)
+      return reply
+    },
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(reasons.at(-1), "no_suggestion")
+    for (let i = 0; i < 128; i++) await f.run({ sessionID: `ses_abstention_${i}` })
+    draft = "typed"; client.accept(); draft = ""
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(tokens, [undefined, "refresh"])
+    assert.equal(reasons.at(-1), "escalation_unavailable")
+    assert.equal(f.attempted.length, 129, "typing must not turn lost continuation state into fresh generation")
+  } finally { client.dispose() }
+})
+
 test("continuation refresh validation is bounded even when metadata ignores abort", async () => {
   const f = escalationFixture()
   const service = createService(f.api, { models: [["local/a", "local/b"]], timeoutMs: 20 }, "/project")
