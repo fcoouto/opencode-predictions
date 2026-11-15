@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add Predictions Setup for all seven existing settings in Desktop and interactive CLI, with best-effort global-only configuration editing.
+**Goal:** Add Predictions Setup for the eight scoped settings in Desktop and interactive CLI, including `includeGithubPRContext` in Advanced, with best-effort global-only configuration editing.
 
 **Architecture:** Use the qualified server-side JSON/JSONC writer and shared draft model, retaining the accepted external-editor race. Read and preview use inspection-only network RPC; Save uses private local IPC behind independently verified native-host origin gates. Existing JSON/JSONC configuration remains the only settings source.
 
@@ -29,6 +29,7 @@
 - Draft edits require **Save changes** / **Discard changes**. Preview and saving must not generate predictions or alter the composer.
 - Keep current parsing, model matching, group ownership, variants, ranking, fallback, quota warnings, and privacy behavior.
 - Bounds remain `timeoutMs`: integer `1..2147483647`, default `8000`; `contextTurns`: integer `1..5`, default `3`; `debug`: default `false`; `escalation`: `"off" | "manual" | "automatic"`, default `"manual"`.
+- Advanced includes **Include GitHub PR context** (`includeGithubPRContext`), a boolean switch defaulting to `false` as introduced in merged PR #25. Show the parent spec's warning that linked private PR descriptions/metadata may reach every attempted prediction provider, including fallback and paid models. Setup operations must not fetch PR data or look up GitHub credentials.
 - Research and tests may write only isolated synthetic fixture configuration. The user subsequently authorized native execution; changing the user's global configuration, installing into their OpenCode, and pushing remain unauthorized.
 
 ## Review Focus
@@ -40,6 +41,7 @@
 - A user changes servers while editing or receives late metadata: no cross-server save, discarded draft, stale preview, or composer mutation; Tasks 3, 5, and 6 test this.
 - A remote/proxy target advertises a local authority or relays its responses: reject it at the native origin gate before socket access. Task 4 owns negative host and transport tests; Tasks 5–7 retain rendered and installed coverage.
 - Temporary-path differences, long socket paths, stale sockets, unsafe permissions, or disappearing authority: stay read-only or report an uncertain save accurately, never scan or switch targets. Task 4 owns these tests.
+- `includeGithubPRContext` must stay default-off and preserve omitted/explicit-false states. Task 4 covers whitelist, validation, persistence, and activation; Tasks 5–7 cover the Advanced control, disclosure, and no GitHub/provider calls during setup.
 
 ## File Structure and Responsibilities
 
@@ -195,12 +197,15 @@
 
 ## Task 4: Local Save, Activation, and Zero Surprise Generation
 
-**Files:** Preserve current changes to `src/setup.ts`, `src/setup-service.ts`, `src/index.ts`, `src/service.ts`, `src/client.ts`, `src/controller.ts`, `src/gui.ts`, `src/tui.ts` and their tests. Create `src/setup-local.ts`, `src/setup-ipc.ts`, `src/setup-main.ts`, `src/setup-gui-api.ts`, `src/setup-tui-api.ts`, `tests/setup-local.test.ts`, `tests/setup-main.test.ts`, `tests/setup-tui-api.test.ts`, and `tests/host/setup-local.test.ts`. Extend `src/rpc.ts`, `tests/host/{fixture.mjs,persistence.test.ts,lifecycle.test.ts,terminal.py}`, native observers, and the existing feasibility report as needed.
+**Files:** Preserve current changes to `src/setup.ts`, `src/setup-service.ts`, `src/index.ts`, `src/service.ts`, `src/client.ts`, `src/controller.ts`, `src/gui.ts`, `src/tui.ts` and their tests. Create `src/setup-local.ts`, `src/setup-ipc.ts`, `src/setup-main.ts`, `src/setup-gui-api.ts`, `src/setup-tui-api.ts`, `tests/setup-local.test.ts`, `tests/setup-main.test.ts`, `tests/setup-tui-api.test.ts`, and `tests/host/setup-local.test.ts`. Extend `src/config.ts`, `src/rpc.ts`, `tests/config.test.ts`, `tests/options.test.ts`, `tests/host/{fixture.mjs,persistence.test.ts,lifecycle.test.ts,terminal.py}`, native observers, and the existing feasibility report as needed.
 
 **Resume state:** Keep the existing RED/GREEN evidence and 277/277 project, 173/173 focused, and 15/15 host checkpoint results as history. They do not prove the new boundary or actual Save. Add RED tests only for new or uncovered behavior.
 
+**Upstream setting prerequisite:** PR #25 is merged upstream as `142dfa1ca2832e4607158fcadda7c5eae9197df8`, but its `includeGithubPRContext` runtime/parser changes are not in this worktree. Reconcile the runtime against the approved upstream base before making this control editable; do not duplicate its enrichment implementation, silently merge/cherry-pick, discard current work, or expose a setting that this runtime ignores. Origin qualification can proceed independently. Until runtime integration is authorized and present, the setting's editable round-trip gate remains pending.
+
 **Interfaces:**
 - `SaveInput = { revision: string; fields: SettingsInput; removeModels?: true }`.
+- Extend `SettingKey`/`settingKeys` from completed Tasks 2–3 with `"includeGithubPRContext"`; extend `src/config.ts`'s known-field whitelist and RPC stored/effective fields and issue enums accordingly. Reuse PR #25's `Options.includeGithubPRContext: boolean`, parser validation, and `false` default. The new value must participate in changed-field detection and stored/effective activation comparisons.
 - `SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }`.
 - No network `saveSettings` method and no proof-signing RPC. Network `settings` returns inspection-only `writable: false`; preserve an existing source refusal reason or use `"Saving requires a verified local setup connection."`.
 - Add `SetupLocation = { directory: string; workspaceID?: string }` and optional `SetupSnapshot.localAuthority?: { id: string }` in `src/setup.ts`. Authority IDs match `/^[0-9a-f]{16}$/` and use eight random bytes; they are locators, not credentials or origin proof. An exclusive directory-creation collision refuses that authority rather than reusing a directory.
@@ -242,14 +247,23 @@
   assert.equal(composerDraft, "my existing draft")
   assert.equal((await editor.save()).kind, "saved_not_active")
   ```
+  Add regressions named `setup preserves omitted GitHub PR context during unrelated edits`, `setup round-trips explicit GitHub PR context false`, and `setup rejects nonboolean GitHub PR context before writing`. Test `true`, `false`, omitted, `null`, numeric, and string inputs, including public read/preview schemas and local Save. Keep upstream unrelated options intact. Assertions include:
+  ```ts
+  assert.deepEqual(changedFields({}, { debug: true }), { debug: true })
+  assert.deepEqual(changedFields({ includeGithubPRContext: true }, { includeGithubPRContext: false }), { includeGithubPRContext: false })
+  assert.equal(invalid.issues.some(issue => issue.field === "includeGithubPRContext" && issue.severity === "error"), true)
+  assert.equal(githubRetrievalCallsAfterSetup, githubRetrievalCallsBeforeSetup)
+  assert.equal(githubCredentialLookupsAfterSetup, githubCredentialLookupsBeforeSetup)
+  ```
   Test cancelled-but-committed writes, reload killing the socket/main-IPC response, a second authorized local client, late progress/results, a service version change detected by polling, and a new completion still predicting normally. Test stale preview responses after another edit and disposed editors ignoring late responses. Existing passing regressions remain green; do not recreate them or force artificial failures.
 
-- [ ] **Step 3: Run `node --test tests/setup-local.test.ts tests/setup-main.test.ts tests/setup-tui-api.test.ts tests/setup.test.ts tests/setup-service.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts`; expect RED on the missing boundary/adapters and uncovered Save cases.**
+- [ ] **Step 3: Run `node --test tests/setup-local.test.ts tests/setup-main.test.ts tests/setup-tui-api.test.ts tests/setup.test.ts tests/setup-service.test.ts tests/config.test.ts tests/options.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts`; expect RED on the missing boundary/adapters and uncovered Save cases.**
 
 - [ ] **Step 4: Implement the private boundary, pinned host adapters, server Save, and shared editor.**
   Use only Step 1's observed native origin mechanisms. Create and advertise an authority only for the server-owned qualified source. The socket server owns its location and delegates read/Save to the existing service; client values never select a config file. Validate the complete local envelope and recheck source eligibility for each operation. Bound buffers and connections before parsing/dispatch, propagate disconnect cancellation, and clean only the directory/socket this instance created. Missing local IPC is read-only, not a guessed path.
   Keep network RPC inspection-only, without a write or challenge-signing method. The Desktop main bridge independently resolves and rechecks the pinned endpoint's `sameMachine` field; pass `Caller.signal` through operations. GUI window code imports only the IPC contract and adapter, never performs Node I/O itself. CLI standalone permission must come from the qualified native mechanism, not any serialized caller flag.
   Merge only changed keys against a fresh authoritative snapshot, handle explicit model removal, validate the full prospective options, and use the Task 2 write protocol. Keep fresh unknown options intact. Activation must use Task 1's proven watcher/read-back path, not a guessed reload API. Do not emulate persistence by mutating one in-memory service.
+  Carry `includeGithubPRContext` through the setup types, store whitelist, RPC schemas, local/main IPC validation, draft helpers, and activation readback. Leave an untouched omitted value absent. An edited `false` is a persisted boolean, not deletion or an omitted transport value. Setup never invokes PR #25's enrichment or credential-retrieval functions.
   Verify requested known-field values in a fresh service before returning `saved`. If reload interrupts the response, reconnect to the original selected server and rediscover its new local authority only for readback. Compare source/revision, stored fields, effective options, and service version; never repeat the write. Return/display saved-not-active when durable bytes are known but activation is unverified. Do not claim rollback or overwrite after an ambiguous outcome.
 
 - [ ] **Step 5: Complete lifecycle invalidation without charging for Save.**
@@ -263,7 +277,7 @@
 
 - [ ] **Step 7: Commit local Save and lifecycle behavior only after its mandatory gates pass.**
    ```sh
-   git add src/setup.ts src/setup-service.ts src/setup-local.ts src/setup-ipc.ts src/setup-main.ts src/setup-gui-api.ts src/setup-tui-api.ts src/rpc.ts src/index.ts src/service.ts src/client.ts src/controller.ts src/gui.ts src/tui.ts tests/setup-local.test.ts tests/setup-main.test.ts tests/setup-tui-api.test.ts tests/setup.test.ts tests/setup-service.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts tests/desktop.test.ts tests/terminal.test.ts tests/host/persistence.test.ts tests/host/lifecycle.test.ts tests/host/setup-local.test.ts tests/host/terminal.py tests/host/observer docs/research/2026-11-15-config-persistence-feasibility.md dist
+   git add src/setup.ts src/setup-service.ts src/setup-local.ts src/setup-ipc.ts src/setup-main.ts src/setup-gui-api.ts src/setup-tui-api.ts src/config.ts src/rpc.ts src/index.ts src/service.ts src/client.ts src/controller.ts src/gui.ts src/tui.ts tests/setup-local.test.ts tests/setup-main.test.ts tests/setup-tui-api.test.ts tests/setup.test.ts tests/setup-service.test.ts tests/config.test.ts tests/options.test.ts tests/client.test.ts tests/controller.test.ts tests/server.test.ts tests/desktop.test.ts tests/terminal.test.ts tests/host/persistence.test.ts tests/host/lifecycle.test.ts tests/host/setup-local.test.ts tests/host/terminal.py tests/host/observer docs/research/2026-11-15-config-persistence-feasibility.md dist
    git commit -m "feat: apply prediction setup changes without generating"
   ```
 
@@ -284,7 +298,8 @@
   assert.equal(savedPatchHasOnlyEditedFields, true)
   assert.equal(submittedPrompts, 0)
   ```
-  Exercise all seven settings; model/variant selection; group/entry movement; pattern preview; long/duplicate display names; keyboard-only editing; empty/loading/disconnected/read-only states; conflict and saved-not-active messages; unsaved navigation. Assert the non-blocking external-editor/recovery warning is present and introduces no repeated consent dialog. Switching servers must request discard confirmation before creating a new pinned editor, never retarget an old save.
+   Exercise all eight scoped settings; model/variant selection; group/entry movement; pattern preview; long/duplicate display names; keyboard-only editing; empty/loading/disconnected/read-only states; conflict and saved-not-active messages; unsaved navigation. Assert the non-blocking external-editor/recovery warning is present and introduces no repeated consent dialog. Switching servers must request discard confirmation before creating a new pinned editor, never retarget an old save.
+   Assert **Include GitHub PR context** appears only in Advanced, defaults to unchecked when omitted, round-trips on/off, and has a settings-search entry. Its adjacent warning must mention private PR data and fallback/paid prediction providers. Editing, previewing, discarding, and saving it must not fetch a PR, look up credentials, generate, or submit a prompt.
   Assert remote, other-port, missing-main-IPC, and unknown endpoints render read-only even if their metadata claims a writable source or a real local authority. An endpoint change during Save must not redirect the main-process operation.
 
 - [ ] **Step 2: Run `node --test tests/setup-gui.test.ts tests/desktop.test.ts tests/feedback.test.ts tests/client-feedback.test.ts`; expect RED on the new page and entry points.**
@@ -314,7 +329,7 @@
 - Use existing `ctx.ui.dialog.select`, `prompt`, `confirm`, and `alert`; nested cancel returns to the parent without discarding the shared draft.
 
 - [ ] **Step 1: Add failing scripted-dialog tests.**
-  Cover ordered sections/current-value summaries, all seven edits, absent models, adding/removing/reordering groups and entries, variants, patterns, warning previews, save/discard, and leaving dirty setup.
+   Cover ordered sections/current-value summaries, all eight scoped edits, absent models, adding/removing/reordering groups and entries, variants, patterns, warning previews, save/discard, and leaving dirty setup. Put **Include GitHub PR context** in Advanced with a default-off summary and the same private-data/fallback-provider disclosure as Desktop. Verify toggling it has no GitHub retrieval, credential lookup, or generation side effects during setup.
   ```ts
   assert.deepEqual(sectionTitles, ["Behavior", "Models", "Advanced"])
   assert.equal(draftAfterNestedCancel.debug, true)
@@ -351,7 +366,7 @@
 **Interfaces:** Use Task 1's real-file fixture and `writeConfig()` for setup host scenarios. Keep existing inline-config scenarios to test read-only override handling. New observer actions may dispatch public setup/status commands and inspect draft/call counts; they must not replace UI-driven saves with direct RPC shortcuts.
 
 - [ ] **Step 1: Add failing end-to-end tests through the public setup controls.**
-  Desktop and CLI must each configure all seven settings, reorder groups, save, reopen, and verify config/status after reload. Use two API clients against the same fixture server for cross-client visibility. Preserve synthetic composer input and user-message counts through open/cancel/save/error flows.
+   Desktop and CLI must each configure all eight scoped settings, reorder groups, save, reopen, and verify config/status after reload. Include `includeGithubPRContext` on/off and omitted-field preservation through unrelated edits; assert no GitHub retrieval or credential lookup during setup. Use two API clients against the same fixture server for cross-client visibility. Preserve synthetic composer input and user-message counts through open/cancel/save/error flows.
    Include JSONC comments/other plugins, conflict between clients, interrupted acknowledgement, a zero-match warning, read-only remote/proxy/shared-service CLI origins, read-only inline/project override, and a no-session setup flow. An advertised local authority or relayed metadata must not bypass native origin checks. With `automatic: true` on an existing completed turn, save without new provider calls; then complete a new turn and prove automatic prediction still works.
 
 - [ ] **Step 2: Run `npm run bundle`, then focused new server, Desktop, and CLI tests sequentially; expect RED until native integration gaps are fixed.**
@@ -418,3 +433,4 @@ Do not treat the historical strict NO-GO as a new failure solely because the acc
 - Task 3 adds shared draft/group helpers and public settings/metadata-preview RPC. Checks passed 256/256 project tests, 121/121 focused checks, and 61/61 combined store/host checks, plus typecheck and bundle. Public RPC tests observe unchanged config bytes and zero provider calls. Save RPC/lifecycle/UI are not yet implemented; remote writes remain disabled under the user's resumption instruction.
 - Task 4 checkpoint added uncommitted controller/service lifecycle safeguards, native memory handoff, event/version suppression, and internal Save/editor contracts. Checks passed 277/277 project, 173/173 focused, and 15/15 actual-host lifecycle/persistence tests, plus typecheck/bundle. These checks did not exercise a public Save or qualify the local boundary.
 - User approved private local Save IPC and the revised, narrower standalone-only initial CLI write scope after a builder check rejected relayable challenge signing. Tasks 4–7 now use trusted native origin gates and inspection-only network RPC. The amended implementation plan awaits confirmation; no local-boundary implementation or new qualification is claimed by this edit.
+- User requested the merged PR #25 setting `includeGithubPRContext` in Advanced. The spec and Tasks 4–7 now cover its default-off switch, full setup round trip, omission preservation, and private-data disclosure. Runtime/base integration is still pending; this documentation change neither merges PR #25 into the worktree nor claims an implemented UI.

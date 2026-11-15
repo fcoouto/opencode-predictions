@@ -70,9 +70,18 @@ Preview performs metadata resolution only. It must not generate predictions, sen
 | --- | --- | --- |
 | Timeout per model | `timeoutMs` | Milliseconds; positive integer up to `2147483647`. Default `8000`. |
 | Recent interactions | `contextTurns` | Integer choice from 1 to 5. Default 3. |
+| Include GitHub PR context | `includeGithubPRContext` | Switch. Default off, matching merged PR #25. Opt in to bounded metadata from linked public and accessible private GitHub PRs. |
 | Debug notices | `debug` | Switch. Default off. Explain that this reveals safe progress and failure notices, not raw provider errors. |
 
 Keep Advanced collapsed on Desktop and behind one menu entry in CLI. Use the same units, constraints, and explanations in both hosts.
+
+Show this explanation beside **Include GitHub PR context** in both hosts:
+
+> When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.
+
+Use GitHub authentication already configured on the selected OpenCode server; do not add authentication controls or automatically sign in. Opening setup, editing, previewing, discarding, and saving must not fetch PR data, look up GitHub credentials, or generate a prediction. Preserve an omitted `includeGithubPRContext` property when it was not edited. Validate edits as booleans and preserve explicit `false`.
+
+The user requested this addition after [PR #25](https://github.com/fcoouto/opencode-predictions/pull/25) merged as `142dfa1ca2832e4607158fcadda7c5eae9197df8`. Reuse that runtime feature and its default; do not implement a separate enrichment path in setup. The current setup worktree does not yet contain that runtime change, so runtime/base reconciliation is required before enabling this control.
 
 ## Editing, validation, and saving
 
@@ -155,7 +164,7 @@ Extend `src/gui.ts` and `src/tui.ts` with host-native setup entry points and vie
 
 Acceptance checks:
 
-- Both hosts can configure all seven existing settings and round-trip existing text, array, and nested-array model configurations without changing meaning.
+- Both hosts can configure the eight scoped settings, including `includeGithubPRContext` under Advanced, and round-trip existing text, array, and nested-array model configurations without changing meaning.
 - Reordering, variant changes, wildcard previews, overlap ownership, absent models, no matches, and validation behave consistently.
 - Config-write tests preserve unrelated content, comments, permissions, and package entries in the validated document; cover serialized cooperating setup clients, detected stale edits, atomic replacement, recovery copies, and failure outcomes.
 - Deterministic external-editor tests document the accepted last-check/replacement race. UI copy makes no guarantee that such racing edits or their recovery copies are preserved.
@@ -171,3 +180,5 @@ Leave component extraction, internal RPC naming, and precise rendering mechanics
 The user approved the native two-host structure, Behavior / Models / Advanced order, Behavior control labels, global-only server-side configuration editing, and save behavior, then selected native execution. The first feasibility gate returned NO-GO under the former absolute external-editor guarantee; see `docs/research/2026-11-15-config-persistence-feasibility.md`.
 
 After comparing alternatives and receiving Astra's recommendation, the user explicitly approved option 1 and accepted the residual external-editor race. The user then requested the implementation gate update so native execution could resume. The amended gate and aligned Task 1 now permit that resumption without another architecture approval. They do not grant a GO to an unproved writer. UI choices, global-only scope, and all unrelated safeguards remain unchanged.
+
+The user subsequently requested `includeGithubPRContext` from merged PR #25 in Advanced. This extends the setup field scope by one boolean control without changing its upstream default-off or disclosure behavior.
