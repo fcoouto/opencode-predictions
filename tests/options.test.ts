@@ -2,6 +2,26 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { parseOptions } from "../src/options.ts"
 
+test("GitHub PR context is opt-in and accepts only explicit booleans", () => {
+  const defaults = parseOptions({})
+  assert.ok(defaults.ok)
+  assert.equal(defaults.value.includeGithubPRContext, false)
+  for (const includeGithubPRContext of [true, false]) {
+    const parsed = parseOptions({ includeGithubPRContext })
+    assert.ok(parsed.ok)
+    assert.equal(parsed.value.includeGithubPRContext, includeGithubPRContext)
+    assert.deepEqual(parsed.warnings, [])
+  }
+  for (const includeGithubPRContext of [null, 0, 1, "true", {}, []]) assert.equal(parseOptions({ includeGithubPRContext }).ok, false)
+})
+
+test("the old GitHub PR option name cannot silently enable disclosure", () => {
+  const parsed = parseOptions({ githubPRContext: true })
+  assert.ok(parsed.ok)
+  assert.equal(parsed.value.includeGithubPRContext, false)
+  assert.deepEqual(parsed.warnings, ["Unknown option ignored: githubPRContext"])
+})
+
 test("contextFile accepts only explicit absolute or home-relative global file paths", () => {
   for (const contextFile of ["/home/user/predictions.md", "~/predictions.txt", "C:\\Users\\user\\predictions.md", "\\\\server\\share\\predictions.md"]) {
     const result = parseOptions({ contextFile })
@@ -35,7 +55,7 @@ test("escalation defaults to manual and rejects unsupported policies", () => {
 test("model selector preserves nested model IDs and explicit reasoning", () => {
   assert.deepEqual(parseOptions({ models: "openai/team/model#high" }), {
     ok: true,
-    value: { enabled: true, models: ["openai/team/model#high"], timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false, escalation: "manual" },
+    value: { enabled: true, models: ["openai/team/model#high"], includeGithubPRContext: false, timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false, escalation: "manual" },
     warnings: [],
   })
 })
@@ -57,7 +77,7 @@ test("unknown options warn without disabling supported options", () => {
 test("missing model remains unselected, and disabling/manual controls survive parsing", () => {
   const result = parseOptions({ enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1 })
   assert.ok(result.ok)
-  assert.deepEqual(result.value, { enabled: false, automatic: false, contextTurns: 1, timeoutMs: 1, debug: false, escalation: "manual" })
+  assert.deepEqual(result.value, { enabled: false, automatic: false, includeGithubPRContext: false, contextTurns: 1, timeoutMs: 1, debug: false, escalation: "manual" })
 })
 
 test("debug defaults false and accepts only booleans", () => {

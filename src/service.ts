@@ -2,6 +2,7 @@ import { parseOptions, type ModelRef } from "./options.ts"
 import { buildPrompt, collectTurns, parseSuggestion } from "./predict.ts"
 import { resolveModels, type Candidate, type CatalogModel } from "./models.ts"
 import { statusNotice, reasonNotice, pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
+import { appendGitHubContext, type LinkedPR } from "./github-prompt.ts"
 export type Request = { sessionID: string; completion: number; requestID?: string; manual?: boolean; escalation?: string }
 export type EscalationOffer = { token: string; group: number; model: ModelRef; name: string }
 export type Reply = { text?: string; reason?: string; notice?: Notice; escalation?: EscalationOffer; modelName?: string }
@@ -10,13 +11,14 @@ export type ServiceAPI = {
   session(id: string, signal: AbortSignal): Promise<Session>
   context(id: string, signal: AbortSignal): Promise<readonly unknown[]>
   contextFile?(path: string, signal: AbortSignal): Promise<string>
+  includeGithubPRContext?(sessionID: string, prompt: string, signal: AbortSignal): Promise<readonly LinkedPR[]>
   models(signal: AbortSignal): Promise<readonly CatalogModel[]>
   generate(model: ModelRef, prompt: string, signal: AbortSignal): Promise<string>
   notice?(message: string, request: Request, notice?: Notice): void | Promise<void>
   progress?(modelName: string, request: Request): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
-export type Status = { enabled: boolean; models?: string; contextFile?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
+export type Status = { enabled: boolean; models?: string; contextFile?: string; includeGithubPRContext?: boolean; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
 
 export async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
@@ -144,6 +146,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
       enabled: !!options?.enabled && !!options.models,
       ...(options?.models ? { models: options.models.join(", ") } : {}),
       ...(options?.contextFile ? { contextFile: options.contextFile } : {}),
+      includeGithubPRContext: options?.includeGithubPRContext ?? false,
       ...(groups ? { groups: groups.map((queue, index) => ({ selectors: options!.models![index], candidates: queue.map(queueEntry) })), candidates: candidates!.map(queueEntry) } : {}),
       automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
       escalation: options?.escalation ?? "off",
@@ -241,7 +244,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
             return { reason, notice: reasonNotice(reason) }
           }
         }
-        const prompt = buildPrompt(collectTurns(messages), options.contextTurns, progress.background)
+        let prompt = buildPrompt(collectTurns(messages), options.contextTurns, progress.background)
         if (!prompt) return { reason: "context_unavailable" }
         let chain = groups!.flatMap((queue, group) => queue.map(model => ({ ...model, group }))).filter(model => model.group >= progress.group && !progress.tried.has(candidateKey(model)))
         if (offered) {
@@ -250,6 +253,13 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
           chain = [target, ...chain.filter(model => model !== target && model.group >= target.group)]
         }
         const ownership = new Map(owners)
+        if (options.includeGithubPRContext && api.includeGithubPRContext) {
+          const sourceSignal = AbortSignal.any([parent, AbortSignal.timeout(2000)])
+          try {
+            const sources = await abortable(() => api.includeGithubPRContext!(request.sessionID, prompt!, sourceSignal), sourceSignal)
+            prompt = appendGitHubContext(prompt, sources)
+          } catch { parent.throwIfAborted() }
+        }
         let failure = "no_models_eligible"
         const details = new Set<string>()
         for (let index = 0; index < chain.length; index++) {

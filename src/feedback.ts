@@ -40,7 +40,7 @@ export function statusNotice(status: Status): Notice | undefined {
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason)
     // Validation messages describe field types, never the supplied option values.
-    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
+    const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true }
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` }
@@ -74,6 +74,7 @@ export function formatStatus(status: Status | undefined, details: { lastNotice?:
     `Last latency: ${status?.lastLatencyMs === undefined ? "Unknown" : status.lastLatencyMs + " ms"}`,
     `Timeout: ${status?.timeoutMs ?? "Unknown"} ms`,
     `Context turns: ${status?.contextTurns ?? "Unknown"}`,
+    `GitHub PR context: ${status?.includeGithubPRContext ?? false}`,
     `Debug: ${status?.debug ?? "Unknown"}`,
     ...Object.entries(details.diagnostics ?? {}).map(([key, value]) => `${key}: ${String(value)}`),
   ]

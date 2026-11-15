@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import { Predictions } from "./rpc.ts"
 import { createService, type Request } from "./service.ts"
 import { readContextFile } from "./context-file.ts"
+import { createGitHubContext } from "./github.ts"
 
 export default Plugin.define({
   id: "opencode-predictions",
@@ -10,6 +11,7 @@ export default Plugin.define({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),
       context: (sessionID, signal) => ctx.session.context({ sessionID }, { signal }),
       contextFile: readContextFile,
+      includeGithubPRContext: createGitHubContext(),
       models: async signal => (await ctx.model.list(undefined, { signal })).data,
       generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
       notice: async (message, request, notice) => { if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...(notice ? { notice } : {}) }) },

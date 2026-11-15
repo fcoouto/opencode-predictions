@@ -287,7 +287,7 @@ function statusNotice(status) {
   }
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
-    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
@@ -320,12 +320,16 @@ function formatStatus(status, details) {
     `Last latency: ${status?.lastLatencyMs === void 0 ? "Unknown" : status.lastLatencyMs + " ms"}`,
     `Timeout: ${status?.timeoutMs ?? "Unknown"} ms`,
     `Context turns: ${status?.contextTurns ?? "Unknown"}`,
+    `GitHub PR context: ${status?.includeGithubPRContext ?? false}`,
     `Debug: ${status?.debug ?? "Unknown"}`,
     ...Object.entries(details.diagnostics ?? {}).map(([key, value]) => `${key}: ${String(value)}`)
   ];
   if (status && status.feedbackRevision !== feedbackRevision) technical.push("Feedback capabilities differ or are unknown. Check the installed client and server plugin versions to confirm compatibility.");
   return { summary: lines.join("\n"), details: technical.join("\n") };
 }
+
+// src/github-prompt.ts
+var encoder2 = new TextEncoder();
 
 // src/service.ts
 async function abortable(work, signal) {

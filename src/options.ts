@@ -1,16 +1,16 @@
 export type ModelRef = { providerID: string; id: string; variant?: string }
-export type Options = { enabled: boolean; models?: readonly string[]; contextFile?: string; timeoutMs: number; contextTurns: number; automatic: boolean; debug: boolean; escalation: "off" | "manual" | "automatic" }
+export type Options = { enabled: boolean; models?: readonly string[]; contextFile?: string; includeGithubPRContext: boolean; timeoutMs: number; contextTurns: number; automatic: boolean; debug: boolean; escalation: "off" | "manual" | "automatic" }
 export type OptionsResult = { ok: true; value: Options; warnings: string[] } | { ok: false; reason: string; warnings: string[] }
 
 export function parseOptions(input: unknown = {}): OptionsResult {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] }
   const raw = input as Record<string, unknown>
-  const fields = ["enabled", "models", "contextFile", "timeoutMs", "contextTurns", "automatic", "debug", "escalation"]
+  const fields = ["enabled", "models", "contextFile", "includeGithubPRContext", "timeoutMs", "contextTurns", "automatic", "debug", "escalation"]
   const warnings = Object.keys(raw).filter(key => !fields.includes(key)).map(key => `Unknown option ignored: ${key}`)
   const invalid = (reason: string): OptionsResult => ({ ok: false, reason, warnings })
   const contextFile = raw.contextFile
   if (contextFile !== undefined && (typeof contextFile !== "string" || !/^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(contextFile) || /[\x00-\x1F\x7F-\x9F]/u.test(contextFile))) return invalid("contextFile must be an absolute path or start with ~/")
-  for (const name of ["enabled", "automatic", "debug"]) {
+  for (const name of ["enabled", "automatic", "debug", "includeGithubPRContext"]) {
     if (raw[name] !== undefined && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`)
   }
   const timeoutMs = raw.timeoutMs ?? 8000
@@ -35,5 +35,5 @@ export function parseOptions(input: unknown = {}): OptionsResult {
       models.push(text.trim())
     }
   }
-  return { ok: true, value: { enabled: raw.enabled as boolean ?? true, ...(raw.models === undefined ? {} : { models }), ...(contextFile === undefined ? {} : { contextFile: contextFile as string }), timeoutMs, contextTurns, automatic: raw.automatic as boolean ?? true, debug: raw.debug as boolean ?? false, escalation }, warnings }
+  return { ok: true, value: { enabled: raw.enabled as boolean ?? true, ...(raw.models === undefined ? {} : { models }), ...(contextFile === undefined ? {} : { contextFile: contextFile as string }), includeGithubPRContext: raw.includeGithubPRContext as boolean ?? false, timeoutMs, contextTurns, automatic: raw.automatic as boolean ?? true, debug: raw.debug as boolean ?? false, escalation }, warnings }
 }
