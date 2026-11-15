@@ -1,6 +1,11 @@
 import { Plugin } from "@opencode/plugin"
 import { Predictions } from "./rpc.ts"
 import { createService, type Request } from "./service.ts"
+import { homedir, userInfo } from "node:os"
+import { join } from "node:path"
+import { createConfigStore } from "./config.ts"
+import { createSetupService } from "./setup-service.ts"
+import type { SettingsInput } from "./setup.ts"
 
 export default Plugin.define({
   id: "opencode-predictions",
@@ -13,9 +18,28 @@ export default Plugin.define({
       notice: async (message, request, notice) => { if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...(notice ? { notice } : {}) }) },
       progress: async (modelName, request) => { if (request.requestID) await registration.events.emit("progress", { message: "", modelName, requestID: request.requestID, sessionID: request.sessionID }) },
     }, ctx.options, ctx.location.directory)
+    let username: string | undefined
+    try { username = userInfo().username } catch {}
+    const store = createConfigStore({
+      version: ctx.app.version, home: homedir(), directory: ctx.location.directory,
+      env: Object.fromEntries(["XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_PROJECT_CONFIG"].map(key => [key, process.env[key]])),
+      systemPaths: process.platform === "darwin" ? [
+        "/Library/Application Support/opencode", "/Library/Managed Preferences/ai.opencode.managed.plist",
+        username ? join("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences",
+      ] : ["/etc/opencode"],
+      source: async signal => {
+        if (!username) return
+        const plugin = (await ctx.plugin.list(undefined, { signal })).data.find(entry => entry.id === "opencode-predictions")
+        return plugin?.source.type === "local" && plugin.state.status === "active" ? plugin.source : undefined
+      },
+      options: () => ctx.options,
+    })
+    const setup = createSetupService(store, async signal => (await ctx.model.list(undefined, { signal })).data, () => ({ options: ctx.options, version: service.status().version }))
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input as Request, context.signal),
       status: (_input, context) => service.inspect(context.signal),
+      settings: (_input, context) => setup.read(context.signal),
+      previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, context.signal),
     })
     return () => registration.dispose()
   },

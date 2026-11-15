@@ -1,6 +1,6 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { resolveModels } from "../src/models.ts"
+import { resolveModels, resolveModelGroups } from "../src/models.ts"
 
 const catalog = [
   { providerID: "opencode-go", id: "deepseek-v4-flash", name: "DeepSeek Flash", enabled: true, variants: [{ id: "low" }] },
@@ -25,4 +25,9 @@ test("only wildcard stars are special and disabled or nonmatching models are not
   assert.equal(resolveModels("opencode-go/(beam|.*)", catalog).length, 0)
   assert.equal(resolveModels("opencode-go/BEAM#low", catalog).length, 1)
   assert.equal(resolveModels("opencode-go/beam", [{ ...catalog[1], enabled: false }]).length, 0)
+})
+
+test("grouped resolution assigns each provider/model/variant to the earliest group without merging variants", () => {
+  const groups = resolveModelGroups(["opencode-go/beam#low", "opencode-go/*#low, opencode-go/beam", "opencode-go/beam#low"], catalog)
+  assert.deepEqual(groups.map(group => group.map(model => model.id + "#" + (model.variant ?? ""))), [["beam#low"], ["deepseek-v4-flash#low", "beam#"], []])
 })

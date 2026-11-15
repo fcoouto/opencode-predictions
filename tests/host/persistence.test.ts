@@ -5,6 +5,44 @@ import { resolve, join } from "node:path"
 import { createFixture } from "./fixture.mjs"
 import { Predictions } from "../../src/rpc.ts"
 import type { Status } from "../../src/service.ts"
+import type { SetupSnapshot, SetupPreview } from "../../src/setup.ts"
+
+for (const configSource of ["global-jsonc", "inline"] as const) {
+  test(`setup settings and previews use public RPC without generating or editing ${configSource}`, { timeout: 60000 }, async () => {
+    await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false }, {}, { configSource })
+    const location = { directory: fixture.directory }
+    const original = fixture.configFile ? await readFile(fixture.configFile, "utf8") : undefined
+    const api = fixture.api.rpc(Predictions)
+    let snapshot: SetupSnapshot | undefined
+    await assert.doesNotReject(async () => { snapshot = await api.settings({}, { location }) as SetupSnapshot })
+    assert.ok(snapshot)
+    assert.equal(snapshot.scope, "global")
+    assert.equal(snapshot.effective?.automatic, false)
+    assert.equal(snapshot.serviceVersion, (await api.status({}, { location }) as Status).version)
+    if (configSource === "inline") assert.equal(snapshot.writable, false)
+    else if (process.platform === "darwin") {
+      assert.equal(snapshot.writable, true, snapshot.reason ?? "Verified fixture must be writable")
+      assert.equal(snapshot.source, fixture.configFile)
+      assert.equal(snapshot.fields.models, "fixture/model")
+    }
+    for (const model of snapshot.catalog) {
+      assert.ok(Object.keys(model).every(key => ["providerID", "id", "name", "enabled", "variants"].includes(key)))
+      assert.ok(model.variants.every(variant => Object.keys(variant).every(key => key === "id")))
+    }
+    assert.equal(Object.hasOwn(snapshot.fields, "obsolete"), false)
+    const preview = await api.previewSettings({ fields: { models: [["fixture/model"], ["fixture/*", "fixture/missing"]] } }, { location }) as SetupPreview
+    assert.equal(preview.groups[0].candidates.some(model => model.providerID === "fixture" && model.id === "model"), true)
+    assert.equal(preview.groups[1].candidates.some(model => model.providerID === "fixture" && model.id === "model"), false)
+    assert.equal(preview.issues.some(issue => issue.code === "overlap" && issue.group === 1), true)
+    assert.equal(preview.issues.some(issue => issue.code === "no_match" && issue.group === 1 && issue.entry === 1), true)
+    const invalid = await api.previewSettings({ fields: { timeoutMs: null } }, { location }) as SetupPreview
+    assert.equal(invalid.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error"), true)
+    await assert.rejects(api.settings({ source: "/client/home/never-write.json" }, { location }))
+    await assert.rejects(api.previewSettings({ fields: { source: "/client/home/never-write.json" } }, { location }))
+    if (fixture.configFile) assert.equal(await readFile(fixture.configFile, "utf8"), original)
+    assert.equal(fixture.calls.length, 0)
+  })
+}
 
 for (const configSource of ["global-json", "global-jsonc"] as const) {
   test(`real-file fixture ${configSource} has no inline config override`, { timeout: 60000 }, async () => {

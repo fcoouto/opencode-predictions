@@ -1,6 +1,6 @@
 import { parseOptions, type ModelRef } from "./options.ts"
 import { buildPrompt, collectTurns, parseSuggestion } from "./predict.ts"
-import { resolveModels, type Candidate, type CatalogModel } from "./models.ts"
+import { resolveModelGroups, type Candidate, type CatalogModel } from "./models.ts"
 import { statusNotice, reasonNotice, pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
 export type Request = { sessionID: string; completion: number; requestID?: string; manual?: boolean; escalation?: string }
 export type EscalationOffer = { token: string; group: number; model: ModelRef; name: string }
@@ -79,15 +79,13 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
   const refresh = (catalog: readonly CatalogModel[]) => {
     const seen = new Set<string>()
     const currentOutcomes = new Set<string>()
-    groups = options!.models!.map((selectors, index) => {
-      const resolved = resolveModels(selectors, catalog).filter(model => {
+    groups = resolveModelGroups(options!.models!, catalog).map((resolved, index) => {
+      for (const model of resolved) {
         const key = candidateKey(model)
-        if (seen.has(key)) return false
         seen.add(key)
         if (owners.get(key)?.group !== index) owners.set(key, { group: index })
         currentOutcomes.add(outcomeKey(model, index))
-        return true
-      })
+      }
       const available = new Map(resolved.map(model => [candidateKey(model), model]))
       const ordered: Candidate[] = []
       for (const previous of groups?.[index] ?? []) {

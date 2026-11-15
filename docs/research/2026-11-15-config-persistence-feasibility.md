@@ -2,7 +2,7 @@
 
 ## Amended Task 1 Verdict: Scoped GO — Review Corrections Verified
 
-The approved best-effort gate permits production implementation **only for the verified writable subset below**. Task 2 adds the store, but public setup RPC, lifecycle, and UI remain unbuilt. The initial GO was suspended after checkpoint review exposed a preservation defect and missing production failure-path coverage. The correction checks below restore only this scoped GO, not feature or release approval. The original strict NO-GO remains recorded below.
+The approved best-effort gate permits production implementation **only for the verified writable subset below**. Task 2 adds the store and Task 3 exposes metadata-only read/preview RPC; public save RPC, lifecycle, and UI remain unbuilt. The initial GO was suspended after checkpoint review exposed a preservation defect and missing production failure-path coverage. The correction checks below restore only this scoped GO, not feature or release approval. The original strict NO-GO remains recorded below.
 
 ### Verified writable subset
 
@@ -66,7 +66,9 @@ git diff --check
 
 Verified after correction on 2026-11-15: the combined gate passed **59/59**, with no skips; the project suite passed **242/242**; typecheck, bundle, package dry-run, and `git diff --check` passed. The package dry-run excludes the candidate, probe, tests, fixture configs, backups, and evidence workspace. Earlier green checkpoints were 33/33 host plus 217/217 project tests for Task 1, then 42/42 combined plus 226/226 project tests for Task 2; those results did not cover the review findings. No user installation/configuration, paid provider, upstream post, push, or merge changed.
 
-Task 2 now adds cancellation, fixed safe outcomes, supported-version/topology restrictions, and production tests rather than shipping the prototype unchanged. Activation still requires separate readback. Tasks 3–7 still owe drafts/metadata previews, public save reconciliation, live-client suppression, composer/draft preservation, native UI/accessibility, external-editor warnings in both host flows, installed-package checks, and final feature review. GO does not waive any of them. The corrected checkpoint has regression proof, not a second reviewer approval or release approval.
+Task 2 now adds cancellation, fixed safe outcomes, supported-version/topology restrictions, and production tests rather than shipping the prototype unchanged. Task 3 adds draft helpers, shared grouped resolution, safe catalog projection, and public metadata-only read/preview RPC. Its checks passed 256/256 project tests, 121/121 focused tests, and 61/61 combined store/host tests, plus typecheck and bundle. Public RPC tests preserve file bytes and record zero provider calls; a runtime-service test also records zero session-context calls and an unchanged queue. Unknown nested input fields are preserved through the pinned decoder specifically so server validation rejects them, rather than silently stripping them.
+
+Activation still requires separate readback. Tasks 4–7 still owe public save reconciliation, live-client suppression, composer/draft preservation, native UI/accessibility, external-editor warnings in both host flows, installed-package checks, and final feature review. Remote writes remain disabled until their topology is qualified. GO does not waive any of these obligations. The corrected persistence checkpoint has regression proof, not a second reviewer approval or release approval.
 
 ## Original Verdict: NO-GO
 

@@ -1,6 +1,15 @@
 import type { ModelRef } from "./options.ts"
 export type CatalogModel = { providerID: string; id: string; name?: string; enabled: boolean; variants: readonly { id: string }[] }
 export type Candidate = ModelRef & { name: string }
+export function resolveModelGroups(selectors: readonly string[], catalog: readonly CatalogModel[]): Candidate[][] {
+  const seen = new Set<string>()
+  return selectors.map(group => resolveModels(group, catalog).filter(model => {
+    const key = JSON.stringify([model.providerID, model.id, model.variant ?? null])
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  }))
+}
 export function resolveModels(selectors: string, catalog: readonly CatalogModel[]): Candidate[] {
   const candidates: Candidate[] = []
   const seen = new Set<string>()

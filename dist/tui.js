@@ -653,6 +653,56 @@ var escalation = {
   required: ["token", "group", "name", "model"],
   additionalProperties: false
 };
+var settingsFields = {
+  type: "object",
+  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {} },
+  additionalProperties: false
+};
+var setupIssue = {
+  type: "object",
+  properties: {
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] },
+    group: { type: "integer", minimum: 0 },
+    entry: { type: "integer", minimum: 0 },
+    severity: { type: "string", enum: ["error", "warning"] },
+    code: { type: "string" },
+    message: { type: "string" }
+  },
+  required: ["field", "severity", "code", "message"],
+  additionalProperties: false
+};
+var candidate = {
+  type: "object",
+  properties: { providerID: { type: "string" }, id: { type: "string" }, name: { type: "string" }, variant: { type: "string" } },
+  required: ["providerID", "id", "name"],
+  additionalProperties: false
+};
+var catalogModel = {
+  type: "object",
+  properties: {
+    providerID: { type: "string" },
+    id: { type: "string" },
+    name: { type: "string" },
+    enabled: { type: "boolean" },
+    variants: { type: "array", items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } }
+  },
+  required: ["providerID", "id", "enabled", "variants"],
+  additionalProperties: false
+};
+var effectiveOptions = {
+  type: "object",
+  properties: {
+    enabled: { type: "boolean" },
+    automatic: { type: "boolean" },
+    debug: { type: "boolean" },
+    escalation: { type: "string", enum: ["off", "manual", "automatic"] },
+    timeoutMs: { type: "integer", minimum: 1, maximum: 2147483647 },
+    contextTurns: { type: "integer", minimum: 1, maximum: 5 },
+    models: { type: "array", items: { type: "string" } }
+  },
+  required: ["enabled", "automatic", "debug", "escalation", "timeoutMs", "contextTurns"],
+  additionalProperties: false
+};
 var Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
@@ -668,6 +718,39 @@ var Predictions = Rpc.define({
     status: {
       input: { type: "object", additionalProperties: false },
       output: { type: "object" }
+    },
+    settings: {
+      input: { type: "object", additionalProperties: false },
+      output: {
+        type: "object",
+        properties: {
+          revision: { type: "string" },
+          source: { type: "string" },
+          scope: { type: "string", enum: ["global"] },
+          writable: { type: "boolean" },
+          reason: { type: "string" },
+          fields: settingsFields,
+          effective: { anyOf: [{ type: "null" }, effectiveOptions] },
+          catalog: { type: "array", items: catalogModel },
+          issues: { type: "array", items: setupIssue },
+          serviceVersion: { type: "string" }
+        },
+        required: ["revision", "scope", "writable", "fields", "effective", "catalog", "issues", "serviceVersion"],
+        additionalProperties: false
+      }
+    },
+    previewSettings: {
+      // Preserve unknown nested keys so server validation can reject them instead of decoder stripping.
+      input: { type: "object", properties: { fields: { ...settingsFields, additionalProperties: true } }, required: ["fields"], additionalProperties: false },
+      output: {
+        type: "object",
+        properties: {
+          groups: { type: "array", items: { type: "object", properties: { selectors: { type: "array", items: { type: "string" } }, candidates: { type: "array", items: candidate } }, required: ["selectors", "candidates"], additionalProperties: false } },
+          issues: { type: "array", items: setupIssue }
+        },
+        required: ["groups", "issues"],
+        additionalProperties: false
+      }
     }
   },
   events: {

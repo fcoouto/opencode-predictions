@@ -20,6 +20,56 @@ var escalation = {
   required: ["token", "group", "name", "model"],
   additionalProperties: false
 };
+var settingsFields = {
+  type: "object",
+  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {} },
+  additionalProperties: false
+};
+var setupIssue = {
+  type: "object",
+  properties: {
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] },
+    group: { type: "integer", minimum: 0 },
+    entry: { type: "integer", minimum: 0 },
+    severity: { type: "string", enum: ["error", "warning"] },
+    code: { type: "string" },
+    message: { type: "string" }
+  },
+  required: ["field", "severity", "code", "message"],
+  additionalProperties: false
+};
+var candidate = {
+  type: "object",
+  properties: { providerID: { type: "string" }, id: { type: "string" }, name: { type: "string" }, variant: { type: "string" } },
+  required: ["providerID", "id", "name"],
+  additionalProperties: false
+};
+var catalogModel = {
+  type: "object",
+  properties: {
+    providerID: { type: "string" },
+    id: { type: "string" },
+    name: { type: "string" },
+    enabled: { type: "boolean" },
+    variants: { type: "array", items: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false } }
+  },
+  required: ["providerID", "id", "enabled", "variants"],
+  additionalProperties: false
+};
+var effectiveOptions = {
+  type: "object",
+  properties: {
+    enabled: { type: "boolean" },
+    automatic: { type: "boolean" },
+    debug: { type: "boolean" },
+    escalation: { type: "string", enum: ["off", "manual", "automatic"] },
+    timeoutMs: { type: "integer", minimum: 1, maximum: 2147483647 },
+    contextTurns: { type: "integer", minimum: 1, maximum: 5 },
+    models: { type: "array", items: { type: "string" } }
+  },
+  required: ["enabled", "automatic", "debug", "escalation", "timeoutMs", "contextTurns"],
+  additionalProperties: false
+};
 var Predictions = Rpc.define({
   id: "fcoouto.predictions",
   methods: {
@@ -35,6 +85,39 @@ var Predictions = Rpc.define({
     status: {
       input: { type: "object", additionalProperties: false },
       output: { type: "object" }
+    },
+    settings: {
+      input: { type: "object", additionalProperties: false },
+      output: {
+        type: "object",
+        properties: {
+          revision: { type: "string" },
+          source: { type: "string" },
+          scope: { type: "string", enum: ["global"] },
+          writable: { type: "boolean" },
+          reason: { type: "string" },
+          fields: settingsFields,
+          effective: { anyOf: [{ type: "null" }, effectiveOptions] },
+          catalog: { type: "array", items: catalogModel },
+          issues: { type: "array", items: setupIssue },
+          serviceVersion: { type: "string" }
+        },
+        required: ["revision", "scope", "writable", "fields", "effective", "catalog", "issues", "serviceVersion"],
+        additionalProperties: false
+      }
+    },
+    previewSettings: {
+      // Preserve unknown nested keys so server validation can reject them instead of decoder stripping.
+      input: { type: "object", properties: { fields: { ...settingsFields, additionalProperties: true } }, required: ["fields"], additionalProperties: false },
+      output: {
+        type: "object",
+        properties: {
+          groups: { type: "array", items: { type: "object", properties: { selectors: { type: "array", items: { type: "string" } }, candidates: { type: "array", items: candidate } }, required: ["selectors", "candidates"], additionalProperties: false } },
+          issues: { type: "array", items: setupIssue }
+        },
+        required: ["groups", "issues"],
+        additionalProperties: false
+      }
     }
   },
   events: {
@@ -151,6 +234,15 @@ function parseSuggestion(output) {
 }
 
 // src/models.ts
+function resolveModelGroups(selectors, catalog) {
+  const seen = /* @__PURE__ */ new Set();
+  return selectors.map((group) => resolveModels(group, catalog).filter((model) => {
+    const key = JSON.stringify([model.providerID, model.id, model.variant ?? null]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }));
+}
 function resolveModels(selectors, catalog) {
   const candidates = [];
   const seen = /* @__PURE__ */ new Set();
@@ -244,8 +336,8 @@ function statusNotice(status) {
   }
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
-    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
-    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
+    const validation2 = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation2}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
 }
@@ -281,8 +373,8 @@ function failurePolicy(error) {
   const detail = status === 403 && /not available in your country/i.test(message) ? "This model is not available in your country." : status === 429 && /free usage limit reached/i.test(message) ? "Free usage limit reached." : message === "Invalid prediction response" ? "Model returned an invalid prediction response." : fallback;
   const blocked = [401, 402, 403, 404].includes(status ?? 0) || value.reason === "authentication" || value._tag === "ModelNotFoundError" || value._tag === "ProviderNotFoundError" || value._tag === "UnsupportedModelError";
   const budget = value.reason !== "invalid_request" && value.reason !== "content_filter" && /\b(?:exhausted|exceeded|reached|depleted|insufficient)\b/i.test(message) && /\b(?:daily|monthly|budget|credits?)\b|\bfree usage\b|\binsufficient quota\b/i.test(message);
-  const delay = typeof value.retryAfterMs === "number" && Number.isFinite(value.retryAfterMs) && value.retryAfterMs > 0 ? Math.max(6e4, value.retryAfterMs) : budget ? 36e5 : 6e4;
-  return { detail: status === void 0 ? detail : `HTTP ${status}: ${detail}`, delayMs: blocked ? Infinity : delay, modelWide: blocked || budget || status === 429 || value.reason === "rate_limit" };
+  const delay2 = typeof value.retryAfterMs === "number" && Number.isFinite(value.retryAfterMs) && value.retryAfterMs > 0 ? Math.max(6e4, value.retryAfterMs) : budget ? 36e5 : 6e4;
+  return { detail: status === void 0 ? detail : `HTTP ${status}: ${detail}`, delayMs: blocked ? Infinity : delay2, modelWide: blocked || budget || status === 429 || value.reason === "rate_limit" };
 }
 function createService(api, rawOptions, directory) {
   const parsed = parseOptions(rawOptions);
@@ -311,15 +403,13 @@ function createService(api, rawOptions, directory) {
   const refresh = (catalog) => {
     const seen = /* @__PURE__ */ new Set();
     const currentOutcomes = /* @__PURE__ */ new Set();
-    groups = options.models.map((selectors, index) => {
-      const resolved2 = resolveModels(selectors, catalog).filter((model) => {
+    groups = resolveModelGroups(options.models, catalog).map((resolved2, index) => {
+      for (const model of resolved2) {
         const key = candidateKey(model);
-        if (seen.has(key)) return false;
         seen.add(key);
         if (owners.get(key)?.group !== index) owners.set(key, { group: index });
         currentOutcomes.add(outcomeKey(model, index));
-        return true;
-      });
+      }
       const available = new Map(resolved2.map((model) => [candidateKey(model), model]));
       const ordered = [];
       for (const previous of groups?.[index] ?? []) {
@@ -333,20 +423,20 @@ function createService(api, rawOptions, directory) {
       ];
     });
     const resolved = groups.flat();
-    const keys = new Set(resolved.flatMap((model) => [modelKey(model), candidateKey(model)]));
-    for (const key of skipped.keys()) if (!keys.has(key)) skipped.delete(key);
+    const keys2 = new Set(resolved.flatMap((model) => [modelKey(model), candidateKey(model)]));
+    for (const key of skipped.keys()) if (!keys2.has(key)) skipped.delete(key);
     for (const key of outcomes.keys()) if (!currentOutcomes.has(key)) outcomes.delete(key);
     for (const key of owners.keys()) if (!seen.has(key)) owners.delete(key);
   };
   const move = (model, first, group, ownership, modelWide = false) => {
     if (owners.get(candidateKey(model)) !== ownership.get(candidateKey(model))) return;
     const key = modelWide ? modelKey : candidateKey;
-    const matches = (candidate) => key(candidate) === key(model) && owners.get(candidateKey(candidate)) === ownership.get(candidateKey(candidate));
+    const matches = (candidate2) => key(candidate2) === key(model) && owners.get(candidateKey(candidate2)) === ownership.get(candidateKey(candidate2));
     groups = groups?.map((queue, index) => {
       if (!modelWide && index !== group) return queue;
       const selected = queue.filter(matches);
-      const others = queue.filter((candidate) => !matches(candidate));
-      for (const candidate of selected) outcomes.set(outcomeKey(candidate, index), first ? "working" : "failed");
+      const others = queue.filter((candidate2) => !matches(candidate2));
+      for (const candidate2 of selected) outcomes.set(outcomeKey(candidate2, index), first ? "working" : "failed");
       return first ? [...selected, ...others] : [...others, ...selected];
     });
   };
@@ -359,9 +449,9 @@ function createService(api, rawOptions, directory) {
     if (cycle.token) offers.delete(cycle.token);
     cycle.token = void 0;
     for (let group = cycle.group; group < (groups?.length ?? 0); group++) {
-      const candidate = groups[group].find((model2) => !skip(model2) && !cycle.tried.has(candidateKey(model2)));
-      if (!candidate) continue;
-      const { name, ...model } = candidate;
+      const candidate2 = groups[group].find((model2) => !skip(model2) && !cycle.tried.has(candidateKey(model2)));
+      if (!candidate2) continue;
+      const { name, ...model } = candidate2;
       const offer = { token: crypto.randomUUID(), group: group + 1, model, name };
       offers.set(offer.token, { cycle, offer });
       cycle.token = offer.token;
@@ -477,15 +567,15 @@ function createService(api, rawOptions, directory) {
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted();
           limitAttempt();
-          const candidate = chain[index];
-          if (skip(candidate) || owners.get(candidateKey(candidate)) !== ownership.get(candidateKey(candidate))) continue;
-          const { name, group, ...model } = candidate;
+          const candidate2 = chain[index];
+          if (skip(candidate2) || owners.get(candidateKey(candidate2)) !== ownership.get(candidateKey(candidate2))) continue;
+          const { name, group, ...model } = candidate2;
           await abortable(() => Promise.resolve(api.progress?.(name, request)), parent);
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
           parent.throwIfAborted();
           if (options.escalation !== "off" && cycles.get(key) !== progress) return { reason: "stale" };
-          if (skip(candidate) || owners.get(candidateKey(candidate)) !== ownership.get(candidateKey(candidate))) continue;
+          if (skip(candidate2) || owners.get(candidateKey(candidate2)) !== ownership.get(candidateKey(candidate2))) continue;
           progress.group = group;
           progress.tried.add(candidateKey(model));
           const signal = parent;
@@ -509,7 +599,7 @@ function createService(api, rawOptions, directory) {
             }
             if (abstained) {
               if (!skip(model)) move(model, true, group, ownership);
-              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate2, next2) => next2 > index && !progress.tried.has(candidateKey(candidate2)) && !skip(candidate2)) : -1;
+              const next = options.escalation === "automatic" && !extraCall ? chain.findIndex((candidate3, next2) => next2 > index && !progress.tried.has(candidateKey(candidate3)) && !skip(candidate3)) : -1;
               if (next !== -1) {
                 extraCall = true;
                 index = next - 1;
@@ -535,7 +625,7 @@ function createService(api, rawOptions, directory) {
             if ((skipped.get(key2)?.until ?? 0) < until) skipped.set(key2, { until, reason: policy.detail });
             move(model, false, group, ownership, policy.modelWide);
             if (options.debug) {
-              const next = chain.slice(index + 1).find((candidate2) => !skip(candidate2));
+              const next = chain.slice(index + 1).find((candidate3) => !skip(candidate3));
               const message = next ? `Predictions failed with [${name}], moving on with [${next.name}]...` : `Predictions failed with [${name}]; no eligible configured models remain.`;
               const entry = skip(model);
               const minutes = Math.ceil((entry.until - Date.now()) / 6e4);
@@ -587,6 +677,322 @@ Queue: ${queue}`, request)), parent);
 }
 
 // src/index.ts
+import { homedir, userInfo } from "node:os";
+import { join as join2 } from "node:path";
+
+// src/config.ts
+import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { isDeepStrictEqual, promisify } from "node:util";
+import { lstat, mkdir, open, readFile, realpath, rename, rmdir, unlink } from "node:fs/promises";
+import { dirname, isAbsolute, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { getNodeValue, parseTree as parseTree2 } from "jsonc-parser";
+
+// src/config-edit.ts
+import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree, SyntaxKind } from "jsonc-parser";
+function editSetting(text, index, key, value) {
+  const path = ["plugins", index, "options", key];
+  const errors = [];
+  const root = parseTree(text, errors, { allowTrailingComma: true });
+  if (!root || errors.length) throw new Error("Invalid configuration");
+  const node = findNodeAtLocation(root, path);
+  if (!node) return value === void 0 ? text : applyEdits(text, modify(text, path, value, {}));
+  const property = node.parent;
+  if (property?.type !== "property" || property.parent?.type !== "object") throw new Error("Invalid property");
+  const edits = [];
+  const scanner = createScanner(text, false);
+  const trivia = (token) => token >= SyntaxKind.LineCommentTrivia && token <= SyntaxKind.Trivia;
+  const editToken = (content2 = "") => edits.push({ offset: scanner.getTokenOffset(), length: scanner.getTokenLength(), content: content2 });
+  const target = value === void 0 ? property : node;
+  const end = target.offset + target.length;
+  let content = value === void 0 ? "" : JSON.stringify(value);
+  if (content === void 0) throw new Error("Invalid setting value");
+  let comments = false;
+  scanner.setPosition(target.offset);
+  for (let token = scanner.scan(); token !== SyntaxKind.EOF && scanner.getTokenOffset() < end; token = scanner.scan()) {
+    if (token === SyntaxKind.LineCommentTrivia || token === SyntaxKind.BlockCommentTrivia) comments = true;
+    if (!trivia(token)) {
+      editToken(content);
+      content = "";
+    }
+  }
+  if (value !== void 0) return applyEdits(text, comments ? edits : modify(text, path, value, {}));
+  function next(offset) {
+    scanner.setPosition(offset);
+    let token = scanner.scan();
+    while (trivia(token)) token = scanner.scan();
+    return token;
+  }
+  if (next(end) === SyntaxKind.CommaToken) editToken();
+  else {
+    const siblings = property.parent.children;
+    const previous = siblings[siblings.indexOf(property) - 1];
+    if (previous) {
+      if (next(previous.offset + previous.length) !== SyntaxKind.CommaToken) throw new Error("Missing separator");
+      editToken();
+    }
+  }
+  return applyEdits(text, edits);
+}
+
+// src/config.ts
+var keys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"];
+var run = promisify(execFile);
+var missing = (error) => error.code === "ENOENT";
+var readOnly = "This configuration source or filesystem is not verified for setup writes.";
+var uncertain = "Changes may have been saved. Reopen settings before trying again.";
+async function exists(path) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (missing(error)) return false;
+    throw error;
+  }
+}
+async function noACL(path) {
+  const { stdout } = await run("/bin/ls", ["-lde", path]);
+  if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) throw new Error(readOnly);
+}
+function parse(text) {
+  const errors = [];
+  const root = parseTree2(text, errors, { allowTrailingComma: true });
+  if (!root || root.type !== "object" || errors.length) throw new Error(readOnly);
+  function unique(node) {
+    if (node.type === "object") {
+      const names = node.children.map((property) => property.children[0].value);
+      if (new Set(names).size !== names.length) throw new Error(readOnly);
+    }
+    node.children?.forEach(unique);
+  }
+  unique(root);
+  return getNodeValue(root);
+}
+function createConfigStore(host) {
+  const directory = resolve(host.env.XDG_CONFIG_HOME ?? join(host.home, ".config"), "opencode");
+  async function inspect(signal) {
+    signal.throwIfAborted();
+    if (process.platform !== "darwin" || host.version !== "2.2.6") throw new Error(readOnly);
+    if (host.env.XDG_CONFIG_HOME !== void 0 && !isAbsolute(host.env.XDG_CONFIG_HOME)) throw new Error(readOnly);
+    if (host.env.OPENCODE_CONFIG || host.env.OPENCODE_CONFIG_CONTENT || host.env.OPENCODE_CONFIG_DIR || host.env.OPENCODE_DISABLE_PROJECT_CONFIG !== "1") throw new Error(readOnly);
+    if (await exists(join(directory, "plugins"))) throw new Error(readOnly);
+    for (const path of host.systemPaths) if (await exists(path)) throw new Error(readOnly);
+    const source = await host.source(signal);
+    if (!source || source.type !== "local" || !isAbsolute(source.path)) throw new Error(readOnly);
+    if (await realpath(directory) !== directory || await realpath(source.path) !== source.path) throw new Error(readOnly);
+    const parent = await lstat(directory);
+    if (!parent.isDirectory() || parent.uid !== process.getuid() || parent.mode & 18) throw new Error(readOnly);
+    await noACL(directory);
+    const paths = (await Promise.all(["opencode.json", "opencode.jsonc"].map(async (name) => {
+      const path = join(directory, name);
+      return await exists(path) ? path : void 0;
+    }))).filter((path) => !!path);
+    if (paths.length !== 1) throw new Error(readOnly);
+    const file = paths[0], info = await lstat(file);
+    if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid() || (info.mode & 384) !== 384 || info.mode & 3602) throw new Error(readOnly);
+    await noACL(file);
+    const backup = file + ".predictions-backup";
+    if (await exists(backup)) {
+      const prior = await lstat(backup);
+      if (!prior.isFile() || prior.nlink !== 1 || prior.uid !== info.uid || prior.mode & 127) throw new Error(readOnly);
+      await noACL(backup);
+    }
+    const bytes = await readFile(file);
+    const text = bytes.toString("utf8");
+    if (!Buffer.from(text).equals(bytes)) throw new Error(readOnly);
+    const config = parse(text);
+    if (!Array.isArray(config.plugins)) throw new Error(readOnly);
+    const matches = [];
+    for (const [index2, entry2] of config.plugins.entries()) {
+      const spec = typeof entry2 === "string" ? entry2 : entry2?.package;
+      if (typeof spec !== "string") throw new Error(readOnly);
+      const local = spec.startsWith("file:") ? fileURLToPath(spec) : isAbsolute(spec) ? spec : spec.startsWith(".") ? resolve(directory, spec) : void 0;
+      if (local && await realpath(local) === source.path) matches.push({ entry: entry2, index: index2 });
+    }
+    if (matches.length !== 1) throw new Error(readOnly);
+    const { entry, index } = matches[0];
+    if (typeof entry === "string" || entry.package !== source.path || !entry.options || typeof entry.options !== "object" || Array.isArray(entry.options)) throw new Error(readOnly);
+    const fields = Object.fromEntries(keys.filter((key) => Object.hasOwn(entry.options, key)).map((key) => [key, entry.options[key]]));
+    const valid = parseOptions(entry.options).ok && isDeepStrictEqual(entry.options, host.options(), { skipPrototype: true });
+    const revision = createHash("sha256").update(text).update(JSON.stringify({
+      file,
+      inode: info.ino,
+      device: info.dev,
+      mode: info.mode,
+      uid: info.uid,
+      gid: info.gid,
+      source,
+      env: host.env,
+      directory: host.directory
+    })).digest("hex");
+    signal.throwIfAborted();
+    return { file, info, text, index, options: entry.options, fields, valid, revision };
+  }
+  return {
+    async read(signal) {
+      try {
+        const value = await inspect(signal);
+        return { scope: "global", revision: value.revision, source: value.file, writable: value.valid, fields: value.fields, ...!value.valid ? { reason: readOnly } : {} };
+      } catch {
+        signal.throwIfAborted();
+        return { scope: "global", revision: "", writable: false, fields: {}, reason: readOnly };
+      }
+    },
+    async write(revision, patch, signal) {
+      let locked = false, committed = false, cleanupFailed = false;
+      const lock = join(directory, ".predictions-setup.lock");
+      const temporary = [];
+      let result;
+      async function transaction() {
+        signal.throwIfAborted();
+        try {
+          await inspect(signal);
+        } catch {
+          return { kind: "read_only", message: readOnly };
+        }
+        const deadline = Date.now() + 3e3;
+        while (!locked) {
+          signal.throwIfAborted();
+          try {
+            await mkdir(lock, { mode: 448 });
+            locked = true;
+          } catch (error) {
+            if (error.code !== "EEXIST") throw error;
+            if (Date.now() >= deadline) return { kind: "failed", message: "Another setup writer owns this configuration. Reopen settings after it finishes." };
+            await delay(10, void 0, { signal });
+          }
+        }
+        const before = await inspect(signal);
+        if (revision !== before.revision) return { kind: "conflict", message: "Configuration changed. Reopen settings before saving." };
+        if (!before.valid) return { kind: "read_only", message: readOnly };
+        if (!patch || typeof patch !== "object" || Array.isArray(patch) || !Object.keys(patch).length || Object.entries(patch).some(([key, value]) => !keys.includes(key) || key !== "models" && value === void 0) || !parseOptions({ ...before.options, ...patch }).ok) return { kind: "failed", message: "Settings are invalid." };
+        let text = before.text;
+        for (const [key, value] of Object.entries(patch)) text = editSetting(text, before.index, key, value);
+        parse(text);
+        async function stage(bytes, mode) {
+          signal.throwIfAborted();
+          const path = join(dirname(before.file), ".predictions.tmp-" + randomUUID());
+          const handle = await open(path, "wx", 384);
+          temporary.push(path);
+          try {
+            await handle.writeFile(bytes);
+            await handle.chown(before.info.uid, before.info.gid);
+            await handle.chmod(mode);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          return path;
+        }
+        const next = await stage(text, before.info.mode & 511);
+        if ((await inspect(signal)).revision !== revision) return { kind: "conflict", message: "Configuration changed. Reopen settings before saving." };
+        const recovery = await stage(before.text, before.info.mode & 384);
+        await rename(recovery, before.file + ".predictions-backup");
+        if ((await inspect(signal)).revision !== revision) return { kind: "conflict", message: "Configuration changed. Reopen settings before saving." };
+        signal.throwIfAborted();
+        await rename(next, before.file);
+        committed = true;
+        const persisted = await inspect(new AbortController().signal);
+        if (persisted.text !== text) return { kind: "failed", message: uncertain };
+        return { kind: "written", revision: persisted.revision };
+      }
+      try {
+        result = await transaction();
+      } catch {
+        result = { kind: "failed", message: committed ? uncertain : "Settings were not saved. Reopen settings and try again." };
+      } finally {
+        for (const path of temporary) await unlink(path).catch((error) => {
+          if (!missing(error)) cleanupFailed = true;
+        });
+        if (locked) await rmdir(lock).catch(() => {
+          cleanupFailed = true;
+        });
+      }
+      return cleanupFailed ? { kind: "failed", message: committed ? uncertain : "Save cleanup failed. Reopen settings before trying again." } : result;
+    }
+  };
+}
+
+// src/setup.ts
+var settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"];
+function readGroups(fields) {
+  if (fields.models === void 0) return void 0;
+  const parsed = parseOptions({ models: fields.models });
+  if (!parsed.ok) throw new Error(parsed.reason);
+  return parsed.value.models.map((group) => group.split(",").map((entry) => entry.trim()));
+}
+
+// src/setup-service.ts
+function validation(fields) {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.");
+  if (Object.keys(fields).some((key) => !settingKeys.includes(key))) throw new Error("Unknown setting.");
+  for (const field of ["timeoutMs", "contextTurns"]) {
+    if (fields[field] === null) return [{ field, severity: "error", code: "invalid_value", message: "Enter a whole number." }];
+  }
+  const parsed = parseOptions(fields);
+  return parsed.ok ? [] : [{ field: settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }];
+}
+function resolve2(fields, catalog) {
+  const issues = validation(fields);
+  if (issues.length) return { groups: [], issues };
+  const selectors = readGroups(fields) ?? [];
+  const candidates = resolveModelGroups(selectors.map((group) => group.join(", ")), catalog);
+  const allModels = catalog.map((model) => ({ ...model, enabled: true }));
+  const owners = /* @__PURE__ */ new Map();
+  const key = (model) => JSON.stringify([model.providerID, model.id, model.variant ?? null]);
+  for (const [group, entries] of selectors.entries()) {
+    for (const [entry, text] of entries.entries()) {
+      const add = (code, message) => issues.push({ field: "models", group, entry, severity: "warning", code, message });
+      const [selector, variant] = text.split("#");
+      const base = resolveModels(selector, allModels);
+      const possible = resolveModels(text, allModels);
+      const available = resolveModels(text, catalog);
+      if (!base.length) add("no_match", "No current models match this selector.");
+      else {
+        if (variant !== void 0 && possible.length < base.length) add("unsupported_variant", "Some matching models do not support this reasoning variant.");
+        if (available.length < possible.length) add("disabled_model", "Some matching models are currently disabled.");
+      }
+      const previous = [...new Set(available.flatMap((model) => owners.has(key(model)) ? [owners.get(key(model))] : []))].sort((a, b) => a - b);
+      if (previous.length) add("overlap", `Matches already belong to ${previous.length === 1 ? "Group" : "Groups"} ${previous.map((index) => index + 1).join(", ")}.`);
+    }
+    for (const model of candidates[group]) owners.set(key(model), group);
+  }
+  return { groups: selectors.map((entries, index) => ({ selectors: entries, candidates: candidates[index] })), issues };
+}
+function createSetupService(store, models, current) {
+  async function catalog(signal) {
+    try {
+      return (await abortable(() => models(signal), signal)).map((model) => ({
+        providerID: model.providerID,
+        id: model.id,
+        ...model.name === void 0 ? {} : { name: model.name },
+        enabled: model.enabled,
+        variants: model.variants.map((variant) => ({ id: variant.id }))
+      }));
+    } catch {
+      signal.throwIfAborted();
+      throw new Error("Model metadata is unavailable.");
+    }
+  }
+  return {
+    async read(signal) {
+      const snapshot = await store.read(signal);
+      const metadata = await catalog(signal);
+      const state = current(), parsed = parseOptions(state.options);
+      return { ...snapshot, effective: parsed.ok ? parsed.value : null, catalog: metadata, issues: resolve2(snapshot.fields, metadata).issues, serviceVersion: state.version };
+    },
+    async preview(fields, signal) {
+      signal.throwIfAborted();
+      const issues = validation(fields);
+      if (issues.length) return { groups: [], issues };
+      return resolve2(fields, await catalog(signal));
+    }
+  };
+}
+
+// src/index.ts
 var index_default = Plugin.define({
   id: "opencode-predictions",
   async setup(ctx) {
@@ -602,9 +1008,34 @@ var index_default = Plugin.define({
         if (request.requestID) await registration.events.emit("progress", { message: "", modelName, requestID: request.requestID, sessionID: request.sessionID });
       }
     }, ctx.options, ctx.location.directory);
+    let username;
+    try {
+      username = userInfo().username;
+    } catch {
+    }
+    const store = createConfigStore({
+      version: ctx.app.version,
+      home: homedir(),
+      directory: ctx.location.directory,
+      env: Object.fromEntries(["XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_PROJECT_CONFIG"].map((key) => [key, process.env[key]])),
+      systemPaths: process.platform === "darwin" ? [
+        "/Library/Application Support/opencode",
+        "/Library/Managed Preferences/ai.opencode.managed.plist",
+        username ? join2("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences"
+      ] : ["/etc/opencode"],
+      source: async (signal) => {
+        if (!username) return;
+        const plugin = (await ctx.plugin.list(void 0, { signal })).data.find((entry) => entry.id === "opencode-predictions");
+        return plugin?.source.type === "local" && plugin.state.status === "active" ? plugin.source : void 0;
+      },
+      options: () => ctx.options
+    });
+    const setup = createSetupService(store, async (signal) => (await ctx.model.list(void 0, { signal })).data, () => ({ options: ctx.options, version: service.status().version }));
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input, context.signal),
-      status: (_input, context) => service.inspect(context.signal)
+      status: (_input, context) => service.inspect(context.signal),
+      settings: (_input, context) => setup.read(context.signal),
+      previewSettings: (input, context) => setup.preview(input.fields, context.signal)
     });
     return () => registration.dispose();
   }
