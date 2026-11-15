@@ -1,12 +1,21 @@
-import { describe, test } from "node:test"
+import { describe, test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
-import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rmdir, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import fs, { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, rmdir, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { syncBuiltinESMExports } from "node:module"
+import type { PathLike } from "node:fs"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { join, resolve } from "node:path"
 import { createConfigStore, type ConfigHost } from "../src/config.ts"
 
 const signal = () => new AbortController().signal
+
+function atRename(t: TestContext, intercept: (from: PathLike, to: PathLike, commit: () => Promise<void>) => Promise<void>) {
+  const original = fs.rename
+  const replacement = t.mock.method(fs, "rename", (from: PathLike, to: PathLike) => intercept(from, to, () => original(from, to)))
+  syncBuiltinESMExports()
+  t.after(() => { replacement.mock.restore(); syncBuiltinESMExports() })
+}
 
 async function fixture() {
   await mkdir(".test-artifacts", { recursive: true })
@@ -123,6 +132,46 @@ test("store validates changed keys and permits deletion only for models", async 
   assert.equal((await readFile(f.file, "utf8")).includes('"models"'), false)
 })
 
+test("model removal preserves every surrounding comment and handles trailing commas", async t => {
+  const cases = [
+    { name: "first", input: '{"models":"fixture/model",/* keep next */"automatic":false}', want: '{/* keep next */"automatic":false}', options: { models: "fixture/model", automatic: false } },
+    { name: "middle", input: '{"automatic":false,/* before */"models":"fixture/model"/* after */,/* next */"debug":false}', want: '{"automatic":false,/* before *//* after *//* next */"debug":false}', options: { automatic: false, models: "fixture/model", debug: false } },
+    { name: "last", input: '{"automatic":false,/* before */"models":"fixture/model"/* tail */}', want: '{"automatic":false/* before *//* tail */}', options: { automatic: false, models: "fixture/model" } },
+    { name: "last with trailing comma", input: '{"automatic":false,/* before */"models":"fixture/model",/* tail */}', want: '{"automatic":false,/* before *//* tail */}', options: { automatic: false, models: "fixture/model" } },
+    { name: "sole", input: '{"models":"fixture/model"}', want: '{}', options: { models: "fixture/model" } },
+    { name: "sole with trailing comma", input: '{"models":"fixture/model",/* tail */}', want: '{/* tail */}', options: { models: "fixture/model" } },
+    { name: "comments inside removed value", input: '{"models":[/* choose group */"fixture/model"/* group tail */],/* next */"automatic":false}', want: '{/* choose group *//* group tail *//* next */"automatic":false}', options: { models: ["fixture/model"], automatic: false } },
+    { name: "CRLF line comments", input: '{\r\n\t"models":"fixture/model", // tail\r\n\t// automatic note\r\n\t"automatic":false\r\n}', want: '{\r\n\t // tail\r\n\t// automatic note\r\n\t"automatic":false\r\n}', options: { models: "fixture/model", automatic: false } },
+  ]
+  for (const item of cases) await t.test(item.name, async () => {
+    const f = await fixture()
+    const document = (options: string) => `{"plugins":[{"package":${JSON.stringify(resolve("."))},"options":${options}}],"username":"keep"}\n`
+    const original = document(item.input)
+    await writeFile(f.file, original)
+    f.host.options = () => item.options
+    const snapshot = await f.store.read(signal())
+    assert.equal(snapshot.writable, true)
+    assert.equal((await f.store.write(snapshot.revision, { models: undefined }, signal())).kind, "written")
+    assert.equal(await readFile(f.file, "utf8"), document(item.want))
+    assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), original)
+    const after = await f.store.read(signal())
+    assert.equal(Object.hasOwn(after.fields, "models"), false)
+  })
+})
+
+test("replacing model groups preserves comments inside the edited value", async () => {
+  const f = await fixture()
+  const original = `{"plugins":[{"package":${JSON.stringify(resolve("."))},"options":{"models":[/* group note */"fixture/model"/* tail note */],"automatic":false}}]}\n`
+  await writeFile(f.file, original)
+  f.host.options = () => ({ models: ["fixture/model"], automatic: false })
+  const snapshot = await f.store.read(signal())
+  assert.equal(snapshot.writable, true)
+  assert.equal((await f.store.write(snapshot.revision, { models: [["fixture/new"]] }, signal())).kind, "written")
+  const expected = `{"plugins":[{"package":${JSON.stringify(resolve("."))},"options":{"models":[["fixture/new"]]/* group note *//* tail note */,"automatic":false}}]}\n`
+  assert.equal(await readFile(f.file, "utf8"), expected)
+  assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), original)
+})
+
 test("aborted or failed pre-commit saves preserve bytes and never restore automatically", async () => {
   const f = await fixture()
   const snapshot = await f.store.read(signal())
@@ -172,6 +221,127 @@ test("recovery copy rotates once without growing history or changing package ref
   const after = await f.store.read(signal())
   assert.equal((await f.store.write(after.revision, { timeoutMs: 4000 }, signal())).kind, "written")
   assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), once)
+  assert.deepEqual((await readdir(f.global)).sort(), ["opencode.jsonc", "opencode.jsonc.predictions-backup"])
+})
+
+test("production final comparison rejects an edit after replacement and recovery files are staged", async t => {
+  const f = await fixture()
+  const snapshot = await f.store.read(signal())
+  const external = f.original.replace("synthetic-private-config", "external-kept")
+  let staged = 0
+  atRename(t, async (_from, to, commit) => {
+    if (to === f.file + ".predictions-backup") {
+      staged = (await readdir(f.global)).filter(name => name.includes(".tmp-")).length
+      await commit()
+      await writeFile(f.file, external)
+    } else await commit()
+  })
+  const result = await f.store.write(snapshot.revision, { debug: true }, signal())
+  assert.equal(staged, 2, "the edit must occur after both files are staged, not during preflight")
+  assert.equal(result.kind, "conflict")
+  assert.equal(await readFile(f.file, "utf8"), external)
+  assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), f.original)
+  assert.deepEqual((await readdir(f.global)).sort(), ["opencode.jsonc", "opencode.jsonc.predictions-backup"])
+})
+
+test("production cancellation after staging and backup commit leaves active bytes unchanged", async t => {
+  const f = await fixture()
+  const snapshot = await f.store.read(signal())
+  const controller = new AbortController()
+  let staged = 0, reached = false
+  atRename(t, async (_from, to, commit) => {
+    if (to === f.file + ".predictions-backup") {
+      staged = (await readdir(f.global)).filter(name => name.includes(".tmp-")).length
+      await commit()
+      reached = true
+      controller.abort()
+    } else await commit()
+  })
+  const result = await f.store.write(snapshot.revision, { debug: true }, controller.signal)
+  assert.equal(reached, true)
+  assert.equal(staged, 2)
+  assert.equal(result.kind, "failed")
+  assert.equal(await readFile(f.file, "utf8"), f.original)
+  assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), f.original)
+  assert.deepEqual((await readdir(f.global)).sort(), ["opencode.jsonc", "opencode.jsonc.predictions-backup"])
+})
+
+test("production recovery-copy rename failure cleans staged files without changing active bytes", async t => {
+  const f = await fixture()
+  const snapshot = await f.store.read(signal())
+  let staged = 0, kernelError: string | undefined
+  atRename(t, async (_from, to, commit) => {
+    if (to !== f.file + ".predictions-backup") return commit()
+    staged = (await readdir(f.global)).filter(name => name.includes(".tmp-")).length
+    await mkdir(f.file + ".predictions-backup")
+    try { await commit() } catch (error) {
+      kernelError = (error as NodeJS.ErrnoException).code
+      throw error
+    } finally { await rmdir(f.file + ".predictions-backup") }
+  })
+  const result = await f.store.write(snapshot.revision, { debug: true }, signal())
+  assert.equal(staged, 2)
+  assert.match(kernelError ?? "", /^(EISDIR|ENOTEMPTY)$/)
+  assert.equal(result.kind, "failed")
+  assert.equal(await readFile(f.file, "utf8"), f.original)
+  assert.doesNotMatch(JSON.stringify(result), /EISDIR|ENOTEMPTY|synthetic-private/)
+  assert.deepEqual(await readdir(f.global), ["opencode.jsonc"])
+})
+
+test("production active replacement gets real EACCES without changing bytes or restoring backup", async t => {
+  const f = await fixture()
+  const snapshot = await f.store.read(signal())
+  let denied = false
+  atRename(t, async (_from, to, commit) => {
+    if (to !== f.file) return commit()
+    await chmod(f.global, 0o500)
+    try { await commit() } catch (error) {
+      denied = (error as NodeJS.ErrnoException).code === "EACCES"
+      throw error
+    } finally { await chmod(f.global, 0o755) }
+  })
+  const result = await f.store.write(snapshot.revision, { debug: true }, signal())
+  assert.equal(denied, true, "exercise a kernel failure after successful preflight and staging")
+  assert.equal(result.kind, "failed")
+  assert.equal(await readFile(f.file, "utf8"), f.original)
+  assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), f.original)
+  assert.doesNotMatch(JSON.stringify(result), /EACCES|synthetic-private/)
+  assert.deepEqual((await readdir(f.global)).sort(), ["opencode.jsonc", "opencode.jsonc.predictions-backup"])
+})
+
+test("production post-commit mismatch reports uncertainty without rollback or repeat replacement", async t => {
+  const f = await fixture()
+  const snapshot = await f.store.read(signal())
+  const external = f.original.replace("synthetic-private-config", "external-after-commit")
+  let replacements = 0
+  atRename(t, async (_from, to, commit) => {
+    await commit()
+    if (to === f.file) { replacements++; await writeFile(f.file, external) }
+  })
+  const result = await f.store.write(snapshot.revision, { debug: true }, signal())
+  assert.deepEqual(result, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+  assert.equal(replacements, 1)
+  assert.equal(await readFile(f.file, "utf8"), external)
+  assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), f.original)
+  assert.deepEqual((await readdir(f.global)).sort(), ["opencode.jsonc", "opencode.jsonc.predictions-backup"])
+})
+
+test("production post-commit verification error reports uncertainty and never rolls back saved bytes", async t => {
+  const f = await fixture()
+  const snapshot = await f.store.read(signal())
+  let replacements = 0
+  atRename(t, async (_from, to, commit) => {
+    await commit()
+    if (to === f.file) {
+      replacements++
+      f.host.source = async () => { throw new Error("synthetic-private-source-failure") }
+    }
+  })
+  const result = await f.store.write(snapshot.revision, { debug: true }, signal())
+  assert.deepEqual(result, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+  assert.equal(replacements, 1)
+  assert.equal((await readFile(f.file, "utf8")).replace(',"debug": true', ""), f.original)
+  assert.equal(await readFile(f.file + ".predictions-backup", "utf8"), f.original)
   assert.deepEqual((await readdir(f.global)).sort(), ["opencode.jsonc", "opencode.jsonc.predictions-backup"])
 })
 })

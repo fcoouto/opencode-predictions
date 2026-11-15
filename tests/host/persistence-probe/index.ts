@@ -32,9 +32,11 @@ export default Plugin.define({
     const registration = await ctx.rpc.register(PersistenceProbe, {
       read: async (_input, context) => ({ ...await store().read(context.signal), mount, version: ctx.app.version }),
       save: async (input, context) => {
-        const request = input as { revision: string; patch: Record<string, unknown>; loseAck?: boolean; markStarted?: boolean }
+        const request = input as { revision: string; patch: Record<string, unknown>; removeModels?: boolean; loseAck?: boolean; markStarted?: boolean }
+        if (request.removeModels && Object.hasOwn(request.patch, "models")) return { kind: "failed", message: "Conflicting model edits." }
+        const patch = request.removeModels ? { ...request.patch, models: undefined } : request.patch
         if (request.markStarted) await writeFile(join(homedir(), ".persistence-probe-write-started"), "started", { mode: 0o600 })
-        const result = await store().write(request.revision, request.patch, context.signal)
+        const result = await store().write(request.revision, patch, context.signal)
         if (request.loseAck) await delay(2000)
         return result
       },

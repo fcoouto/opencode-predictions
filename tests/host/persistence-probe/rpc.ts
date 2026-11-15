@@ -5,7 +5,7 @@ export const PersistenceProbe = Rpc.define({
   methods: {
     read: { input: { type: "object" }, output: { type: "object" } },
     save: {
-      input: { type: "object", properties: { revision: { type: "string" }, patch: { type: "object" }, loseAck: { type: "boolean" }, markStarted: { type: "boolean" } }, required: ["revision", "patch"] },
+      input: { type: "object", properties: { revision: { type: "string" }, patch: { type: "object" }, removeModels: { type: "boolean" }, loseAck: { type: "boolean" }, markStarted: { type: "boolean" } }, required: ["revision", "patch"] },
       output: { type: "object" },
     },
   },

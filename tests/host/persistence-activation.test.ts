@@ -2,7 +2,7 @@ import { describe, test } from "node:test"
 import assert from "node:assert/strict"
 import { join, resolve } from "node:path"
 import { fork } from "node:child_process"
-import { readFile, stat } from "node:fs/promises"
+import { readFile, stat, writeFile } from "node:fs/promises"
 import { setTimeout as delay } from "node:timers/promises"
 import { createFixture } from "./fixture.mjs"
 import { PersistenceProbe } from "./persistence-probe/rpc.ts"
@@ -125,6 +125,31 @@ test("server-side Bun writer and independent Node writer coordinate on the same 
   worker.send({ kind: "release" })
   assert.equal((await result).kind, "written")
   assert.equal((await serverSave as { kind: string }).kind, "conflict")
+  assert.equal(fixture.calls.length, 0)
+})
+
+test("real server removes sole model property with trailing comma without losing its comment", { timeout: 60000 }, async () => {
+  await using fixture = await createFixture(resolve("tests/host/persistence-probe"), { timeoutMs: undefined, obsolete: undefined, automatic: undefined }, {}, { configSource: "global-jsonc" })
+  const location = { directory: fixture.directory }
+  const original = (await readFile(fixture.configFile!, "utf8")).replace('"models": "fixture/model"', '"models": "fixture/model", /* keep setup note */')
+  await writeFile(fixture.configFile!, original)
+  const api = fixture.api.rpc(PersistenceProbe)
+  const before = await api.read({}, { location }) as ProbeSnapshot & { mount: string }
+  assert.equal(before.writable, true)
+  assert.deepEqual(before.fields, { models: "fixture/model" })
+  const result = await api.save({ revision: before.revision!, patch: {}, removeModels: true }, { location }) as { kind: string }
+  assert.equal(result.kind, "written")
+  let after = before
+  for (let tries = 0; tries < 100; tries++) {
+    after = await api.read({}, { location }) as typeof before
+    if (after.writable && after.mount !== before.mount) break
+    await delay(30)
+  }
+  assert.equal(after.writable, true)
+  assert.notEqual(after.mount, before.mount)
+  assert.deepEqual(after.fields, {})
+  assert.match(await readFile(fixture.configFile!, "utf8"), /\/\* keep setup note \*\//)
+  assert.equal(await readFile(fixture.configFile! + ".predictions-backup", "utf8"), original)
   assert.equal(fixture.calls.length, 0)
 })
 })

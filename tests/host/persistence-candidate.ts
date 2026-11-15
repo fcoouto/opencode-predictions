@@ -5,8 +5,9 @@ import { lstat, mkdir, open, readFile, realpath, rename, rmdir, unlink } from "n
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
-import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from "jsonc-parser"
+import { getNodeValue, parseTree, type Node, type ParseError } from "jsonc-parser"
 import { parseOptions } from "../../src/options.ts"
+import { editSetting } from "../../src/config-edit.ts"
 
 export type ProbeHost = {
   home: string
@@ -126,7 +127,7 @@ export function createCandidate(host: ProbeHost, hooks: ProbeHooks = {}) {
         if (!isDeepStrictEqual(before.options, host.options, { skipPrototype: true })) return { kind: "read_only" }
         if (!Object.keys(patch).length || Object.keys(patch).some(key => !fields.includes(key) || (key !== "models" && patch[key] === undefined)) || !parseOptions({ ...before.options, ...patch }).ok) return { kind: "invalid" }
         let text = before.text
-        for (const [key, value] of Object.entries(patch)) text = applyEdits(text, modify(text, ["plugins", before.index, "options", key], value, {}))
+        for (const [key, value] of Object.entries(patch)) text = editSetting(text, before.index, key, value)
         tree(text)
         async function stage(bytes: string, mode: number) {
           const path = join(dirname(before.file), ".predictions.tmp-" + randomUUID())

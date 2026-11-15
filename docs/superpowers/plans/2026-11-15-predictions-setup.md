@@ -110,7 +110,7 @@
 ## Task 2: Production Global Config Store
 
 **Depends on:** Task 1 **GO** and its documented backend.
-**Files:** Create `src/config.ts`, `src/setup.ts`, `tests/config.test.ts`; modify `tests/host/persistence-probe/index.ts` to exercise production persistence. Update package files only for the JSONC editor proven necessary in Task 1; generated bundle metadata may follow that manifest change.
+**Files:** Create `src/config.ts`, `src/config-edit.ts`, `src/setup.ts`, `tests/config.test.ts`; modify `tests/host/persistence-probe/index.ts` to exercise production persistence. Update package files only for the JSONC editor proven necessary in Task 1; generated bundle metadata may follow that manifest change.
 
 **Interfaces:**
 - In `src/setup.ts`, introduce `SettingKey = "models" | "enabled" | "automatic" | "escalation" | "timeoutMs" | "contextTurns" | "debug"` and `SettingsInput = Partial<Record<SettingKey, unknown>>`. Unknown values allow invalid existing settings to be displayed rather than silently defaulted.
@@ -140,7 +140,7 @@
 
 - [ ] **Step 5: Commit the store, its types, and tests.**
   ```sh
-   git add src/config.ts src/setup.ts tests/config.test.ts tests/host/persistence-probe/index.ts
+   git add src/config.ts src/config-edit.ts src/setup.ts tests/config.test.ts tests/host/persistence-probe tests/host/persistence-worker.ts tests/host/persistence-activation.test.ts
   git commit -m "feat: persist prediction settings safely"
   ```
   Include package files in this commit only if changed for the approved JSONC dependency.
@@ -363,3 +363,4 @@ Do not treat the historical strict NO-GO as a new failure solely because the acc
 - Subsequent design amendment: the user approved option 1, best-effort edits to existing JSON/JSONC, and accepted the residual external-editor race.
 - The user requested gate alignment so execution could resume. The design gate and persistence tasks now use the approved best-effort policy, including recovery copies and serialized supported setup writers. Native execution can resume at Task 1; other persistence and lifecycle checks remain unproved. This documentation edit has not resumed implementation or marked any gate passed.
 - Resumed Task 1 established a scoped GO for the macOS/2.2.6, project-discovery-disabled, canonical absolute-local-entry subset documented in the feasibility report. Separate-process and real-server/Bun coordination, preserved bytes/permissions/recovery, activation/restart, and interrupted-acknowledgement reconciliation now have evidence. Other cases remain read-only; this is permission for Task 2, not production or UI readiness.
+- Checkpoint review of Tasks 1–2 suspended that GO after finding comment-erasing model removal and missing direct production failure-path proof. The correction adds a shared token-aware editor, literal preservation regressions, direct production boundary tests, production process workers, and real-server sole-property deletion coverage. Fresh checks passed 59/59 combined and 242/242 project tests, plus typecheck and bundle. This restores only the documented scoped gate; Tasks 3–7 remain unbuilt and unapproved for release.

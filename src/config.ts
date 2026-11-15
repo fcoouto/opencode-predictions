@@ -6,8 +6,9 @@ import { lstat, mkdir, open, readFile, realpath, rename, rmdir, unlink } from "n
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
-import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from "jsonc-parser"
+import { getNodeValue, parseTree, type Node, type ParseError } from "jsonc-parser"
 import { parseOptions } from "./options.ts"
+import { editSetting } from "./config-edit.ts"
 
 export type ConfigHost = {
   // These values come from the selected server context, never from RPC input.
@@ -139,7 +140,7 @@ export function createConfigStore(host: ConfigHost) {
           Object.entries(patch).some(([key, value]) => !(keys as readonly string[]).includes(key) || (key !== "models" && value === undefined)) ||
           !parseOptions({ ...before.options, ...patch }).ok) return { kind: "failed", message: "Settings are invalid." }
         let text = before.text
-        for (const [key, value] of Object.entries(patch)) text = applyEdits(text, modify(text, ["plugins", before.index, "options", key], value, {}))
+        for (const [key, value] of Object.entries(patch)) text = editSetting(text, before.index, key, value)
         parse(text)
         async function stage(bytes: string, mode: number) {
           signal.throwIfAborted()
