@@ -32,6 +32,7 @@ Current settings live in the plugin entry in OpenCode's JSON or JSONC configurat
 - The proposed Predictions Setup command must support both Desktop and interactive CLI and let users manage all existing plugin settings without opening a configuration file.
 - The user selected a native Desktop settings page and an equivalent section-based CLI menu rather than a sequential wizard or compact dialog.
 - The user approved global-only editing on the selected OpenCode server for the first release. Existing OpenCode configuration remains the single settings source; safe persistence is still unproven.
+- The user selected best-effort writes to existing JSON/JSONC and accepted the residual race with external editors. Serialization among supported setup writers, detected-stale-edit rejection, syntax/permission preservation, atomic replacement, recovery copies, and activation verification remain mandatory. This approval is not proof of implementation readiness.
 
 ## Evidence on Hand
 

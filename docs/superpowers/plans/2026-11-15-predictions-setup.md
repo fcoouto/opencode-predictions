@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-15-predictions-setup-design.md`
 
+> **Persistence steps require revision before resuming.** The user approved best-effort editing of existing JSON/JSONC with the residual external-editor race accepted. The amended spec supersedes this plan's absolute no-lost-update gate. Preserve the historical NO-GO evidence below; do not execute these steps unchanged or treat risk acceptance as a GO. Serialization among supported setup writers and all other remaining safeguards still require proof. This update records design approval only; it does not rewrite or resume the implementation plan.
+
 ## Global Constraints
 
 - Order: **Behavior**, **Models**, **Advanced**. Behavior labels: **Enable Predictions**, **Predict After Replies**, **Escalation Mode**.
@@ -349,3 +351,4 @@ Alternative: **Subagent-driven**, with fresh task implementers/reviewers after t
 - The gate remains NO-GO despite green characterization tests. Research checkpoint: `cffe431`.
 - Fresh independent review accepted the research checkpoint, with no Critical/Important findings. One Minor is deferred: capability tests log the runtime schema but do not assert it; HTTP 400 also follows from omitting required `shell`.
 - No production readiness or successful-save behavior was approved by this review. Tasks 2–7 remain blocked.
+- Subsequent design amendment: the user approved option 1, best-effort edits to existing JSON/JSONC, and accepted the residual external-editor race. The old gate must be revised against the amended spec before resuming; other persistence and lifecycle checks remain unproved. Native execution remains the selected method.

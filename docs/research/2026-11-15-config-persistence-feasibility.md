@@ -1,10 +1,12 @@
 # Predictions Setup: Config Persistence Feasibility
 
-## Verdict: NO-GO
+## Original Verdict: NO-GO
+
+**Current status:** the user subsequently approved best-effort JSON/JSONC edits and accepted the residual external-editor race. The amended design is `docs/superpowers/specs/2026-11-15-predictions-setup-design.md`. The findings below remain valid historical evidence under the former guarantee. They do not establish a GO for the amended policy; the remaining safeguards and implementation plan require further work.
 
 Do not start Tasks 2–7 of `docs/superpowers/plans/2026-11-15-predictions-setup.md`.
 
-The installed OpenCode server cannot update plugin options through its supported configuration patch. A direct filesystem candidate also fails the approved no-lost-update requirement. This is an unsuccessful feasibility gate, not a working settings implementation.
+The installed OpenCode server cannot update plugin options through its supported configuration patch. A direct filesystem candidate also failed the then-approved no-lost-update requirement. This was an unsuccessful feasibility gate, not a working settings implementation.
 
 No production code, user configuration, installed plugin, or paid provider was changed.
 
@@ -103,11 +105,11 @@ Verification on 2026-11-15:
 
 Detailed RED/GREEN logs remain in this worktree's ignored `.superpowers/sdd/2026-11-15-predictions-setup/` workspace. Passing checks do not change the NO-GO verdict.
 
-## Decision Needed
+## Original Decision and Subsequent Approval
 
-Recommended: obtain a supported host operation for scoped plugin-option edits with source identity, JSONC preservation, and an adequate conditional-write/conflict contract.
+The original recommendation was to obtain a supported host operation for scoped plugin-option edits with source identity, JSONC preservation, and an adequate conditional-write/conflict contract.
 
-Another route requires explicit design approval: accept best-effort external-editor conflict detection, with a disclosed residual race despite atomic replacement and serialization among setup clients. That is a weaker promise and is not authorized by the current design.
+After the upstream investigation and Astra's recommendation, the user approved the alternative: best-effort edits to the existing global JSON/JSONC, with a disclosed residual external-editor race despite atomic replacement and serialization among setup clients. This weaker external-editor promise is now authorized. Source identity, setup-writer coordination, stale checks, JSONC/permission preservation, recovery copies, and persistence/activation verification remain mandatory and unproved.
 
 Do not silently switch to plugin storage, guess a global path, or ship the test candidate as a writer.
 
@@ -159,4 +161,4 @@ The remaining upstream requirements are the already-approved ones: scoped edits 
 - [Pinned upstream config implementation](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/core/src/config.ts#L469-L491).
 - [Pinned upstream file-mutation limitation](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/core/src/file-mutation.ts#L67-L75).
 
-NO-GO remains. No upstream issue, comment, PR, or installation change was submitted.
+At the end of this upstream search, NO-GO remained under the original guarantee. The later approved amendment is recorded at the top of this report. No upstream issue, comment, PR, or installation change was submitted.
