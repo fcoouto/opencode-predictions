@@ -68,7 +68,7 @@ function createController(io) {
       if (snapshot.key && snapshot.draft) {
         remember(snapshot.key);
         const result = results.get(snapshot.key);
-        if (result?.text) result.communication = void 0;
+        if (result?.text || result?.authority) result.communication = void 0;
         else results.delete(snapshot.key);
       }
       paint();
@@ -83,7 +83,7 @@ function createController(io) {
         exhausted();
         return;
       }
-      const escalation2 = manual ? communication?.offer?.token ?? (continuation && attempted.has(key) ? "refresh" : void 0) : void 0;
+      const escalation2 = manual ? communication?.offer?.token ?? (continuation && results.get(key)?.authority ? "refresh" : void 0) : void 0;
       const refreshing = manual && !!communication && !communication.offer;
       let noAlternatives = false;
       remember(key);
@@ -96,7 +96,8 @@ function createController(io) {
         if (!disposed && !request.signal.aborted && current.key === key && !current.draft) {
           const text = reply.text || results.get(key)?.text;
           const next = reply.communication ?? (reply.escalation ? { message: "", offer: reply.escalation } : !reply.text && communication ? { message: text ? "" : "No suggestion." } : void 0);
-          results.set(key, { text, communication: next });
+          const authority = !!reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "") || results.get(key)?.authority;
+          results.set(key, { text, communication: next, authority });
           noAlternatives = refreshing && reply.reason === "escalation_refreshed" && !next?.offer;
         }
       } catch {
@@ -213,13 +214,13 @@ var encoder = new TextEncoder();
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.1.0",
+  version: "0.2.0",
   description: "Next-prompt predictions for OpenCode Desktop and CLI",
   type: "module",
   license: "MIT",
   repository: { type: "git", url: "https://github.com/fcoouto/opencode-predictions.git" },
   engines: { node: ">=26.4.0" },
-  files: ["dist", "README.md", "LICENSE"],
+  files: ["dist", "README.md", "readme-demo.svg", "LICENSE"],
   exports: {
     ".": "./dist/index.js",
     "./tui": "./dist/tui.js",
@@ -262,7 +263,7 @@ function reasonNotice(reason) {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
-    context_unavailable: ["No completed response to predict from.", "Finish an assistant response with usable conversation text, then request a prediction."],
+    context_unavailable: ["Prediction unavailable for this response.", "Continue typing your next prompt."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
   };
@@ -499,7 +500,7 @@ function startClient(host) {
           const refreshed = reply.reason === "escalation_refreshed" || escalation2 === "refresh";
           const abstained = reply.reason === "no_suggestion" && !refreshed;
           const message = reply.text || controller.preview() || refreshed || ["stale", "cancelled"].includes(reply.reason ?? "") ? "" : abstained ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction." : notice2 ? `${notice2.title}
-${reply.reason === "generation_failed" ? notice2.message : "Open Prediction status and preview for recovery."}` : "";
+${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? notice2.message : "Open Prediction status and preview for recovery."}` : "";
           return { ...reply, communication: { message, offer: reply.text || abstained || refreshed ? reply.escalation : void 0 } };
         }
         return reply;

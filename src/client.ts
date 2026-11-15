@@ -144,7 +144,7 @@ export function startClient(host: ClientHost) {
           const abstained = reply.reason === "no_suggestion" && !refreshed
           const message = reply.text || controller.preview() || refreshed || ["stale", "cancelled"].includes(reply.reason ?? "") ? ""
             : abstained ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction."
-              : notice ? `${notice.title}\n${reply.reason === "generation_failed" ? notice.message : "Open Prediction status and preview for recovery."}` : ""
+              : notice ? `${notice.title}\n${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? notice.message : "Open Prediction status and preview for recovery."}` : ""
           return { ...reply, communication: { message, offer: reply.text || abstained || refreshed ? reply.escalation : undefined } }
         }
         return reply

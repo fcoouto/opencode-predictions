@@ -80,3 +80,9 @@
 - Compatibility: 144 comparisons against the pre-feature prompt builder are byte-identical across synthetic cases, turn counts, and omitted/empty/whitespace context.
 - Opus review identified replacement-string expansion of dollar patterns in guidance. A regression test reproduced it, and using a replacement callback fixed literal text preservation and budgeting. The full suite, type checking, bundles, and installed-tarball server checks pass after the fix.
 - Deferred review notes: filesystem-read timeouts retain the existing model-oriented timeout notice; unresponsive OS filesystem calls can outlive cancellation; foreign-platform absolute path syntax fails safely during loading rather than option parsing. Native Windows named pipes and real-model instruction compliance were not tested. Valid Unicode, including bidi/zero-width characters, remains permitted.
+
+## PR integration
+
+After implementation approval, the user requested a PR and merge. The feature branch integrates `origin/main` at `b7d6267`, preserving its v0.2.0 package metadata, revised directive, retained human intent, preview fixes, and reload recovery. Prompt construction combines standing guidance with upstream's retained-human-context budgeting.
+
+The integrated tree passes 267 tests, type checking, bundling, package checks, and five real-server checks. A combined regression covers maximum-size guidance alongside oversized retained human intent and an assistant-only reply. All 216 no-context comparisons against the updated main prompt builder are byte-identical. No live global configuration was changed.

@@ -31,6 +31,182 @@ async function fixture() {
   return page
 }
 
+async function previewFixture() {
+  const page = await fixture()
+  await page.setViewportSize({ width: 900, height: 700 })
+  await page.evaluate(() => {
+    const w = window as any
+    document.body.style.cssText = "margin:0;background:#111;color:#aaa"
+    document.querySelector("form")!.style.cssText = "position:fixed;bottom:24px;left:24px;width:calc(100% - 48px);background:#242424;border:1px solid #444;border-radius:12px"
+    w.editor.style.cssText = "width:100%;box-sizing:border-box;padding:12px 16px;min-height:48px;font:16px/24px sans-serif;white-space:pre-wrap"
+    w.editor.nextElementSibling.style.position = "absolute"
+    const toolbar = document.createElement("div")
+    toolbar.setAttribute("data-preview-toolbar", "")
+    toolbar.textContent = "＋  Build  ·  OpenAI / Model  ·  High"
+    toolbar.style.cssText = "height:40px;padding:0 16px;display:flex;align-items:center;font:14px sans-serif"
+    document.querySelector("form")!.append(toolbar)
+  })
+  return page
+}
+
+test("Desktop multiline prediction grows the bottom-anchored composer above its controls", async () => {
+  const page = await previewFixture()
+  try {
+    const result = await page.evaluate(() => {
+      const w = window as any
+      const form = document.querySelector("form")!
+      const before = form.getBoundingClientRect()
+      w.adapter.paint("First line.\nSecond line.\nThird line.")
+      const ghost = document.querySelector<HTMLElement>("[data-opencode-prediction]")!
+      const bounds = ghost.getBoundingClientRect()
+      const editor = w.editor.getBoundingClientRect()
+      const controls = document.querySelector("[data-preview-toolbar]")!.getBoundingClientRect()
+      const after = form.getBoundingClientRect()
+      return { beforeHeight: before.height, afterHeight: after.height, sameBottom: before.bottom === after.bottom, aligned: Math.abs(bounds.top - editor.top) < 1, contained: bounds.bottom <= controls.top + 1, editorHeight: editor.height, text: ghost.textContent, draft: w.editor.textContent }
+    })
+    assert.ok(result.afterHeight > result.beforeHeight)
+    assert.ok(result.editorHeight >= 96)
+    assert.equal(result.sameBottom, true)
+    assert.equal(result.aligned, true)
+    assert.equal(result.contained, true)
+    assert.equal(result.draft, "")
+    assert.equal(result.text, "First line.\nSecond line.\nThird line.")
+    await page.screenshot({ path: ".test-artifacts/preview-three-lines.png" })
+  } finally { await page.close() }
+})
+
+test("Desktop preview ellipsizes after six lines but accepts the exact full prediction", async () => {
+  const page = await previewFixture()
+  try {
+    const result = await page.evaluate(() => {
+      const w = window as any
+      const text = Array.from({ length: 9 }, (_, i) => `Line ${i + 1}: preserve this text. 😀`).join("\n")
+      w.adapter.paint(text)
+      const ghost = document.querySelector<HTMLElement>("[data-opencode-prediction]")!
+      const style = getComputedStyle(ghost)
+      const height = ghost.getBoundingClientRect().height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom)
+      const visual = ghost.firstElementChild ?? ghost
+      const clipped = visual.scrollHeight > visual.clientHeight
+      const clamp = getComputedStyle(ghost.firstElementChild ?? ghost).webkitLineClamp
+      const accepted = w.adapter.insert(text)
+      return { height, clamp, clipped, accepted, fullText: w.editor.textContent === text, minHeight: w.editor.style.minHeight, submissions: w.submissions }
+    })
+    assert.equal(result.height, 6 * 24)
+    assert.equal(result.clamp, "6")
+    assert.equal(result.clipped, true)
+    assert.equal(result.accepted, true)
+    assert.equal(result.fullText, true)
+    assert.equal(result.minHeight, "48px")
+    assert.equal(result.submissions, 0)
+    await page.evaluate(() => (window as any).adapter.paint(undefined))
+  } finally { await page.close() }
+})
+
+test("Desktop preview reflows on resize and never accumulates reserved height", async () => {
+  const page = await previewFixture()
+  try {
+    await page.evaluate(() => {
+      const w = window as any
+      w.previewText = "Keep the full prediction readable. 長い名前 😀 ".repeat(7)
+      w.adapter.paint(w.previewText)
+    })
+    const wide = await page.locator('[contenteditable="true"]').boundingBox()
+    await page.setViewportSize({ width: 360, height: 700 })
+    await page.waitForFunction(() => {
+      const editor = document.querySelector('[contenteditable="true"]')!.getBoundingClientRect()
+      const ghost = document.querySelector("[data-opencode-prediction]")!.getBoundingClientRect()
+      return Math.abs(editor.width - ghost.width) < 1 && editor.height >= ghost.height - 1
+    })
+    const narrow = await page.locator('[contenteditable="true"]').boundingBox()
+    assert.ok(narrow!.height > wide!.height)
+    assert.ok(narrow!.height <= 6 * 24 + 24)
+    await page.screenshot({ path: ".test-artifacts/preview-six-lines-narrow.png" })
+    await page.setViewportSize({ width: 900, height: 700 })
+    await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height === height, wide!.height)
+    const result = await page.evaluate(() => {
+      const w = window as any
+      const before = w.editor.getBoundingClientRect().height
+      for (let i = 0; i < 10; i++) w.adapter.paint(w.previewText)
+      const after = w.editor.getBoundingClientRect().height
+      w.adapter.paint("Short.")
+      return { before, after, shortHeight: w.editor.getBoundingClientRect().height }
+    })
+    assert.equal(result.before, result.after)
+    assert.equal(result.shortHeight, 48)
+  } finally { await page.close() }
+})
+
+test("Desktop preview restores original layout on every withdrawal path without growing status", async () => {
+  for (const action of ["dismiss", "typing", "composition", "status", "dispose", "navigation"]) {
+    const page = await previewFixture()
+    try {
+      const result = await page.evaluate(action => {
+        const w = window as any
+        w.editor.style.setProperty("min-height", "48px", "important")
+        w.editor.style.color = "red"
+        const original = w.editor
+        const before = document.querySelector("form")!.getBoundingClientRect().height
+        w.adapter.paint("One.\nTwo.\nThree.\nFour.")
+        const grown = document.querySelector("form")!.getBoundingClientRect().height
+        if (action === "dismiss") w.adapter.paint(undefined)
+        if (action === "typing") { w.editor.textContent = "Typed"; w.editor.dispatchEvent(new InputEvent("input", { bubbles: true })) }
+        if (action === "composition") w.editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }))
+        if (action === "status") w.adapter.communicate({ message: "", activity: { kind: "initial" } })
+        if (action === "dispose") w.adapter.dispose()
+        if (action === "navigation") {
+          const next = w.editor.cloneNode(false) as HTMLElement
+          next.style.setProperty("min-height", "48px", "important")
+          w.editor.replaceWith(next); w.editor = next; next.focus()
+          w.adapter.paint("Short.")
+        }
+        return { before, grown, after: document.querySelector("form")!.getBoundingClientRect().height, value: original.style.minHeight, priority: original.style.getPropertyPriority("min-height"), color: original.style.color }
+      }, action)
+      assert.ok(result.grown > result.before, action)
+      assert.equal(result.after, result.before, action)
+      assert.equal(result.value, "48px", action)
+      assert.equal(result.priority, "important", action)
+      assert.equal(result.color, "red", action)
+    } finally { await page.close() }
+  }
+})
+
+test("Desktop preview cleanup preserves min-height changes made by the host", async () => {
+  const page = await previewFixture()
+  try {
+    const result = await page.evaluate(() => {
+      const w = window as any
+      w.adapter.paint("One.\nTwo.\nThree.\nFour.")
+      w.editor.style.setProperty("min-height", "80px", "important")
+      w.adapter.paint("One.\nTwo.\nThree.\nFour.")
+      w.adapter.paint(undefined)
+      return { value: w.editor.style.minHeight, priority: w.editor.style.getPropertyPriority("min-height") }
+    })
+    assert.deepEqual(result, { value: "80px", priority: "important" })
+  } finally { await page.close() }
+})
+
+test("Desktop preview respects content-box sizing and removes its override when min-height is inherited", async () => {
+  const page = await previewFixture()
+  try {
+    const result = await page.evaluate(() => {
+      const w = window as any
+      const style = document.createElement("style")
+      style.textContent = '[data-component="composer-editor"] { min-height: 24px }'
+      document.head.append(style)
+      w.editor.style.removeProperty("min-height")
+      w.editor.style.boxSizing = "content-box"
+      w.editor.style.width = "calc(100% - 32px)"
+      const before = w.editor.getBoundingClientRect().height
+      w.adapter.paint("One.\nTwo.\nThree.")
+      const ghost = document.querySelector("[data-opencode-prediction]")!.getBoundingClientRect()
+      const editor = w.editor.getBoundingClientRect()
+      w.adapter.paint(undefined)
+      return { contained: editor.height >= ghost.height, grown: editor.height > before, restored: w.editor.getBoundingClientRect().height === before, inline: w.editor.style.minHeight }
+    })
+    assert.deepEqual(result, { contained: true, grown: true, restored: true, inline: "" })
+  } finally { await page.close() }
+})
+
 test("desktop ghost stays outside editable content and accepts exact multiline text without submit", async () => {
   const page = await fixture()
   try {

@@ -1,19 +1,61 @@
-# OpenCode Predictions
+<h1 align="center">OpenCode Predictions</h1>
 
-Suggest a useful next user prompt in **OpenCode Desktop and the interactive CLI**.
-Suggestions appear as ghost text after the assistant finishes. **Tab accepts a suggestion for editing; it never submits it.**
+<p align="center">
+  <strong>Your next prompt, one Tab away.</strong><br />
+  AI-powered next-prompt suggestions for OpenCode Desktop and the interactive CLI.
+</p>
+
+<p align="center">
+  <a href="https://github.com/fcoouto/opencode-predictions/actions/workflows/check.yml"><img src="https://github.com/fcoouto/opencode-predictions/actions/workflows/check.yml/badge.svg" alt="Build and test status" /></a>
+  <a href="#compatibility"><img src="https://img.shields.io/badge/OpenCode-V2-b9efcb?style=flat-square&amp;labelColor=27352d" alt="Requires OpenCode V2" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9efcb?style=flat-square&amp;labelColor=27352d" alt="MIT license" /></a>
+</p>
+
+<p align="center">
+  <a href="#how-to-install">Install</a> &middot;
+  <a href="#controls">Controls</a> &middot;
+  <a href="#settings">Settings</a> &middot;
+  <a href="#cost-and-privacy">Cost &amp; privacy</a> &middot;
+  <a href="#compatibility">Compatibility</a>
+</p>
+
+<p align="center">
+  <img src="readme-demo.svg" width="800" alt="Illustrative interaction: the assistant finishes, then ghost text suggests “Review the diff for regressions.” Tab accepts it for editing, without sending." />
+</p>
+
+<p align="center"><sub>Illustrative interaction, not a screenshot. You decide what gets sent.</sub></p>
+
+## Keep the next step in sight
+
+OpenCode Predictions is an [OpenCode](https://opencode.ai) plugin for **prompt
+autocomplete**. When the assistant finishes, a useful next user prompt appears
+as ghost text. Take it, edit it, or keep typing your own.
+
+**Tab accepts a suggestion for editing. It never submits it.**
+
+- **Stay on task.** Suggestions draw on recent conversation, not your unsent draft.
+- **Keep your main model.** Choose prediction models separately, with ordered
+  groups and automatic error fallback.
+- **Use either interface.** One global plugin entry loads Desktop and CLI support.
+- **Ask when you want.** Predict automatically after a response, or switch to
+  manual requests only.
 
 The default directive asks for one concise next step toward your current goal,
 rather than guessing your exact next words. It prioritizes explicitly unfinished
 work or delivery gaps without inventing facts or bundling optional tasks.
+When a recommendation or single scoped approval request clearly continues your
+task, it favors a short contextual reply instead of repeating the proposal.
 
 ## How to install
+
+**Requires OpenCode V2.** See [tested versions and limitations](#compatibility).
+Prebuilt bundles are included; no local build is needed.
+
+### Add the plugin
 
 Open your existing global `~/.config/opencode/opencode.json` or
 `~/.config/opencode/opencode.jsonc`. Use whichever file you already have; do not
 create a second configuration file.
-
-### If you already have a configuration file
 
 Append **only this object** inside the existing top-level `"plugins": [ ... ]`
 array. Add a comma after the preceding entry, if there is one. Preserve all other
@@ -32,9 +74,12 @@ plugins and settings.
 }
 ```
 
-### If you do not have other pluing in your configuration file
+<details>
+<summary><strong>Starting without a configuration file? Copy this complete example.</strong></summary>
 
-Your `~/.config/opencode/opencode.jsonc` should look like this:
+Create `~/.config/opencode/opencode.jsonc` with the following contents.
+If your existing file has no `plugins` array, add this array to it instead of
+replacing the file.
 
 ```jsonc
 {
@@ -54,21 +99,43 @@ Your `~/.config/opencode/opencode.jsonc` should look like this:
 }
 ```
 
-OpenCode installs the package from GitHub. Prebuilt bundles are included; no local
-build is needed. Configuration changes reload automatically; use `/reload` if needed.
+</details>
+
+OpenCode installs the package from GitHub.
+Configuration changes reload automatically; use `/reload` if needed.
 The global entry loads both Desktop and CLI support. Do not put it only in `cli.json`.
+
+### Check your prediction model
 
 Connect your chosen provider through OpenCode. No API keys belong in plugin options.
 The example selects available `opencode` models whose ID or display name contains
 `free` and which support the `low` variant. Use **Prediction status and preview**
 to inspect matches. If none match, choose another selector or omit `#low`.
 
+> **Before your first prediction:** model calls can consume paid quota, and the
+> selected provider receives recent conversation text. “Free” model names do not
+> guarantee unlimited usage. Read [cost and privacy](#cost-and-privacy).
+
 ## Controls
 
-- **Tab:** insert only the visible real prediction into the editable prompt. During compact status, Tab keeps its normal host behavior and cannot accept a hidden prediction.
-- **Alt+Shift+P** (**Option+Shift+P** on macOS): request a prediction after a completed response, or try another model after a prediction/abstention. The empty prompt must be focused. It never inserts or submits text.
-- **Predict next prompt:** command-palette equivalent of the prediction shortcut. With escalation off, explicit requests retain ordinary refresh behavior.
-- **Prediction status and preview:** reopen a readable status snapshot with settings, resolved models, safe errors, and the current suggestion. Choose **Technical details** for host/plugin versions, feedback capabilities, and timing.
+| Action | Control | What happens |
+| --- | --- | --- |
+| Accept and edit | <kbd>Tab</kbd> | Insert the visible prediction into the draft. **Never submits.** |
+| Request or try another | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Request a prediction, or try another eligible model after a prediction or abstention. |
+| Request from the palette | **Predict next prompt** | Use the command-palette equivalent of the shortcut. |
+| Inspect settings and errors | **Prediction status and preview** | Open a readable status snapshot with resolved models, safe errors, and the current suggestion. |
+
+On macOS, use <kbd>Option</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd>.
+The prediction shortcut requires an empty, focused prompt. It never inserts or
+submits text. With escalation off, explicit requests retain ordinary refresh
+behavior.
+
+Choose **Technical details** in the status dialog for host/plugin versions,
+feedback capabilities, and timing. During compact status, Tab keeps its normal
+host behavior and cannot accept a hidden prediction.
+
+<details>
+<summary><strong>Typing, chat switching, history, and terminal shortcuts</strong></summary>
 
 Typing hides the suggestion without discarding it. Escape keeps its normal host
 behavior. Tab keeps its native behavior when no valid suggestion
@@ -87,20 +154,37 @@ Manual requests also work with older chats: the shortcut and command-palette act
 use the latest completed turn with usable conversation text, even when historical
 completion markers are missing. They still require an idle chat and empty, eligible
 input; an unfinished or interrupted latest turn cannot reuse an older answer.
-Automatic prediction requirements are unchanged.
+A completed assistant reply with visible text is sufficient even when a continuation
+or compaction leaves no new user message. If assistant-only continuations fill the
+recent-turn window, the latest eligible human request is retained separately,
+including grouped steering messages but not that older turn's assistant replies.
+Under the 32,768-byte prompt limit, older optional turns are dropped first; retained
+human text and the latest response use marked excerpts when needed.
+This preserves context but does not guarantee the model uses the correct speaker perspective.
+Synthetic instructions, tool output, reasoning and compaction summaries remain excluded.
+Predictions never borrow text across a successful compaction boundary or reuse an
+older answer when the latest response is unfinished or has no usable visible text.
+If usable context is genuinely missing, the prompt says **Prediction unavailable
+for this response. Continue typing your next prompt.**, rather than claiming that
+no completed reply exists or treating the status dialog as recovery.
 
 The prediction shortcut also works with `"automatic": false`. In the CLI, your
 terminal must forward the combination distinctly, for example through CSI-u/Kitty
 keyboard support. Legacy `ESC P` is ambiguous with a terminal control sequence;
 if the shortcut is not delivered, use **Predict next prompt** from the command palette.
 
+</details>
+
 ## Settings
+
+Set these fields inside the plugin's `options` object. The installation example
+uses a `20000` ms timeout; the plugin default is `8000` ms.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `models` | unset | Required. Selector text for one ranking group, or an ordered array of selector groups. |
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
-| `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
+| `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. The latest eligible human request is also retained when absent from that window. |
 | `contextFile` | unset | Optional absolute or `~/` path to one shared UTF-8 text/Markdown file on the OpenCode server. Maximum `8192` bytes. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
 | `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one abstention-triggered transition. Errors fall back automatically in all modes. |
@@ -163,6 +247,9 @@ including fallback providers and paid models—not only your main session model.
 
 ### Progress and alternative predictions
 
+<details>
+<summary><strong>How alternatives, activity indicators, and escalation work</strong></summary>
+
 Press **Alt+Shift+P** again after a prediction or a no-suggestion response to try
 the next untried eligible model in the current group, then later groups. Provider
 errors, invalid output and model timeouts automatically advance through remaining
@@ -177,6 +264,11 @@ request also shows the actual attempted model's display name, for example
 or proof that the provider is healthy. Desktop respects reduced motion; CLI respects
 the existing `animations` preference in `cli.json` and `OPENCODE_CLI_CONFIG_CONTENT`.
 Unreadable CLI motion settings use a static indicator.
+
+In Desktop, real predictions temporarily grow the empty composer to fit up to six
+visible lines above its controls. Longer previews end with an ellipsis; **Tab still
+accepts the full prediction**, not the shortened preview. Dismissal, typing or status
+messages release the reserved space. Progress and no-prediction messages stay compact.
 
 The original prediction is temporarily withdrawn but retained internally. **Tab
 passes through normally while status is visible**: it cannot insert status or accept
@@ -199,6 +291,10 @@ without source-model metadata shows a generic no-prediction message instead.
 With no alternatives, a brief **No alternatives available.** message precedes restoration.
 Repeated shortcuts while pending are ignored. Typing or changing context cancels
 pending work and clears status; late results cannot overwrite the draft.
+If settings reload cancels an initial request before a server cycle is established,
+the next explicit shortcut can request a fresh prediction. Typing and clearing before
+the first prediction also permits a fresh request. These actions do not trigger
+automatic retries or reuse a previous configuration's cached prediction.
 
 ```json
 {
@@ -246,7 +342,12 @@ bounded by `timeoutMs`, so a stalled lookup restores the retained original.
 Configuration/service changes or new context start fresh cycles. Off mode retains
 ordinary explicit refresh behavior.
 
+</details>
+
 ### Model groups
+
+<details>
+<summary><strong>Choose exact models, wildcard selectors, or free-first fallback groups</strong></summary>
 
 Text defines one group. An array defines groups in fixed priority order. Each
 entry can be selector text or an inner array of selector strings. Selectors can
@@ -300,7 +401,12 @@ group arrays are rejected.
 **Prediction status and preview** includes ordered `groups` and each group's
 ranked candidates. Existing flat `models` and `candidates` fields remain available.
 
+</details>
+
 ### Failure notifications
+
+<details>
+<summary><strong>Understand notices, status details, and debug output</strong></summary>
 
 Invalid settings, missing model selectors, zero matches, and service connection
 failures produce actionable notices even with debug off and before a completed
@@ -350,7 +456,12 @@ Each candidate is attempted at most once per request. No unselected model is cal
 A valid no-suggestion response follows the configured escalation policy;
 error exhaustion shows a failure notice.
 
+</details>
+
 ### Ranking queue
+
+<details>
+<summary><strong>How ranking, cooldowns, and provider restrictions affect model selection</strong></summary>
 
 Each group has its own ranking queue. A valid response, including “no suggestion,”
 moves its candidate first **within that group**. A failure moves it last within its
@@ -383,6 +494,8 @@ history. If a catalog change moves a candidate into a different owning group, it
 starts untried there while retaining any active cooldown or block. Cancellation
 and stale requests do not change rankings.
 
+</details>
+
 ## Cost and privacy
 
 Predictions and fallback attempts consume provider quota or paid tokens. Free-model
@@ -391,9 +504,11 @@ check resolved candidates before use. Timeouts and cancellation do not guarantee
 the provider stops generating or billing. Two clients viewing the same session
 can independently incur prediction costs.
 
-The selected provider receives recent user and assistant text, which may contain
-sensitive information, plus the optional explicitly configured global
-`contextFile` snapshot. Every fallback provider also receives that snapshot.
+The selected provider receives recent user and assistant text and, when needed,
+the latest eligible human request from before that window, within the same
+compaction boundary, plus the optional explicitly configured global
+`contextFile` snapshot. This text may contain sensitive information.
+Every fallback provider also receives that snapshot.
 Tool output, reasoning, attachments, conversation instruction payloads, synthetic
 messages, other sessions, and unsent drafts are excluded. Oversized conversation
 context uses marked excerpts that may omit details; the context file is never
@@ -422,3 +537,9 @@ OpenCode V1, Mini, browser-only clients, and noninteractive predictions are not 
 ## License
 
 [MIT](LICENSE)
+
+---
+
+[Install the plugin](#how-to-install) &middot;
+[Report a bug](https://github.com/fcoouto/opencode-predictions/issues) &middot;
+[OpenCode documentation](https://opencode.ai/docs/)

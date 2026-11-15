@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="352" viewBox="0 0 800 352" role="img" aria-labelledby="title description">
+  <title id="title">A suggestion, not a submission</title>
+  <desc id="description">Illustrative interaction, not a screenshot. After the assistant says the fix is in and tests pass, ghost text suggests reviewing the diff for regressions. Pressing Tab accepts the suggestion into an editable draft without sending it.</desc>
+  <rect width="800" height="352" rx="16" fill="#141e19"/>
+  <path d="M0 57H800" stroke="#35473c"/>
+  <g font-family="ui-monospace, SFMono-Regular, Consolas, monospace">
+    <text x="32" y="36" fill="#c4d5ca" font-size="18">OpenCode Predictions</text>
+    <path d="M711 25L717 31L711 37M727 25L733 31L727 37M743 25L749 31L743 37" fill="none" stroke="#b9efcb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="32" y="105" fill="#b9efcb" font-size="18">Assistant</text>
+    <text x="32" y="143" fill="#f0f6f2" font-size="26">The fix is in. All tests pass.</text>
+    <rect x="24" y="178" width="752" height="84" rx="12" fill="#23332a"/>
+    <path d="M41 205L49 213L41 221" fill="none" stroke="#b9efcb" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="64" y="223" fill="#bdcdc3" font-size="26">Review the diff for regressions.</text>
+    <path d="M64 234H548" stroke="#82978b" stroke-dasharray="2 5"/>
+    <rect x="32" y="288" width="60" height="36" rx="6" fill="#b9efcb"/>
+    <text x="62" y="312" text-anchor="middle" fill="#141e19" font-size="20" font-weight="600">Tab</text>
+  </g>
+  <text x="108" y="312" fill="#f0f6f2" font-family="system-ui, -apple-system, sans-serif" font-size="21">Accept. Edit. Send only when ready.</text>
+</svg>

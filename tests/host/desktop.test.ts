@@ -63,6 +63,55 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
   } finally { await app.close() }
 })
 
+for (const lines of [3, 9]) test(`real isolated Desktop reserves space for ${lines}-line predictions and restores it on typing`, { timeout: 100000 }, async () => {
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  const text = Array.from({ length: lines }, (_, i) => `Line ${i + 1}: keep this complete prediction. 😀`).join("\n")
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { obsolete: undefined }, { predictionOutputs: { model: JSON.stringify({ prompt: text }) }, predictionDelayMs: { model: 1200 } })
+  const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
+  const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
+  try {
+    const page = await app.firstWindow()
+    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), { timeout: 45000 })
+    await page.evaluate(() => (window as any).__predictionFixture.launch())
+    const editor = page.locator('[data-component="composer-editor"][contenteditable="true"]')
+    await editor.waitFor({ state: "visible", timeout: 20000 })
+    await page.getByRole("button", { name: "Fixture / Fixture Flash", exact: true }).waitFor({ state: "visible" })
+    await editor.press("Enter")
+    await page.locator("[data-opencode-communication]").waitFor({ state: "visible", timeout: 15000 })
+    const before = await editor.evaluate(element => ({ height: element.getBoundingClientRect().height, minHeight: (element as HTMLElement).style.minHeight }))
+    const ghost = page.locator("[data-opencode-prediction]")
+    await ghost.waitFor({ state: "visible", timeout: 15000 })
+    const geometry = await editor.evaluate(element => {
+      const editor = element.getBoundingClientRect()
+      const ghost = document.querySelector<HTMLElement>("[data-opencode-prediction]")!
+      const preview = ghost.firstElementChild as HTMLElement
+      const bounds = ghost.getBoundingClientRect()
+      const style = getComputedStyle(ghost)
+      const controls = [...element.closest('[data-component="composer"]')!.querySelectorAll("button")].map(button => button.getBoundingClientRect()).filter(rect => rect.width && rect.height)
+      return { editorHeight: editor.height, previewHeight: bounds.height - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom), lineHeight: parseFloat(style.lineHeight), aligned: Math.abs(bounds.top - editor.top) < 1, bottom: bounds.bottom, controlsTop: Math.min(...controls.map(rect => rect.top)), clipped: preview.scrollHeight > preview.clientHeight, clamp: getComputedStyle(preview).webkitLineClamp }
+    })
+    assert.ok(geometry.editorHeight > before.height, JSON.stringify({ before, geometry }))
+    assert.equal(geometry.aligned, true)
+    assert.ok(geometry.bottom <= geometry.controlsTop + 1, JSON.stringify(geometry))
+    assert.ok(Math.abs(geometry.previewHeight - Math.min(lines, 6) * geometry.lineHeight) < 1, JSON.stringify(geometry))
+    assert.equal(geometry.clipped, lines > 6)
+    assert.equal(geometry.clamp, "6")
+    assert.equal(await editor.innerText(), "")
+    await page.screenshot({ path: resolve(`.test-artifacts/preview-desktop-${lines}-lines.png`) })
+    const users = await page.evaluate(() => (window as any).__predictionFixture.users())
+    await editor.fill("my own prompt")
+    await ghost.waitFor({ state: "hidden" })
+    assert.equal(await editor.evaluate(element => (element as HTMLElement).style.minHeight), before.minHeight)
+    assert.equal(await editor.evaluate(element => element.getBoundingClientRect().height), before.height)
+    await editor.fill("")
+    await ghost.waitFor({ state: "visible", timeout: 2000 })
+    await editor.press("Tab")
+    assert.equal(await editor.innerText(), text)
+    assert.equal(await page.evaluate(() => (window as any).__predictionFixture.users()), users)
+    assert.equal(fixture.calls.filter(isPredictionCall).length, 1)
+  } finally { await app.close() }
+})
+
 for (const kind of ["invalid", "temporary"] as const) test(`real isolated Desktop exposes ${kind} prediction failures and reopenable status`, { timeout: 100000 }, async () => {
   await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, kind === "invalid" ? { models: 42 } : {}, kind === "temporary" ? { predictionStatus: 503 } : {})
@@ -90,7 +139,7 @@ for (const kind of ["invalid", "temporary"] as const) test(`real isolated Deskto
     await page.evaluate(() => (window as any).__predictionFixture.status())
     await page.getByRole("dialog").getByText(/Prediction status snapshot/).waitFor({ state: "visible" })
     await page.getByRole("dialog").getByRole("button", { name: "Technical details", exact: true }).click()
-    await page.getByRole("dialog").getByText(/Service plugin: 0.1.0/).waitFor({ state: "visible" })
+    await page.getByRole("dialog").getByText(/Service plugin: 0\.2\.0/).waitFor({ state: "visible" })
   } finally { await app.close() }
 })
 

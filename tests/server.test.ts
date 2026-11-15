@@ -577,6 +577,36 @@ test("an evicted client cannot turn stale-token recovery into a fresh paid gener
   } finally { client.dispose() }
 })
 
+test("typing after abstention cannot restart an evicted server cycle", async () => {
+  const f = escalationFixture()
+  f.api.session = async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } })
+  let draft = ""
+  const tokens: (string | undefined)[] = []
+  const reasons: (string | undefined)[] = []
+  const client = startClient({
+    scope: () => "/project", state: () => ({ key: "one", ...f.request, eligible: true, draft }),
+    status: async signal => ({ ...await f.service.inspect(signal), automatic: false }),
+    predict: async (state, requestID, signal, _notice, manual, escalation) => {
+      tokens.push(escalation)
+      const reply = await f.service.predict({ sessionID: state.sessionID, completion: state.completion, requestID, manual, escalation }, signal)
+      reasons.push(reply.reason)
+      return reply
+    },
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.equal(reasons.at(-1), "no_suggestion")
+    for (let i = 0; i < 128; i++) await f.run({ sessionID: `ses_abstention_${i}` })
+    draft = "typed"; client.accept(); draft = ""
+    client.requestFromShortcut(); await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(tokens, [undefined, "refresh"])
+    assert.equal(reasons.at(-1), "escalation_unavailable")
+    assert.equal(f.attempted.length, 129, "typing must not turn lost continuation state into fresh generation")
+  } finally { client.dispose() }
+})
+
 test("continuation refresh validation is bounded even when metadata ignores abort", async () => {
   const f = escalationFixture()
   const service = createService(f.api, { models: [["local/a", "local/b"]], timeoutMs: 20 }, "/project")
@@ -789,6 +819,82 @@ test("a completed current response without usable conversation text cannot fall 
   }
 })
 
+for (const shape of ["synthetic continuation", "reply after compaction", "multiple synthetic continuations"]) {
+  test(`completed assistant-only context permits ${shape} with local generation only`, async () => {
+    for (const manual of [false, true]) for (const marked of [true, false]) {
+      if (!manual && !marked) continue
+      const { api, calls } = fixture()
+      const reply = { type: "assistant", time: { completed: 2 }, finish: "stop", content: [{ type: "reasoning", text: "PRIVATE reasoning" }, { type: "tool", state: { status: "completed", content: "PRIVATE output" } }, { type: "text", text: "Current visible reply." }] }
+      const history = [
+        { type: "user", text: "Earlier visible goal." },
+        { type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Earlier visible reply." }] },
+        { type: "idle", outcome: "succeeded" },
+        ...(shape === "reply after compaction" ? [{ type: "compaction", status: "completed", summary: "PRIVATE summary" }] : [{ type: "synthetic", text: "PRIVATE continuation" }]),
+        ...(shape === "multiple synthetic continuations" ? [{ type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Working visible step." }] }, { type: "synthetic", text: "PRIVATE additional continuation" }] : []),
+        reply,
+        ...(marked ? [{ type: "idle", outcome: "succeeded" }] : []),
+      ]
+      const before = structuredClone(history)
+      api.context = async () => history
+      const result = await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual }, new AbortController().signal)
+      assert.equal(result.text, "Run the tests.", `${manual ? "manual" : "automatic"}, ${marked ? "idle" : "historical"}`)
+      assert.equal(calls.length, 1)
+      const payload = JSON.parse(calls[0].prompt.split("Conversation:\n")[1])
+      assert.equal(payload.at(-1).user, "")
+      assert.match(payload.at(-1).assistant, /Current visible reply\./)
+      assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+      if (shape === "reply after compaction") assert.equal(calls[0].prompt.includes("Earlier visible"), false)
+      assert.deepEqual(history, before, "generation must not edit history")
+    }
+  })
+}
+
+test("generation retains displaced grouped human intent through completed assistant-only continuations", async () => {
+  for (const manual of [false, true]) {
+    const { api, calls } = fixture()
+    const history = [
+      { type: "user", text: "Compare the payment routes.", files: [{ content: "PRIVATE attachment" }] },
+      { type: "user", text: "Meanwhile, merge the README." },
+      { type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Older reply outside the window." }] },
+      { type: "idle", outcome: "succeeded" },
+      ...["First update.", "Second update.", "Latest reply."].flatMap(text => [
+        { type: "synthetic", text: "PRIVATE continuation" },
+        { type: "system", text: "PRIVATE system" },
+        { type: "assistant", time: { completed: 2 }, content: [{ type: "reasoning", text: "PRIVATE reasoning" }, { type: "tool", state: { status: "completed", content: "PRIVATE tool" } }, { type: "text", text }] },
+        { type: "idle", outcome: "succeeded" },
+      ]),
+    ]
+    const before = structuredClone(history)
+    api.context = async () => history
+    const result = await createService(api, { models: "local/model", contextTurns: 3 }, "/project").predict({ sessionID: "ses_test", completion: 2, manual }, new AbortController().signal)
+    assert.equal(result.text, "Run the tests.")
+    assert.equal(calls.length, 1)
+    assert.deepEqual(JSON.parse(calls[0].prompt.split("Conversation:\n")[1]), [
+      { user: "Compare the payment routes.\n\nMeanwhile, merge the README.", assistant: "" },
+      { user: "", assistant: "First update." },
+      { user: "", assistant: "Second update." },
+      { user: "", assistant: "Latest reply." },
+    ])
+    assert.equal(calls[0].prompt.includes("PRIVATE"), false)
+    assert.ok(Buffer.byteLength(calls[0].prompt) <= 32768)
+    assert.deepEqual(history, before)
+  }
+})
+
+test("assistant-only context never borrows intermediate text for an unusable final response", async () => {
+  for (const manual of [false, true]) for (const content of [[], [{ type: "text", text: " " }], [{ type: "reasoning", text: "PRIVATE" }], [{ type: "tool", state: { status: "completed" } }]]) {
+    const { api, calls } = fixture()
+    api.context = async () => [
+      { type: "synthetic", text: "PRIVATE continuation" },
+      { type: "assistant", time: { completed: 1 }, content: [{ type: "text", text: "Earlier intermediate text." }] },
+      { type: "assistant", time: { completed: 2 }, content },
+      { type: "idle", outcome: "succeeded" },
+    ]
+    assert.equal((await createService(api, { models: "local/model" }, "/project").predict({ sessionID: "ses_test", completion: 2, manual }, new AbortController().signal)).reason, "context_unavailable")
+    assert.equal(calls.length, 0)
+  }
+})
+
 test("timeout returns even when provider ignores abort, and errors do not retry", async () => {
   const { api } = fixture()
   let attempts = 0
@@ -834,7 +940,7 @@ test("final structured notices preserve safe failure detail and compatibility me
   assert.match(reply.notice!.title, /authentication failed/)
   assert.match(reply.notice!.message, /Reconnect.*reload/)
   assert.deepEqual(final, reply.notice)
-  assert.equal(service.status().pluginVersion, "0.1.0")
+  assert.equal(service.status().pluginVersion, "0.2.0")
   assert.equal(service.status().feedbackRevision, 1)
 })
 

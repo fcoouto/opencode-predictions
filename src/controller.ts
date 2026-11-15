@@ -15,7 +15,7 @@ export function createController(io: ControllerIO) {
   let modelName: string | undefined
   let transient: { key: string; message: string } | undefined
   let timer: ReturnType<typeof setTimeout> | undefined
-  const results = new Map<string, { text?: string; communication?: Communication }>()
+  const results = new Map<string, { text?: string; communication?: Communication; authority?: boolean }>()
   let visible = false
   let disposed = false
   const attempted = new Set<string>()
@@ -51,7 +51,7 @@ export function createController(io: ControllerIO) {
       if (snapshot.key && snapshot.draft) {
         remember(snapshot.key)
         const result = results.get(snapshot.key)
-        if (result?.text) result.communication = undefined
+        if (result?.text || result?.authority) result.communication = undefined
         else results.delete(snapshot.key)
       }
       paint()
@@ -62,7 +62,7 @@ export function createController(io: ControllerIO) {
       const communication = results.get(key)?.communication
       if (manual && expectedOffer !== undefined && (communication?.offer?.token ?? null) !== expectedOffer) return
       if (manual && communication && !communication.offer && expectedOffer !== null) { staged = undefined; exhausted(); return }
-      const escalation = manual ? communication?.offer?.token ?? (continuation && attempted.has(key) ? "refresh" : undefined) : undefined
+      const escalation = manual ? communication?.offer?.token ?? (continuation && results.get(key)?.authority ? "refresh" : undefined) : undefined
       const refreshing = manual && !!communication && !communication.offer
       let noAlternatives = false
       remember(key)
@@ -75,7 +75,9 @@ export function createController(io: ControllerIO) {
         if (!disposed && !request.signal.aborted && current.key === key && !current.draft) {
           const text = reply.text || results.get(key)?.text
           const next = reply.communication ?? (reply.escalation ? { message: "", offer: reply.escalation } : !reply.text && communication ? { message: text ? "" : "No suggestion." } : undefined)
-          results.set(key, { text, communication: next })
+          // A local attempt may never reach the server; only accepted server outcomes establish a cycle.
+          const authority = !!reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "") || results.get(key)?.authority
+          results.set(key, { text, communication: next, authority })
           noAlternatives = refreshing && reply.reason === "escalation_refreshed" && !next?.offer
         }
       } catch {
