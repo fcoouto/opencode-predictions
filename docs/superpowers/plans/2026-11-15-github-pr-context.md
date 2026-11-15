@@ -31,6 +31,7 @@
 ## File Map
 
 - Create `src/github.ts` and `tests/github.test.ts`: link extraction, bounded retrieval/auth/cache, prompt appending, local fixtures.
+- Keep browser-safe parsing, types, excerpts, and prompt appending in `src/github-prompt.ts`; only the server loader imports Node authentication/network helpers.
 - Modify `src/options.ts`, `src/feedback.ts`, and their tests: opt-in validation/default/status.
 - Modify `src/service.ts`, `src/index.ts`, `tests/server.test.ts`: optional retrieval seam, runtime wiring, fail-open/cancellation integration.
 - Modify `README.md`: explicit consent, credential prerequisites, private-data disclosure and limits.
@@ -52,11 +53,11 @@
 
 **Interfaces:** Add optional `ServiceAPI.githubPRContext(sessionID, prompt, signal)` and optional status boolean. Consume Task 1 exports; preserve existing request/reply interfaces.
 
-- [ ] Add failing service tests for default-off no reads, selected-context-only links, opt-in appended data, fail-open errors/timeout, no retrieval for metadata-only refreshes, and cancellation/staleness preventing generation.
-- [ ] Observe RED; wire the optional callback after no-spend alternative validation and before model attempts. Use the existing `abortable` guard and the shared 2,000 ms deadline; swallow only enrichment failure, not parent cancellation.
-- [ ] Wire `src/index.ts` with one helper instance per service setup. No auth/network side effects during factory creation.
-- [ ] Document settings and private-PR disclosure; keep the user's actual setting unchanged.
-- [ ] Run focused and full tests, typecheck, bundle, package validation, whitespace and repeat-build checks. Run isolated installed-package server checks; default-off path must remain compatible.
+- [x] Add failing service tests for default-off no reads, selected-context-only links, opt-in appended data, fail-open errors/timeout, no retrieval for metadata-only refreshes, and cancellation/staleness preventing generation.
+- [x] Observe RED; wire the optional callback after no-spend alternative validation and before model attempts. Use the existing `abortable` guard and the shared 2,000 ms deadline; swallow only enrichment failure, not parent cancellation.
+- [x] Wire `src/index.ts` with one helper instance per service setup. No auth/network side effects during factory creation.
+- [x] Document settings and private-PR disclosure; keep the user's actual setting unchanged.
+- [x] Run focused and full tests, typecheck, bundle, package validation, whitespace and repeat-build checks. Run isolated installed-package server checks; default-off path must remain compatible.
 - [ ] Commit, obtain independent whole-branch security/code review, fix in-scope findings with RED→GREEN proof, and rerun affected gates.
 - [ ] Report verified local branch and any remaining limits. Do not push, merge, enable, or update installed plugin without a new request.
 

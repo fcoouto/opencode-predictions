@@ -14,6 +14,8 @@ Only inspect links in the already selected and byte-bounded conversation JSON, a
 
 Use a new shared server helper. Obtain an existing active github.com credential through `gh auth token --hostname github.com --no-refresh`, with no shell, prompting, account changes, or token persistence. If CLI/auth is unavailable, public requests may proceed anonymously; private failures are omitted.
 
+Pure URL/prompt helpers live separately from the Node credential/retrieval module so shared client service utilities remain browser-bundle compatible.
+
 Construct fixed REST GET endpoints under `https://api.github.com/repos/{owner}/{repo}/pulls/{number}` from validated components. Reject non-GitHub hosts, credentials in links, nondefault ports, malformed paths, and unsafe components. Reject redirects. Never fetch the original arbitrary URL or API URLs supplied by response bodies. Credentials go only in the API Authorization header, never in prompts, logs, notices, or cache keys.
 
 Read responses with a 256 KiB stream limit. Validate the returned PR identity against the requested canonical URL and whitelist metadata fields. Keep titles to 256 Unicode code points and descriptions to 4,096, using marked head/tail excerpts when needed.

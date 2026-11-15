@@ -69,6 +69,18 @@ test("private PR access uses the existing credential only in the fixed-host auth
   assert.equal(enriched.includes("PRIVATE"), false)
 })
 
+test("owners or repositories named pull do not change the REST route", async () => {
+  for (const [source, endpoint] of [
+    ["https://github.com/pull/project/pull/1", "https://api.github.com/repos/pull/project/pulls/1"],
+    ["https://github.com/acme/pull/pull/1", "https://api.github.com/repos/acme/pull/pulls/1"],
+  ]) {
+    const f = fixture()
+    f.respond = async () => new Response(JSON.stringify(metadata(source)))
+    await f.load("one", prompt(source), signal())
+    assert.equal(f.calls[0].url, endpoint)
+  }
+})
+
 test("only the two newest distinct PR links are read, without crawling descriptions", async () => {
   const f = fixture()
   const two = "https://github.com/acme/project/pull/2"
@@ -144,7 +156,7 @@ test("failed, redirected, malformed and mismatched PR responses are omitted", as
     f.respond = async () => new Response("PRIVATE error details", { status })
     assert.deepEqual(await f.load("one", prompt(), signal()), [])
   }
-  for (const value of ["not JSON", JSON.stringify(metadata("https://github.com/acme/other/pull/1")), JSON.stringify({ ...metadata(), state: "invalid" }), JSON.stringify({ ...metadata(), draft: "yes" })]) {
+  for (const value of ["not JSON", JSON.stringify(metadata("https://github.com/acme/other/pull/1")), JSON.stringify({ ...metadata(), state: "invalid" }), JSON.stringify({ ...metadata(), draft: "yes" }), JSON.stringify({ ...metadata(), state: ["open"] }), JSON.stringify({ ...metadata(), html_url: [url] })]) {
     const f = fixture()
     f.respond = async () => new Response(value)
     assert.deepEqual(await f.load("one", prompt(), signal()), [])
@@ -152,6 +164,17 @@ test("failed, redirected, malformed and mismatched PR responses are omitted", as
   const f = fixture()
   f.respond = async () => { throw new Error("PRIVATE transport error") }
   assert.deepEqual(await f.load("one", prompt(), signal()), [])
+})
+
+test("unavailable credential lookup still permits anonymous public PR retrieval", async () => {
+  const load = createGitHubContext({
+    token: async () => { throw new Error("PRIVATE credential lookup failure") },
+    fetch: async (_endpoint, init) => {
+      assert.equal(new Headers(init.headers).has("authorization"), false)
+      return new Response(JSON.stringify(metadata()))
+    },
+  })
+  assert.equal((await load("one", prompt(), signal())).length, 1)
 })
 
 test("oversized response streams are cancelled rather than loaded without a bound", async () => {
