@@ -2,15 +2,15 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add Predictions Setup for all seven existing settings in Desktop and interactive CLI, with safe global-only configuration editing.
+**Goal:** Add Predictions Setup for all seven existing settings in Desktop and interactive CLI, with best-effort global-only configuration editing.
 
-**Architecture:** First prove configuration persistence against an isolated real OpenCode server; stop if the safety gate fails. Then share server-owned settings operations and one client-side draft model between a native Desktop settings page and CLI menus. Existing JSON/JSONC configuration remains the only settings source.
+**Architecture:** Prove a scoped server-side JSON/JSONC writer against the approved best-effort gate, accepting the disclosed residual external-editor race. Then share server-owned settings operations and one client-side draft model between a native Desktop settings page and CLI menus. Existing JSON/JSONC configuration remains the only settings source.
 
 **Tech Stack:** TypeScript, Node `>=26.4.0`, Node test runner, `@opencode/plugin` and `@opencode/client` `2.2.6`, Solid, existing OpenCode GUI/TUI controls, Playwright and PTY host fixtures.
 
 **Spec:** `docs/superpowers/specs/2026-11-15-predictions-setup-design.md`
 
-> **Persistence steps require revision before resuming.** The user approved best-effort editing of existing JSON/JSONC with the residual external-editor race accepted. The amended spec supersedes this plan's absolute no-lost-update gate. Preserve the historical NO-GO evidence below; do not execute these steps unchanged or treat risk acceptance as a GO. Serialization among supported setup writers and all other remaining safeguards still require proof. This update records design approval only; it does not rewrite or resume the implementation plan.
+> **Resume native execution at amended Task 1.** The approved best-effort policy supersedes the former absolute external-editor guarantee. Reuse existing fixture/tests and historical evidence; do not repeat completed research or treat risk acceptance as a GO. Task 2 still requires a new scoped GO under the amended gate. No implementation or verification has been resumed by this documentation update.
 
 ## Global Constraints
 
@@ -18,6 +18,8 @@
 - Add **Predictions Setup** to the Predictions command group without a default shortcut. Desktop also gets a native searchable **Predictions** settings page.
 - Global configuration on the selected server only; overridden, ambiguous, or unsafe configurations are read-only. Never write the local client config for a remote server.
 - Preserve comments, unrelated formatting, other plugins, unknown options, package references, omitted defaults, and unchanged settings.
+- Serialize all supported setup writers addressing the same file; reject stale drafts and detected changes before replacement. Use atomic replacement and one rotating private server-local recovery copy outside active config discovery; backup failure aborts the write.
+- The user accepted the last-check/replacement race with external or other non-cooperating writers, including possible loss of unrelated edits. Backups cannot guarantee capturing those edits. This exception does not weaken any cooperating-writer or source-integrity safeguard.
 - No second settings store, new plugin options, new framework, provider-auth UI, paid/free presets, benchmarking, queue-reset control, or automatic test generations.
 - Draft edits require **Save changes** / **Discard changes**. Preview and saving must not generate predictions or alter the composer.
 - Keep current parsing, model matching, group ownership, variants, ranking, fallback, quota warnings, and privacy behavior.
@@ -26,7 +28,7 @@
 
 ## Review Focus
 
-- An editor replaces configuration between validation and commit: no silent lost update; Task 1 must prove the guarantee or stop.
+- Cooperating setup writers must serialize and reject stale revisions; a detected external edit must abort. Characterize the accepted post-check race honestly; backups do not eliminate it. Tasks 1–2 own these tests.
 - Environment, managed, custom-path, symlinked, or duplicate plugin sources: no guessed writable target; Tasks 1–2 pin read-only behavior.
 - Reload interrupts the save response: distinguish durable-but-not-active from failure without issuing a second blind write; Task 4 tests reconciliation.
 - Saving changes or client reload re-arms the same completed turn: no surprise generation, even with `automatic: true`; Tasks 4 and 7 test this.
@@ -53,20 +55,22 @@
 
 ## Task 1: Config Persistence Feasibility — Mandatory Go/No-Go Gate
 
-**Files:** Modify `tests/host/fixture.mjs`, `tests/host-fixture.test.ts`; create `tests/host/persistence.test.ts` and `docs/research/2026-11-15-config-persistence-feasibility.md`. Test-only candidate code stays in the persistence test, not shipping entries.
+**Files:** Reuse and extend `tests/host/fixture.mjs`, `tests/host/persistence.test.ts`, and `docs/research/2026-11-15-config-persistence-feasibility.md`; modify `tests/host-fixture.test.ts` only for newly added fixture behavior. Test-only candidate code stays in the persistence test, not shipping entries.
+
+**Resume state:** Real global JSON/JSONC fixtures, `writeConfig`, local-source discovery, API limitations, and negative external-editor race characterizations already exist. Read their committed evidence and run the existing checks as a baseline. Write new RED tests only for unproved safeguards; do not recreate these deliverables or force passing characterization tests to fail.
 
 **Interfaces:**
 - Keep existing `createFixture(packagePath, options, behavior)` callers unchanged.
 - Add optional fourth argument `{ configSource?: "inline" | "global-json" | "global-jsonc" }`, default `"inline"`.
 - Real-file mode returns `configFile: string`; inline mode returns `configFile: undefined`. Add `writeConfig(config: object): Promise<void>` so later host tests can add observers without reintroducing `OPENCODE_CONFIG_CONTENT`.
 - Existing `root`, `directory`, `env`, `api`, `calls`, `config`, and cleanup remain available. All HOME/XDG paths remain inside `.test-artifacts/host-*`.
-- Produce a documented **GO** or **NO-GO** decision. Tasks 2–7 depend on **GO**, not merely a green test command.
+- Produce a new scoped **GO** or **NO-GO** under the amended best-effort policy. Tasks 2–7 depend on that GO, not the original strict verdict or merely a green test command.
 
 - [ ] **Step 1: Record actual host capabilities without changing user configuration.**
-  Read the current official plugin/config/API docs and the installed/pinned SDK types. Record CLI/Desktop/server versions, config discovery and precedence, plugin source identity, watcher/reload behavior, and whether a supported plugin-options write API now exists. The previously inspected API exposes only `shell`; do not invent a plugin-options patch. Prefer a supported host operation if it meets every gate.
+  Reuse the recorded official documentation, pinned declarations, and upstream investigation. Confirm versions and the supported source/topology matrix needed for the writer; investigate only missing or changed evidence. The public config API is shell-only, and the approved path is a scoped server-side writer. Do not invent `ctx.config`, restart an upstream search as a prerequisite, or assume document metadata accessible in a client is also accessible in the server plugin.
 
 - [ ] **Step 2: Add failing real-file fixture and persistence tests.**
-  Test names: `real-file fixture has no inline config override`, `persistence preserves JSONC and plugin identity`, `stale and interleaved writers never lose edits`, `unsupported provenance is read-only`, `saved options activate without generation`.
+  Retain existing fixture and negative race characterizations. Add tests named `persistence preserves JSONC and plugin identity`, `cooperating setup writers serialize across supported instances`, `detected stale edits abort before replacement`, `recovery-copy failure leaves active config unchanged`, `unsupported provenance is read-only`, and `saved options activate without generation`.
   Required assertions include:
   ```ts
   assert.equal(fixture.env.OPENCODE_CONFIG_CONTENT, undefined)
@@ -74,25 +78,28 @@
   assert.equal(after.includes("// keep this comment"), true)
   assert.deepEqual(otherPluginAfter, otherPluginBefore)
   assert.equal(staleSave.kind, "conflict")
+  assert.equal(activeBytesAfterBackupFailure, originalBytes)
+  assert.equal(recoveryBytes, validatedPreSaveBytes)
   assert.equal(fixture.calls.length, 0)
   ```
   Arrange all inputs inside the synthetic fixture. Include JSON/JSONC, custom config environment settings, both global filenames, npm/Git/local plugin references, duplicate entries, project/inline/managed overrides, malformed files, symlinks/hardlinks, and unwritable targets. Unsupported cases must refuse writes, not disappear from the report.
 
 - [ ] **Step 3: Run RED checks and establish the sandbox.**
   Run `node --test tests/host-fixture.test.ts tests/host/persistence.test.ts`.
-  Expect the new fixture/candidate assertions to fail before support exists. A missing host prerequisite is a recorded blocker, not a passing gate. Install project dependencies with `npm ci` only in the implementation workspace if needed.
+  Existing checks should pass as a baseline; new safeguard assertions must fail before candidate support exists. A missing host prerequisite is a recorded blocker, not a passing gate. Install project dependencies with `npm ci` only in the implementation workspace if needed.
 
 - [ ] **Step 4: Implement the minimal test-only candidate and gather evidence.**
   Use the SDK's documented configuration location and resolved plugin-source metadata where available. Never identify an entry by a loose `"predictions"` substring or trust a client-supplied file path. When no authoritative source mapping exists, return read-only.
-  Compare a supported host write operation with a narrowly scoped server-side writer. For a direct writer, test a proven JSONC syntax-tree editor, not regex or `JSON.parse`/whole-file stringify. If needed, evaluate `jsonc-parser`; document why it is necessary before adding it as a production dependency in Task 2.
-  Exercise a barrier-controlled external edit both before validation and between final comparison and replacement, plus two simultaneous clients. Atomic rename prevents partial files; a hash check followed by rename is **not** compare-and-swap and alone cannot prove no lost updates. A lock honored only by this plugin cannot protect against external editors. If the supported backend cannot meet the approved safety guarantee, mark **NO-GO** and stop.
+  Extend the test-only experiment to the approved server-side policy. Use a proven JSONC syntax-tree editor, not regex or `JSON.parse`/whole-file stringify. If needed, evaluate `jsonc-parser`; document why it is necessary before adding it as a production dependency in Task 2.
+  Prove complete-transaction serialization across supported setup/plugin/server instances, including supported processes targeting the same file. Inside coordination, compare the draft revision with fresh bytes/source metadata, apply only edited fields, prepare private temporary/recovery files, and recheck immediately before atomic replacement. Backup failure must leave active bytes unchanged; keep one rotating copy with no broader access than the original and never restore automatically.
+  Exercise barrier-controlled external edits before the final check (must conflict), after the final check (accepted residual race), and simultaneous cooperating setup clients (must serialize; a stale revision must conflict). A local mutex or plain hash-check/rename alone is not sufficient coordination. Preserve negative race evidence; do not fail this gate solely because an uncooperative external writer wins the accepted race.
 
 - [ ] **Step 5: Verify activation, attribution, and failure recovery on the actual host.**
   Prove source selection happens on the selected server, not a remote client's HOME. Write only fixture config; observe a real reload, query fresh status/options, restart the isolated server with the same fixture HOME/XDG paths, and read again. Interrupt reload/save acknowledgement and simulate permission/rename failures. Assert unchanged original bytes on pre-commit failure and zero provider calls. Record exact commands and observations, not presumed API behavior.
 
 - [ ] **Step 6: Publish the verdict and stop if any release gate fails.**
-  **GO requires:** authoritative global source and entry identity; JSONC/other-content integrity; permissions preservation; a demonstrated concurrency guarantee; safe failure outcomes; verified activation/restart; and server-local ownership. Document the supported/read-only matrix and API/version limits.
-  If **NO-GO**, deliver the report and request a persistence/design decision. Do not build UI, relax conflict protection, add a second store, or silently narrow a safety promise. Passing tests for safe refusal still means **NO-GO** for writable setup.
+  **GO requires, for enabled writable cases:** authoritative global source and entry identity; JSONC/other-content integrity; permissions preservation; serialized cooperating setup writers and detected-stale-edit rejection; private atomic replacement and bounded recovery-copy handling; accurate failure/activation/restart outcomes without generation; and server-local ownership. Document the supported/read-only matrix and accepted external-editor limitation. Remote cases remain read-only until attribution, coordination, and save/reload tests pass for that topology.
+  The accepted residual external-editor race and lack of a public plugin-options patch are not NO-GO conditions. Any other mandatory safeguard missing for a case enabled for writing is a NO-GO condition. Stop UI/production advancement on such failure; do not guess a source, weaken remaining safeguards, or add a second authority. Green refusal/characterization tests alone do not establish a writable GO.
 
 - [ ] **Step 7: Commit the isolated fixture and report checkpoint.**
   ```sh
@@ -115,19 +122,19 @@
 - Export `type ConfigStore = ReturnType<typeof createConfigStore>` for the server setup service.
 
 - [ ] **Step 1: Add failing store tests using temporary files and injected backend barriers.**
-  Assert unchanged fields retain their original bytes, comments, trailing commas, newline style, unknown options, omitted defaults, package strings, and other plugin entries. Assert:
+  Assert unchanged fields in the validated document retain their original bytes, comments, trailing commas, newline style, unknown options, omitted defaults, package strings, and other plugin entries. Assert:
   ```ts
   assert.deepEqual(result, { kind: "written", revision: expectedRevision })
   assert.equal((await store.write(oldRevision, { debug: true }, signal)).kind, "conflict")
   assert.equal((await unsafeStore.read(signal)).writable, false)
   assert.equal(await readFile(unsafePath, "utf8"), original)
   ```
-  Cover missing/ambiguous files, string-form entries upgraded only when safely identified, invalid options objects, duplicate keys, symlinks/hardlinks, override sources, attempted extra patch keys, changed permissions, and failed commits.
+  Cover missing/ambiguous files, string-form entries upgraded only when safely identified, invalid options objects, duplicate keys, symlinks/hardlinks, override sources, attempted extra patch keys, changed permissions, and failed commits. Port Task 1's coordination tests to the production store; test recovery-copy permissions/rotation, backup failure, temporary-file cleanup, and no automatic restore. Recovery data must never be returned in notices or RPC. Keep the accepted late external-editor race explicitly characterized rather than asserting it is prevented.
 
 - [ ] **Step 2: Run `node --test tests/config.test.ts`; expect RED for missing store behavior.**
 
 - [ ] **Step 3: Implement `createConfigStore` using only Task 1's verified backend.**
-  Read known editable fields only into responses; never return full global config or unknown option values. Preserve all other content on disk. Rediscover and revalidate target/provenance at commit, not only when opening setup. Revision is opaque to clients and covers every input the backend needs for conflict detection. Return fixed safe messages, not raw file/provider errors. An aborted pre-commit operation writes nothing; a committed operation must remain reconcilable after transport cancellation.
+  Read known editable fields only into responses; never return full global config, unknown option values, or backup contents. Preserve other content from the validated source bytes. Rediscover and revalidate target/provenance under verified writer coordination and immediately before replacement. Revision is opaque to clients and covers every input needed for stale-draft/source detection; it is not a promise of atomic compare-and-swap against external writers. Carry over private atomic replacement, one rotating recovery copy, permission checks, and cleanup from the proven candidate. Return fixed safe messages, not raw file/provider errors. An aborted pre-commit operation writes nothing to the active document; a committed operation must remain reconcilable after transport cancellation.
 
 - [ ] **Step 4: Run `node --test tests/config.test.ts tests/host-fixture.test.ts tests/host/persistence.test.ts` and `npm run typecheck`; expect PASS with the same Task 1 safety guarantee.**
 
@@ -236,13 +243,14 @@
   assert.equal(savedPatchHasOnlyEditedFields, true)
   assert.equal(submittedPrompts, 0)
   ```
-  Exercise all seven settings; model/variant selection; group/entry movement; pattern preview; long/duplicate display names; keyboard-only editing; empty/loading/disconnected/read-only states; conflict and saved-not-active messages; unsaved navigation. Switching servers must request discard confirmation before creating a new pinned editor, never retarget an old save.
+  Exercise all seven settings; model/variant selection; group/entry movement; pattern preview; long/duplicate display names; keyboard-only editing; empty/loading/disconnected/read-only states; conflict and saved-not-active messages; unsaved navigation. Assert the non-blocking external-editor/recovery warning is present and introduces no repeated consent dialog. Switching servers must request discard confirmation before creating a new pinned editor, never retarget an old save.
 
 - [ ] **Step 2: Run `node --test tests/setup-gui.test.ts tests/desktop.test.ts tests/feedback.test.ts tests/client-feedback.test.ts`; expect RED on the new page and entry points.**
 
 - [ ] **Step 3: Build using existing native components and Task 4's editor.**
   Load Impeccable's craft floor immediately before UI edits. Verify pinned SDK controls and settings navigation; do not invent props from newer docs. Add searchable model selection and accessible move-up/down/remove actions; preserve focus after movement/removal. Keep provider/model IDs as secondary identifiers, unavailable entries intact, and cost/ranking/escalation explanations adjacent to models.
   Update only configuration-related recovery notices to point at **Predictions Setup**; retain status actions for runtime errors. Add a setup action to the status view without converting it into an editor. If service setup methods are unavailable, show an update/read-only explanation; never fall back to client-side file writes.
+  Show the spec's non-blocking external-editor warning beside Save, including possible loss of unrelated edits and incomplete recovery-copy coverage. Do not add repeated consent dialogs or imply saves are conflict-proof. Cover that disclosure in the rendered tests.
 
 - [ ] **Step 4: Run Task 5 tests and `npm run typecheck`; expect PASS.**
   Inspect native render at normal and narrow window widths, both themes, long Unicode names, error state, and keyboard focus. Batch captures under `.test-artifacts/setup-*`; screenshots of mocks alone do not prove native host behavior.
@@ -272,12 +280,13 @@
   assert.equal(localConfigWrites, 0)
   assert.equal(composerDraft, "my existing draft")
   ```
-  Also test disconnect during save, late metadata, no active session, unavailable service methods, long names/IDs, and read-only explanation.
+  Also test disconnect during save, late metadata, no active session, unavailable service methods, long names/IDs, and read-only explanation. Assert the same non-blocking external-editor/recovery warning as Desktop without a repeated consent dialog.
 
 - [ ] **Step 2: Run `node --test tests/setup-tui.test.ts tests/terminal.test.ts tests/notifications.test.ts`; expect RED for setup menu behavior.**
 
 - [ ] **Step 3: Implement section-based native dialogs and recovery/status entry points.**
   Load the craft floor before UI edits. Show **Save changes**, **Discard changes**, and secondary status access at the root. Use explicit named move actions, native searchable selection, and prompts for patterns/numbers. Keep number parsing strict; no `parseInt("8000oops")` acceptance. Preserve draft through submenus and write failures; confirm discard on exit. Keep host navigation keys and Tab behavior outside setup unchanged.
+  Show the same non-blocking save warning and fuller external-editor/recovery limitation as Desktop. Test its presence without requiring a second consent dialog.
 
 - [ ] **Step 4: Run Task 6 tests and `npm run typecheck`; expect PASS.**
   Inspect wide and narrow PTY rendering, focus, wrapped warnings, and long model names with the real host in Task 7.
@@ -303,7 +312,7 @@
   Use `node --test --test-name-pattern="setup" tests/host/server.test.ts`, then equivalent Desktop and terminal commands. Use test names containing `setup`. Do not run graphical/PTY host gates concurrently.
 
 - [ ] **Step 3: Finish integration, package checks, and user documentation.**
-  Document both entry points, Behavior/Models/Advanced order, global/server scope, overrides/read-only behavior, Save/Discard, no-generation preview, cost warnings, and conflict/activation recovery. Keep manual JSON instructions for advanced users.
+  Document both entry points, Behavior/Models/Advanced order, global/server scope, overrides/read-only behavior, Save/Discard, no-generation preview, cost warnings, and conflict/activation recovery. State the accepted external-editor race plainly; explain that recovery copies hold captured pre-save bytes, not guaranteed copies of racing edits. Document private backup location/retention and manual recovery without adding an automatic-restore feature. Keep manual JSON instructions for advanced users.
   Extend package tests for setup RPC methods and ensure Node-only persistence stays out of the GUI bundle. Add persistence proof to `scripts/test-installed.mjs`; run host files sequentially so the installed gate actually tests the packed artifact, not a workspace-only dependency or inline override.
 
 - [ ] **Step 4: Run complete verification and record exact results.**
@@ -331,14 +340,14 @@
 
 - Spec coverage: entry points and settings hierarchy in Tasks 5–6; group semantics/validation in Task 3; persistence in Tasks 1–2; save/lifecycle behavior in Task 4; accessibility/states in Tasks 5–7; packed compatibility and documentation in Task 7.
 - Shared interfaces are defined above before consumers. Discovery backend details deliberately depend on a real feasibility verdict, not an assumed write API.
-- Every Review Focus condition has an explicit owning test. Task 1's interleaved-writer test cannot be weakened to hide the filesystem compare-and-swap gap.
+- Every Review Focus condition has an explicit owning test. Preserve external-editor negative characterizations as accepted-limit evidence; do not weaken serialization, stale-detection, or recovery tests for cooperating setup writers.
 - At authoring, no execution had started. The execution record below tracks subsequent work; unchecked steps do not imply a completed feature.
 
 ## Execution Handoff
 
-Review this plan before implementation. Recommended approach: **Native**, with a hard stop after Task 1 for the recorded feasibility verdict and one fresh whole-branch review at the end. The shared persistence, reload, RPC, and UI contracts are tightly coupled; one implementer avoids coordination churn.
+**Native execution remains selected.** Resume at amended Task 1 using existing progress and evidence. Record a new scoped feasibility verdict before Task 2; stop only if a mandatory, non-waived safeguard fails for an enabled writable case. No further approval of the accepted external-editor risk is needed. Retain one fresh whole-branch review at the end.
 
-Alternative: **Subagent-driven**, with fresh task implementers/reviewers after the feasibility gate. Neither method may start Tasks 2–7 after a NO-GO verdict without an approved design change.
+Do not treat the historical strict NO-GO as a new failure solely because the accepted external-editor race remains reproducible. Do not treat this amended plan as proof that any remaining check has passed.
 
 ## Execution Record
 
@@ -348,7 +357,8 @@ Alternative: **Subagent-driven**, with fresh task implementers/reviewers after t
 - Report: `docs/research/2026-11-15-config-persistence-feasibility.md`.
 - Step 5 (successful-save activation/restart), broader unsupported-source scenarios, and Tasks 2–7 remain unexecuted. No production code or user configuration changed.
 - Verification: persistence/fixture checks 10/10; combined persistence/fixture/existing server compatibility 14/14; project suite 217/217; typecheck and diff whitespace checks passed.
-- The gate remains NO-GO despite green characterization tests. Research checkpoint: `cffe431`.
+- Under the original absolute external-editor guarantee, the gate remained NO-GO despite green characterization tests. Research checkpoint: `cffe431`.
 - Fresh independent review accepted the research checkpoint, with no Critical/Important findings. One Minor is deferred: capability tests log the runtime schema but do not assert it; HTTP 400 also follows from omitting required `shell`.
-- No production readiness or successful-save behavior was approved by this review. Tasks 2–7 remain blocked.
-- Subsequent design amendment: the user approved option 1, best-effort edits to existing JSON/JSONC, and accepted the residual external-editor race. The old gate must be revised against the amended spec before resuming; other persistence and lifecycle checks remain unproved. Native execution remains the selected method.
+- No production readiness or successful-save behavior was approved by that review. Tasks 2–7 require a new scoped Task 1 GO under the amended policy.
+- Subsequent design amendment: the user approved option 1, best-effort edits to existing JSON/JSONC, and accepted the residual external-editor race.
+- The user requested gate alignment so execution could resume. The design gate and persistence tasks now use the approved best-effort policy, including recovery copies and serialized supported setup writers. Native execution can resume at Task 1; other persistence and lifecycle checks remain unproved. This documentation edit has not resumed implementation or marked any gate passed.

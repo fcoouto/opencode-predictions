@@ -1,6 +1,6 @@
 # Predictions Setup
 
-Status: approved design, amended by the user to select best-effort editing of existing global JSON/JSONC and accept the residual external-editor race. The original strict feasibility verdict is historical evidence, not a GO for the amended design. The implementation plan and remaining persistence checks must be updated before execution resumes.
+Status: approved design with best-effort editing of existing global JSON/JSONC and the residual external-editor race accepted. Native execution may resume at the amended implementation gate below and Task 1 of the aligned implementation plan. The original strict feasibility verdict is historical evidence; no remaining check is marked passed by this amendment.
 
 ## Intent and confirmed scope
 
@@ -116,17 +116,30 @@ Show a concise non-blocking warning beside the save controls in both hosts, with
 
 Do not describe saves as conflict-proof. Do not add a repeated consent dialog for a limitation already disclosed in the setup view.
 
-### Supported sources and remaining feasibility gate
+### Supported sources
 
 Treat project/environment overrides explicitly. Show their source and effective value when determinable. Configurations overridden outside the editable global source, or with ambiguous provenance, remain read-only with recovery instructions. Initial scope does not include creating or modifying project overrides.
 
 If write access, provenance, plugin-entry identity, permission preservation, or setup-writer coordination cannot be established, offer inspection rather than guessing or broadening editing scope. Malformed/duplicate-key documents and special-file targets require explicit proof; otherwise keep them read-only.
 
-Before UI implementation, prove the amended policy against the supported installed OpenCode version: authoritative source selection; exact plugin-entry identity; JSONC/unknown-option preservation; permissions; coordination among supported setup writers; detected-stale-edit rejection; atomic replacement and recovery-copy handling; and correct persistence/activation outcomes without generation.
-
 Remote saves stay disabled until selected-server attribution, writer coordination, and save/reload behavior have been verified for that topology. A lack of verification is not permission to write a local client's config instead.
 
-Retain the existing negative external-editor race tests as evidence of the accepted limit, not as a requirement for the former absolute protection or as a GO result. Rewrite the implementation plan's old unconditional no-lost-update gate before resuming. All other unproved safeguards remain release gates; do not ship the research candidate as the production writer.
+### Implementation gate: approved best-effort policy
+
+The design/approval hold is lifted. Resume native execution at Task 1 of `docs/superpowers/plans/2026-11-15-predictions-setup.md`, reusing the completed fixture and research evidence. Do not restart the upstream API search or require compare-and-swap protection against arbitrary external writers. A narrowly scoped server-side filesystem writer is the approved path.
+
+Before Task 1 receives a new **GO**, prove the following against the supported installed OpenCode version for every configuration/topology enabled for writing:
+
+- [ ] Identify the selected server's authoritative global document and exact plugin entry; ambiguous, overridden, and unsupported sources remain read-only.
+- [ ] Preserve JSON/JSONC comments, unrelated content, unknown options, omitted defaults, package references, and restrictive permissions while applying only edited fields.
+- [ ] Serialize supported setup writers across all supported instances/processes targeting the same file. Reject stale revisions and detected pre-replacement changes without silently rebasing drafts.
+- [ ] Prove private temporary-file handling, atomic replacement, cleanup, and bounded server-local recovery copies. Backup/pre-commit failure preserves active bytes; backup contents never appear in RPC or notices.
+- [ ] Verify persisted options, effective activation, restart persistence, and interrupted-acknowledgement recovery without generating a prediction or blindly repeating a write. Keep **Saved, not active** distinct from verified activation.
+- [ ] Retain deterministic characterization of the accepted late external-editor race and require the disclosed warning in both host flows. Neither atomic replacement nor recovery copies may be described as eliminating or fully recovering that race.
+
+The accepted external-editor race and absence of a public plugin-options write API are **not NO-GO conditions**. Failure to establish any other mandatory safeguard for an enabled writable case **is a NO-GO condition**. Keep unsupported cases read-only; do not guess a writable source or broaden scope to pass the gate.
+
+Record the new scoped verdict and evidence before advancing to Task 2. A new GO permits subsequent implementation tasks, not a release without their tests. Production store, save-lifecycle, native UI, remote, and installed-package checks still apply. The existing test-only research candidate must not be shipped unchanged.
 
 ## States and accessibility
 
@@ -155,4 +168,4 @@ Leave component extraction, internal RPC naming, and precise rendering mechanics
 
 The user approved the native two-host structure, Behavior / Models / Advanced order, Behavior control labels, global-only server-side configuration editing, and save behavior, then selected native execution. The first feasibility gate returned NO-GO under the former absolute external-editor guarantee; see `docs/research/2026-11-15-config-persistence-feasibility.md`.
 
-After comparing alternatives and receiving Astra's recommendation, the user explicitly approved option 1 and accepted the residual external-editor race. This amendment records that decision; it does not grant a GO to the unproved writer. UI choices and all unrelated safeguards remain unchanged. The implementation plan must be brought into line with this amendment before execution resumes.
+After comparing alternatives and receiving Astra's recommendation, the user explicitly approved option 1 and accepted the residual external-editor race. The user then requested the implementation gate update so native execution could resume. The amended gate and aligned Task 1 now permit that resumption without another architecture approval. They do not grant a GO to an unproved writer. UI choices, global-only scope, and all unrelated safeguards remain unchanged.
