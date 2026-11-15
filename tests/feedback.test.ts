@@ -5,6 +5,13 @@ import type { Status } from "../src/service.ts"
 
 const ready: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "instance", warnings: [] }
 
+test("technical status reports the opt-in GitHub PR context setting", () => {
+  for (const githubPRContext of [true, false]) {
+    const view = formatStatus({ ...ready, githubPRContext }, {})
+    assert.match(view.details, new RegExp(`GitHub PR context: ${githubPRContext}`))
+  }
+})
+
 test("global context path and fixed file errors stay readable without disclosing file contents", () => {
   const view = formatStatus({ ...ready, contextFile: "/home/user/preferences.md", lastOutcome: "context_file_unavailable" }, {
     lastNotice: reasonNotice("context_file_unavailable"),

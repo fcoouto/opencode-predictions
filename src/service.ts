@@ -16,7 +16,7 @@ export type ServiceAPI = {
   progress?(modelName: string, request: Request): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
-export type Status = { enabled: boolean; models?: string; contextFile?: string; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
+export type Status = { enabled: boolean; models?: string; contextFile?: string; githubPRContext?: boolean; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
 
 export async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
@@ -144,6 +144,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
       enabled: !!options?.enabled && !!options.models,
       ...(options?.models ? { models: options.models.join(", ") } : {}),
       ...(options?.contextFile ? { contextFile: options.contextFile } : {}),
+      githubPRContext: options?.githubPRContext ?? false,
       ...(groups ? { groups: groups.map((queue, index) => ({ selectors: options!.models![index], candidates: queue.map(queueEntry) })), candidates: candidates!.map(queueEntry) } : {}),
       automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
       escalation: options?.escalation ?? "off",
