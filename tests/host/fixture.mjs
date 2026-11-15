@@ -8,7 +8,8 @@ import { Service } from "@opencode/client/service"
 
 export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
 
-export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}) {
+export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}, { configSource = "inline" } = {}) {
+  if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
   const directory = join(root, "project")
@@ -45,7 +46,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   })
   provider.listen(0, "127.0.0.1")
   await once(provider, "listening")
-  const config = {
+  let config = {
     $schema: "https://opencode.ai/config.json",
     model: "fixture/model",
     plugins: [{ package: packagePath, options: { models: "fixture/model", timeoutMs: 8000, obsolete: true, ...options } }],
@@ -53,6 +54,17 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   }
   const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: process.env.TMPDIR ?? root, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
+  const configDirectory = join(root, "config", "opencode")
+  await mkdir(configDirectory, { recursive: true })
+  const configFile = configSource === "inline" ? undefined : join(configDirectory, configSource === "global-jsonc" ? "opencode.jsonc" : "opencode.json")
+  const writeConfig = async value => {
+    if (configFile) {
+      await writeFile(configFile, (configSource === "global-jsonc" ? "// Synthetic global fixture configuration.\n" : "") + JSON.stringify(value, null, 2) + "\n")
+      delete env.OPENCODE_CONFIG_CONTENT
+    } else env.OPENCODE_CONFIG_CONTENT = JSON.stringify(value)
+    config = value
+  }
+  await writeConfig(config)
   // Desktop's managed service needs its own nonzero port, not the user's shared default.
   const probe = createServer()
   probe.listen(0, "127.0.0.1")
@@ -60,8 +72,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   const port = probe.address().port
   // shortcut: releasing the probe can race with another bind; retry allocation if test collisions recur.
   await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()))
-  await mkdir(join(root, "config", "opencode"), { recursive: true })
-  await writeFile(join(root, "config", "opencode", "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
+  await writeFile(join(configDirectory, "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
   const child = spawn(process.env.OPENCODE_BIN ?? "opencode", ["serve", "--hostname", "127.0.0.1", "--port", "0"], { cwd: directory, env, stdio: ["ignore", "pipe", "pipe"] })
   let output = ""
   child.stdout.on("data", chunk => { output = (output + chunk).slice(-64000) })
@@ -81,5 +92,5 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
     child.kill("SIGTERM"); provider.closeAllConnections(); provider.close()
     if (child.exitCode === null) await Promise.race([once(child, "exit"), new Promise(resolveWait => setTimeout(() => { child.kill("SIGKILL"); resolveWait() }, 3000).unref())])
   }
-  return { root, directory, env, api, address, calls, config, headers, output: () => output.replace(/server password \S+/g, "server password [redacted]"), stop, [Symbol.asyncDispose]: stop }
+  return { root, directory, env, api, address, calls, get config() { return config }, configFile, writeConfig, headers, output: () => output.replace(/server password \S+/g, "server password [redacted]"), stop, [Symbol.asyncDispose]: stop }
 }
