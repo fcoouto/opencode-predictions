@@ -201,7 +201,7 @@ var package_default = {
     "test:installed": "node scripts/test-installed.mjs",
     check: "npm test && npm run typecheck && npm run bundle"
   },
-  dependencies: { "@opencode/plugin": "2.2.6", "@opencode/client": "2.2.6" },
+  dependencies: { "@opencode/plugin": "2.2.6", "@opencode/client": "2.2.6", "jsonc-parser": "3.3.1" },
   devDependencies: {
     "@opentui/core": "0.8.4",
     "@types/node": "26.6.6",

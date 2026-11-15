@@ -110,7 +110,7 @@
 ## Task 2: Production Global Config Store
 
 **Depends on:** Task 1 **GO** and its documented backend.
-**Files:** Create `src/config.ts`, `tests/config.test.ts`; modify the Task 1 host test to exercise production persistence. Update package files only for the JSONC editor proven necessary in Task 1.
+**Files:** Create `src/config.ts`, `src/setup.ts`, `tests/config.test.ts`; modify `tests/host/persistence-probe/index.ts` to exercise production persistence. Update package files only for the JSONC editor proven necessary in Task 1; generated bundle metadata may follow that manifest change.
 
 **Interfaces:**
 - In `src/setup.ts`, introduce `SettingKey = "models" | "enabled" | "automatic" | "escalation" | "timeoutMs" | "contextTurns" | "debug"` and `SettingsInput = Partial<Record<SettingKey, unknown>>`. Unknown values allow invalid existing settings to be displayed rather than silently defaulted.
@@ -136,11 +136,11 @@
 - [ ] **Step 3: Implement `createConfigStore` using only Task 1's verified backend.**
   Read known editable fields only into responses; never return full global config, unknown option values, or backup contents. Preserve other content from the validated source bytes. Rediscover and revalidate target/provenance under verified writer coordination and immediately before replacement. Revision is opaque to clients and covers every input needed for stale-draft/source detection; it is not a promise of atomic compare-and-swap against external writers. Carry over private atomic replacement, one rotating recovery copy, permission checks, and cleanup from the proven candidate. Return fixed safe messages, not raw file/provider errors. An aborted pre-commit operation writes nothing to the active document; a committed operation must remain reconcilable after transport cancellation.
 
-- [ ] **Step 4: Run `node --test tests/config.test.ts tests/host-fixture.test.ts tests/host/persistence.test.ts` and `npm run typecheck`; expect PASS with the same Task 1 safety guarantee.**
+- [ ] **Step 4: Run `node --test --test-concurrency=1 tests/config.test.ts tests/host-fixture.test.ts tests/host/persistence.test.ts tests/host/persistence-safeguards.test.ts tests/host/persistence-activation.test.ts tests/host/server.test.ts` and `npm run typecheck`; expect PASS with the same Task 1 safety guarantee.**
 
 - [ ] **Step 5: Commit the store, its types, and tests.**
   ```sh
-  git add src/config.ts src/setup.ts tests/config.test.ts tests/host/persistence.test.ts
+   git add src/config.ts src/setup.ts tests/config.test.ts tests/host/persistence-probe/index.ts
   git commit -m "feat: persist prediction settings safely"
   ```
   Include package files in this commit only if changed for the approved JSONC dependency.
