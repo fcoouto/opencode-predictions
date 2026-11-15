@@ -42,7 +42,7 @@ export type ExperimentalConfigUpdateInput = {
 };
 ```
 
-A real PATCH containing `plugins` returned HTTP `400`. The JSONC file remained byte-for-byte unchanged. The other config/plugin mutation routes were plugin check/update operations, not option editing.
+A real PATCH containing `plugins` returned HTTP `400`. The JSONC file remained byte-for-byte unchanged. That request also omitted required `shell`, so HTTP `400` alone does not identify the rejection cause. The inspected runtime schema and pinned declaration independently establish the current plugin-options limitation. The other config/plugin mutation routes were plugin check/update operations, not option editing.
 
 The pinned server-plugin `Context` also exposes neither `config` nor a general authenticated `client` property. Client-side document discovery must not be assumed to exist as `ctx.config` in the server plugin.
 
@@ -110,3 +110,11 @@ Recommended: obtain a supported host operation for scoped plugin-option edits wi
 Another route requires explicit design approval: accept best-effort external-editor conflict detection, with a disclosed residual race despite atomic replacement and serialization among setup clients. That is a weaker promise and is not authorized by the current design.
 
 Do not silently switch to plugin storage, guess a global path, or ship the test candidate as a writer.
+
+## Independent Review
+
+A fresh read-only review accepted research checkpoint `cffe431` with no Critical or Important findings and retained NO-GO. The reviewer did not rerun tests.
+
+One Minor remains deferred: assert the runtime patch schema in the capability test, rather than only logging its fields. Otherwise a future API change could leave the malformed-request test green while the report's capability conclusion becomes stale. This does not invalidate the schema/declaration evidence collected for the tested version.
+
+The reviewer explicitly left the unimplemented editor/provenance policy, broader source matrix, save activation/restart, remote-machine behavior, generation suppression, setup draft state, native UI/accessibility, and installed setup flows unverified. No readiness claim extends to those areas.

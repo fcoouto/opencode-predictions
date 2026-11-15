@@ -346,4 +346,6 @@ Alternative: **Subagent-driven**, with fresh task implementers/reviewers after t
 - Report: `docs/research/2026-11-15-config-persistence-feasibility.md`.
 - Step 5 (successful-save activation/restart), broader unsupported-source scenarios, and Tasks 2–7 remain unexecuted. No production code or user configuration changed.
 - Verification: persistence/fixture checks 10/10; combined persistence/fixture/existing server compatibility 14/14; project suite 217/217; typecheck and diff whitespace checks passed.
-- The gate remains NO-GO despite green characterization tests. Checkpoint and independent review pending.
+- The gate remains NO-GO despite green characterization tests. Research checkpoint: `cffe431`.
+- Fresh independent review accepted the research checkpoint, with no Critical/Important findings. One Minor is deferred: capability tests log the runtime schema but do not assert it; HTTP 400 also follows from omitting required `shell`.
+- No production readiness or successful-save behavior was approved by this review. Tasks 2–7 remain blocked.
