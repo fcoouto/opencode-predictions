@@ -241,6 +241,10 @@ without source-model metadata shows a generic no-prediction message instead.
 With no alternatives, a brief **No alternatives available.** message precedes restoration.
 Repeated shortcuts while pending are ignored. Typing or changing context cancels
 pending work and clears status; late results cannot overwrite the draft.
+If settings reload cancels an initial request before a server cycle is established,
+the next explicit shortcut can request a fresh prediction. Typing and clearing before
+the first prediction also permits a fresh request. These actions do not trigger
+automatic retries or reuse a previous configuration's cached prediction.
 
 ```json
 {
