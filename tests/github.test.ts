@@ -150,6 +150,57 @@ test("URLs touching either excerpt boundary are skipped while complete distant l
   assert.equal((await f.load("one", prompt(url + " complete reference." + marker + "tail"), signal())).length, 1)
 })
 
+test("real conversation excerpting cannot promote a nested redirect URL into a private PR lookup", async () => {
+  const marker = "\n[excerpt: middle omitted]\n"
+  const delimiter = "\nConversation:\n"
+  const probe = prompt("x".repeat(90000))
+  const tailLength = JSON.parse(probe.slice(probe.lastIndexOf(delimiter) + delimiter.length))[0].assistant.split(marker)[1].length
+  const privateURL = "https://github.com/acme/private/pull/1"
+  const suffix = "redirect=" + privateURL + " "
+  const original = "https://github.com/acme/public/pull/12?" + "x".repeat(60000) + suffix + "y".repeat(tailLength - suffix.length)
+  const selected = prompt(original)
+  const text = JSON.parse(selected.slice(selected.lastIndexOf(delimiter) + delimiter.length))[0].assistant
+  assert.ok(text.includes(marker + suffix), "fixture must retain redirect= and the nested URL at the real excerpt boundary")
+  const f = fixture()
+  f.token = "FAKE_PRIVATE_CREDENTIAL"
+  assert.deepEqual(await f.load("one", selected, signal()), [])
+  assert.equal(f.credentials, 0)
+  assert.equal(f.calls.length, 0)
+})
+
+test("whole uninterrupted tokens touching either excerpt boundary cannot supply PR links", async () => {
+  const marker = "\n[excerpt: middle omitted]\n"
+  for (const prefix of ["redirect=", "?next=", "[reference](", "🧪"]) {
+    for (const text of ["head" + marker + prefix + url, prefix + url + "?redirect=" + marker + "tail"]) {
+      const f = fixture()
+      f.token = "FAKE_PRIVATE_CREDENTIAL"
+      assert.deepEqual(await f.load("one", prompt(text), signal()), [], text)
+      assert.equal(f.credentials, 0, text)
+      assert.equal(f.calls.length, 0, text)
+      const source: LinkedPR = { url, title: "Reference", body: "Private metadata", state: "open", draft: false, updatedAt: "2026-11-15T10:00:00Z", fetchedAt: "2026-11-15T11:00:00Z", bodyExcerpted: false }
+      const base = prompt(text)
+      assert.equal(appendGitHubContext(base, [source]), base, text)
+    }
+  }
+})
+
+test("complete public and private PR links separated from excerpt tokens remain eligible", async () => {
+  const marker = "\n[excerpt: middle omitted]\n"
+  for (const credential of [undefined, "FAKE_PRIVATE_CREDENTIAL"]) {
+    for (const separator of [" ", "\t", "\n", "<", ">", '"', "'", "`"]) {
+      const f = fixture()
+      f.token = credential
+      const base = prompt("head" + marker + "redirect=discarded" + separator + url + separator + "discarded" + marker + "tail")
+      const sources = await f.load("one", base, signal())
+      assert.deepEqual(sources.map(source => source.url), [url], separator)
+      assert.equal(f.credentials, 1)
+      assert.deepEqual(f.calls.map(call => call.url), ["https://api.github.com/repos/acme/project/pulls/1"])
+      assert.equal(new Headers(f.calls[0].init.headers).get("authorization"), credential ? "Bearer " + credential : null)
+      assert.ok(appendGitHubContext(base, sources).includes("No execution allowance was granted."))
+    }
+  }
+})
+
 test("cache entries expire and are isolated by session and credential", async () => {
   const f = fixture()
   f.token = "ACCOUNT_A"

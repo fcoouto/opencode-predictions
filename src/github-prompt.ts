@@ -25,11 +25,15 @@ export function links(prompt: string): string[] {
     for (const turn of conversation) {
       for (const text of [turn?.user, turn?.assistant]) {
         if (typeof text !== "string") continue
-        for (const match of text.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
-          // An excerpt edge can turn a partial URL into a different accessible PR.
-          if (text.startsWith(excerptMarker, match.index + match[0].length) || text.slice(0, match.index).endsWith(excerptMarker)) continue
-          const url = prURL(match[0].replace(/[)\]},.;!?]+$/, ""))
-          if (url) found.push(url)
+        // An excerpt edge can turn a partial URL into a different accessible PR.
+        const parts = text.split(excerptMarker)
+        for (const [index, part] of parts.entries()) {
+          const complete = index === 0 ? part : part.replace(/^[^\s<>"'`]+/, "")
+          for (const match of complete.matchAll(/https?:\/\/[^\s<>"'`]+/gi)) {
+            if (index < parts.length - 1 && match.index + match[0].length === complete.length) continue
+            const url = prURL(match[0].replace(/[)\]},.;!?]+$/, ""))
+            if (url) found.push(url)
+          }
         }
       }
     }
