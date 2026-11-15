@@ -12,13 +12,13 @@
 
 ## Global Constraints
 
-- `githubPRContext` defaults to `false`; no credential/network access until enabled and selected context contains an eligible link.
+- `includeGithubPRContext` defaults to `false`; no credential/network access until enabled and selected context contains an eligible link.
 - Only explicit HTTPS github.com PR links; at most two newest distinct PRs; no recursive expansion, comments, diffs, or arbitrary URLs.
 - Fixed api.github.com GET endpoints, `redirect: "error"`, bounded credential command and response streams.
 - 2,000 ms enrichment deadline, 256 KiB response cap, 60-second/64-entry session-and-credential-scoped memory cache.
 - Titles at most 256 code points, descriptions 4,096; marked Unicode-safe excerpts.
 - Total prompt stays at most 32,768 bytes. Additional metadata, including label, at most 8,192 bytes and never displaces base conversation.
-- No credential/content logging, settings changes, live PR reads, paid prediction calls, dependency/version changes, push/merge/release, or installed-plugin update.
+- No credential/content logging, settings changes, paid prediction calls, dependency/version changes, push/merge/release, or installed-plugin update. Subsequent user authorization permits live public authentication checks and private checks only against a user-chosen PR.
 
 ## Review Focus
 
@@ -51,7 +51,7 @@
 
 ### Task 2: Wire prediction enrichment and verify end to end
 
-**Interfaces:** Add optional `ServiceAPI.githubPRContext(sessionID, prompt, signal)` and optional status boolean. Consume Task 1 exports; preserve existing request/reply interfaces.
+**Interfaces:** Add optional `ServiceAPI.includeGithubPRContext(sessionID, prompt, signal)` and optional status boolean. Consume Task 1 exports; preserve existing request/reply interfaces.
 
 - [x] Add failing service tests for default-off no reads, selected-context-only links, opt-in appended data, fail-open errors/timeout, no retrieval for metadata-only refreshes, and cancellation/staleness preventing generation.
 - [x] Observe RED; wire the optional callback after no-spend alternative validation and before model attempts. Use the existing `abortable` guard and the shared 2,000 ms deadline; swallow only enrichment failure, not parent cancellation.
@@ -73,3 +73,14 @@ All five review conditions map to helper or service tests. GitHub/CLI documentat
 - Both findings were reproduced in three failing tests, fixed at their responsible layers, and verified GREEN with the full suite. No findings remain unresolved; no second review was requested after the test-proven fix pass.
 - Pure prompt logic remains browser-safe; authentication/network code is server-only. Existing concise-prediction and global-context-file behavior remains unchanged.
 - No live PRs or credentials were read, no paid prediction was made, and the user's settings/installed plugin were not changed. Feature remains off by default on the local feature branch.
+
+## Subsequent Rename and Live Qualification
+
+- User requested `includeGithubPRContext` and a fresh independent review of the whole worktree.
+- Renamed configuration, status, runtime callback, tests, docs, and bundles consistently. The unreleased old name is ignored with a warning and cannot enable PR disclosure.
+- Rename regressions failed 12 checks before implementation; focused checks then passed 139/139. Full suite passed 297/297, with typecheck and production build.
+- Live existing-account authentication passed. The production helper made one authenticated HTTP 200 read of a known public PR, reused its cache, and supplied bounded untrusted metadata to a local predictor stub only. Default-off bypass and credential exclusion both passed.
+- No real prediction provider received the PR contents; two local stub generations were used.
+- Private live-access qualification remains blocked pending a user-selected private PR URL. Mocked private-access coverage is not represented as a live private pass.
+- Fresh installed-package qualifications passed sequentially: server 5/5, Desktop 13/13, CLI PTY 10/10, Git installation 1/1 (29 total). Package validation and repeat-build byte equality also passed.
+- The full renamed worktree is being submitted for the requested fresh independent review. Private live-access remains explicitly pending, not a pass. No user settings or installed plugin were changed.

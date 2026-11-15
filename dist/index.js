@@ -48,12 +48,12 @@ var Predictions = Rpc.define({
 function parseOptions(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] };
   const raw = input;
-  const fields = ["enabled", "models", "contextFile", "githubPRContext", "timeoutMs", "contextTurns", "automatic", "debug", "escalation"];
+  const fields = ["enabled", "models", "contextFile", "includeGithubPRContext", "timeoutMs", "contextTurns", "automatic", "debug", "escalation"];
   const warnings = Object.keys(raw).filter((key) => !fields.includes(key)).map((key) => `Unknown option ignored: ${key}`);
   const invalid = (reason) => ({ ok: false, reason, warnings });
   const contextFile = raw.contextFile;
   if (contextFile !== void 0 && (typeof contextFile !== "string" || !/^(?:\/|~\/|[A-Za-z]:[\\/]|\\\\)/.test(contextFile) || /[\x00-\x1F\x7F-\x9F]/u.test(contextFile))) return invalid("contextFile must be an absolute path or start with ~/");
-  for (const name of ["enabled", "automatic", "debug", "githubPRContext"]) {
+  for (const name of ["enabled", "automatic", "debug", "includeGithubPRContext"]) {
     if (raw[name] !== void 0 && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`);
   }
   const timeoutMs = raw.timeoutMs ?? 8e3;
@@ -78,7 +78,7 @@ function parseOptions(input = {}) {
       models.push(text.trim());
     }
   }
-  return { ok: true, value: { enabled: raw.enabled ?? true, ...raw.models === void 0 ? {} : { models }, ...contextFile === void 0 ? {} : { contextFile }, githubPRContext: raw.githubPRContext ?? false, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false, escalation: escalation2 }, warnings };
+  return { ok: true, value: { enabled: raw.enabled ?? true, ...raw.models === void 0 ? {} : { models }, ...contextFile === void 0 ? {} : { contextFile }, includeGithubPRContext: raw.includeGithubPRContext ?? false, timeoutMs, contextTurns, automatic: raw.automatic ?? true, debug: raw.debug ?? false, escalation: escalation2 }, warnings };
 }
 
 // src/predict.ts
@@ -260,7 +260,7 @@ function statusNotice(status) {
   }
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
-    const validation = /^(Plugin options|enabled|automatic|debug|githubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
@@ -460,7 +460,7 @@ function createService(api, rawOptions, directory) {
       enabled: !!options?.enabled && !!options.models,
       ...options?.models ? { models: options.models.join(", ") } : {},
       ...options?.contextFile ? { contextFile: options.contextFile } : {},
-      githubPRContext: options?.githubPRContext ?? false,
+      includeGithubPRContext: options?.includeGithubPRContext ?? false,
       ...groups ? { groups: groups.map((queue, index) => ({ selectors: options.models[index], candidates: queue.map(queueEntry) })), candidates: candidates.map(queueEntry) } : {},
       automatic: options?.automatic ?? true,
       debug: options?.debug ?? false,
@@ -576,10 +576,10 @@ function createService(api, rawOptions, directory) {
           chain = [target, ...chain.filter((model) => model !== target && model.group >= target.group)];
         }
         const ownership = new Map(owners);
-        if (options.githubPRContext && api.githubPRContext) {
+        if (options.includeGithubPRContext && api.includeGithubPRContext) {
           const sourceSignal = AbortSignal.any([parent, AbortSignal.timeout(2e3)]);
           try {
-            const sources = await abortable(() => api.githubPRContext(request.sessionID, prompt, sourceSignal), sourceSignal);
+            const sources = await abortable(() => api.includeGithubPRContext(request.sessionID, prompt, sourceSignal), sourceSignal);
             prompt = appendGitHubContext(prompt, sources);
           } catch {
             parent.throwIfAborted();
@@ -841,7 +841,7 @@ var index_default = Plugin.define({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),
       context: (sessionID, signal) => ctx.session.context({ sessionID }, { signal }),
       contextFile: readContextFile,
-      githubPRContext: createGitHubContext(),
+      includeGithubPRContext: createGitHubContext(),
       models: async (signal) => (await ctx.model.list(void 0, { signal })).data,
       generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
       notice: async (message, request, notice2) => {

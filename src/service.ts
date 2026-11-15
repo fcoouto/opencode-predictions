@@ -11,14 +11,14 @@ export type ServiceAPI = {
   session(id: string, signal: AbortSignal): Promise<Session>
   context(id: string, signal: AbortSignal): Promise<readonly unknown[]>
   contextFile?(path: string, signal: AbortSignal): Promise<string>
-  githubPRContext?(sessionID: string, prompt: string, signal: AbortSignal): Promise<readonly LinkedPR[]>
+  includeGithubPRContext?(sessionID: string, prompt: string, signal: AbortSignal): Promise<readonly LinkedPR[]>
   models(signal: AbortSignal): Promise<readonly CatalogModel[]>
   generate(model: ModelRef, prompt: string, signal: AbortSignal): Promise<string>
   notice?(message: string, request: Request, notice?: Notice): void | Promise<void>
   progress?(modelName: string, request: Request): void | Promise<void>
 }
 export type QueueEntry = Candidate & { state: "ready" | "cooling" | "blocked"; reason?: string; retryAt?: number }
-export type Status = { enabled: boolean; models?: string; contextFile?: string; githubPRContext?: boolean; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
+export type Status = { enabled: boolean; models?: string; contextFile?: string; includeGithubPRContext?: boolean; candidates?: QueueEntry[]; groups?: { selectors: string; candidates: QueueEntry[] }[]; automatic: boolean; escalation?: "off" | "manual" | "automatic"; debug: boolean; timeoutMs: number; contextTurns: number; version: string; warnings: string[]; reason?: string; lastOutcome?: string; lastLatencyMs?: number; pluginVersion?: string; feedbackRevision?: number }
 
 export async function abortable<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T> {
   signal.throwIfAborted()
@@ -146,7 +146,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
       enabled: !!options?.enabled && !!options.models,
       ...(options?.models ? { models: options.models.join(", ") } : {}),
       ...(options?.contextFile ? { contextFile: options.contextFile } : {}),
-      githubPRContext: options?.githubPRContext ?? false,
+      includeGithubPRContext: options?.includeGithubPRContext ?? false,
       ...(groups ? { groups: groups.map((queue, index) => ({ selectors: options!.models![index], candidates: queue.map(queueEntry) })), candidates: candidates!.map(queueEntry) } : {}),
       automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
       escalation: options?.escalation ?? "off",
@@ -253,10 +253,10 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
           chain = [target, ...chain.filter(model => model !== target && model.group >= target.group)]
         }
         const ownership = new Map(owners)
-        if (options.githubPRContext && api.githubPRContext) {
+        if (options.includeGithubPRContext && api.includeGithubPRContext) {
           const sourceSignal = AbortSignal.any([parent, AbortSignal.timeout(2000)])
           try {
-            const sources = await abortable(() => api.githubPRContext!(request.sessionID, prompt!, sourceSignal), sourceSignal)
+            const sources = await abortable(() => api.includeGithubPRContext!(request.sessionID, prompt!, sourceSignal), sourceSignal)
             prompt = appendGitHubContext(prompt, sources)
           } catch { parent.throwIfAborted() }
         }

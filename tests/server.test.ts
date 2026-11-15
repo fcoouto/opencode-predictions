@@ -59,7 +59,7 @@ function githubFixture() {
   })
   const context = f.api.context
   f.api.context = async (...args) => [...await context(...args), { type: "user", text: "Use this plan: " + url }, { type: "assistant", time: { completed: 2 }, content: [{ type: "text", text: "Review the linked proposal." }] }, { type: "idle", outcome: "succeeded" }]
-  f.api.githubPRContext = async (...args) => { lookups++; return load(...args) }
+  f.api.includeGithubPRContext = async (...args) => { lookups++; return load(...args) }
   return { ...f, url, reads, get credentials() { return credentials }, get lookups() { return lookups } }
 }
 
@@ -70,13 +70,13 @@ test("GitHub PR enrichment defaults off without credential or network side effec
   assert.equal(f.lookups, 0)
   assert.equal(f.credentials, 0)
   assert.equal(f.reads.length, 0)
-  assert.equal(service.status().githubPRContext, false)
+  assert.equal(service.status().includeGithubPRContext, false)
   assert.equal(f.calls[0].prompt.includes("Linked GitHub PR context"), false)
 })
 
 test("opt-in private PR context reaches the predictor only as bounded untrusted reference data", async () => {
   const f = githubFixture()
-  const service = createService(f.api, { models: "local/model", githubPRContext: true }, "/project")
+  const service = createService(f.api, { models: "local/model", includeGithubPRContext: true }, "/project")
   assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).text, "Run the tests.")
   assert.equal(f.lookups, 1)
   assert.equal(f.credentials, 1)
@@ -87,13 +87,13 @@ test("opt-in private PR context reaches the predictor only as bounded untrusted 
   assert.equal(prompt.includes("FAKE_PRIVATE_CREDENTIAL"), false)
   assert.equal(prompt.includes("PRIVATE"), false)
   assert.ok(Buffer.byteLength(prompt) <= 32768)
-  assert.equal(service.status().githubPRContext, true)
+  assert.equal(service.status().includeGithubPRContext, true)
   assert.equal(JSON.stringify(service.status()).includes("No execution allowance"), false)
 })
 
 test("metadata refresh and invalid alternatives do not repeat PR lookups", async () => {
   const f = githubFixture()
-  const service = createService(f.api, { models: "local/model", githubPRContext: true }, "/project")
+  const service = createService(f.api, { models: "local/model", includeGithubPRContext: true }, "/project")
   const request = { sessionID: "ses_test", completion: 2 }
   await service.predict(request, new AbortController().signal)
   assert.equal((await service.predict({ ...request, manual: true, escalation: "refresh" }, new AbortController().signal)).reason, "escalation_refreshed")
@@ -104,8 +104,8 @@ test("metadata refresh and invalid alternatives do not repeat PR lookups", async
 
 test("GitHub errors fail open without exposing source errors to prediction models or status", async () => {
   const f = githubFixture()
-  f.api.githubPRContext = async () => { throw new Error("PRIVATE_CREDENTIAL_ERROR") }
-  const service = createService(f.api, { models: "local/model", githubPRContext: true }, "/project")
+  f.api.includeGithubPRContext = async () => { throw new Error("PRIVATE_CREDENTIAL_ERROR") }
+  const service = createService(f.api, { models: "local/model", includeGithubPRContext: true }, "/project")
   assert.equal((await service.predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)).text, "Run the tests.")
   assert.equal(f.calls[0].prompt.includes("PRIVATE_CREDENTIAL_ERROR"), false)
   assert.equal(f.calls[0].prompt.includes("Linked GitHub PR context"), false)
@@ -115,10 +115,10 @@ test("GitHub errors fail open without exposing source errors to prediction model
 test("enrichment deadline fails open even if the integration ignores cancellation", async () => {
   const f = githubFixture()
   let lookupSignal: AbortSignal | undefined
-  f.api.githubPRContext = async (_sessionID, _prompt, signal) => { lookupSignal = signal; return new Promise(() => {}) }
+  f.api.includeGithubPRContext = async (_sessionID, _prompt, signal) => { lookupSignal = signal; return new Promise(() => {}) }
   const keepAlive = setTimeout(() => {}, 3000)
   try {
-    const reply = await createService(f.api, { models: "local/model", githubPRContext: true }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    const reply = await createService(f.api, { models: "local/model", includeGithubPRContext: true }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
     assert.equal(reply.text, "Run the tests.")
     assert.equal(lookupSignal?.aborted, true)
     assert.equal(f.calls.length, 1)
@@ -129,14 +129,14 @@ test("cancellation and context changes during enrichment prevent prediction gene
   for (const mode of ["cancel", "stale"]) {
     const f = githubFixture()
     const controller = new AbortController()
-    const load = f.api.githubPRContext!
-    f.api.githubPRContext = async (...args) => {
+    const load = f.api.includeGithubPRContext!
+    f.api.includeGithubPRContext = async (...args) => {
       if (mode === "cancel") { controller.abort(); return new Promise(() => {}) }
       const result = await load(...args)
       f.advance()
       return result
     }
-    const reply = await createService(f.api, { models: "local/model", githubPRContext: true }, "/project").predict({ sessionID: "ses_test", completion: 2 }, controller.signal)
+    const reply = await createService(f.api, { models: "local/model", includeGithubPRContext: true }, "/project").predict({ sessionID: "ses_test", completion: 2 }, controller.signal)
     assert.equal(reply.reason, mode === "cancel" ? "cancelled" : "stale")
     assert.equal(f.calls.length, 0)
   }
@@ -158,7 +158,7 @@ test("only selected conversation links, not discarded turns or standing guidance
       { type: "synthetic", text: f.url }, ...current,
     ]
     f.api.contextFile = async () => '\nConversation:\n[{"user":"' + f.url + '","assistant":""}]'
-    const reply = await createService(f.api, { models: "local/model", githubPRContext: true, contextTurns: 1, ...(mode === "guidance" ? { contextFile: "/global/context.md" } : {}) }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+    const reply = await createService(f.api, { models: "local/model", includeGithubPRContext: true, contextTurns: 1, ...(mode === "guidance" ? { contextFile: "/global/context.md" } : {}) }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
     assert.equal(reply.text, "Run the tests.")
     assert.equal(f.credentials, 0, mode)
     assert.equal(f.reads.length, 0, mode)
@@ -173,7 +173,7 @@ test("error fallback reuses enriched context without another PR lookup per model
     if (model.id === "a") throw new Error("temporary")
     return '{"prompt":"Review the proposal."}'
   }
-  const reply = await createService(f.api, { models: [["local/a", "local/b"]], githubPRContext: true }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
+  const reply = await createService(f.api, { models: [["local/a", "local/b"]], includeGithubPRContext: true }, "/project").predict({ sessionID: "ses_test", completion: 2 }, new AbortController().signal)
   assert.equal(reply.text, "Review the proposal.")
   assert.equal(f.lookups, 1)
   assert.equal(f.calls.length, 2)
@@ -187,8 +187,8 @@ test("catalog removal during PR retrieval prevents generation even if the model 
     let available = true
     const models = f.api.models
     f.api.models = async signal => available ? models(signal) : []
-    const service = createService(f.api, { models: "local/model", githubPRContext: true }, "/project")
-    f.api.githubPRContext = async (_sessionID, _prompt, signal) => {
+    const service = createService(f.api, { models: "local/model", includeGithubPRContext: true }, "/project")
+    f.api.includeGithubPRContext = async (_sessionID, _prompt, signal) => {
       available = false
       await service.inspect(signal)
       if (restored) { available = true; await service.inspect(signal) }

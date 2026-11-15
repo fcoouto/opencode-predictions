@@ -2,11 +2,11 @@
 
 ## Intent and authorization
 
-The user approved adding public and private GitHub PR context, opt-in and off by default, with the previously proposed GitHub-only, bounded, cached, fail-open behavior. Implement natively without changing the user's settings or reading live private PRs during development. Push, merge, release, and installed-plugin updates are not part of this feature request.
+The user approved adding public and private GitHub PR context, opt-in and off by default, with the previously proposed GitHub-only, bounded, cached, fail-open behavior. The user subsequently requested the `includeGithubPRContext` name, live-auth qualifications, and a fresh independent worktree review. Live public reads are authorized; private-access qualification requires a user-selected private PR target. Do not change settings or disclose PR contents to a paid prediction model during qualification. Push, merge, release, and installed-plugin updates are not part of this feature request.
 
 ## User-visible behavior
 
-Add `githubPRContext: false` to parsed plugin defaults and technical status. Setting it to `true` permits the selected prediction providers, including fallback models, to receive linked public or accessible private PR title, description, state, draft status, and freshness timestamps.
+Add `includeGithubPRContext: false` to parsed plugin defaults and technical status. Setting it to `true` permits the selected prediction providers, including fallback models, to receive linked public or accessible private PR title, description, state, draft status, and freshness timestamps.
 
 Only inspect links in the already selected and byte-bounded conversation JSON, after its literal delimiter. Never scan the directive or standing guidance from the global context file. Do not scan discarded turns, compaction summaries, tool output, reasoning, instructions, attachments, or other sessions. Prefer the two most recently mentioned distinct PRs. Fetch no comments, diffs, files, or nested links. Support only explicit HTTPS `github.com/{owner}/{repo}/pull/{number}` links, with optional query/fragment and surrounding Markdown punctuation.
 

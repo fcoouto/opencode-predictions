@@ -6,9 +6,9 @@ import type { Status } from "../src/service.ts"
 const ready: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "instance", warnings: [] }
 
 test("technical status reports the opt-in GitHub PR context setting", () => {
-  for (const githubPRContext of [true, false]) {
-    const view = formatStatus({ ...ready, githubPRContext }, {})
-    assert.match(view.details, new RegExp(`GitHub PR context: ${githubPRContext}`))
+  for (const includeGithubPRContext of [true, false]) {
+    const view = formatStatus({ ...ready, includeGithubPRContext }, {})
+    assert.match(view.details, new RegExp(`GitHub PR context: ${includeGithubPRContext}`))
   }
 })
 

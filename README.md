@@ -186,7 +186,7 @@ uses a `20000` ms timeout; the plugin default is `8000` ms.
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. The latest eligible human request is also retained when absent from that window. |
 | `contextFile` | unset | Optional absolute or `~/` path to one shared UTF-8 text/Markdown file on the OpenCode server. Maximum `8192` bytes. |
-| `githubPRContext` | `false` | Opt in to sending bounded metadata from linked public and accessible private GitHub PRs to prediction models. |
+| `includeGithubPRContext` | `false` | Opt in to sending bounded metadata from linked public and accessible private GitHub PRs to prediction models. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
 | `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one abstention-triggered transition. Errors fall back automatically in all modes. |
 | `enabled` | `true` | Enable predictions. |
@@ -252,7 +252,7 @@ This feature is **off by default**. To opt in, add this to the plugin's existing
 `options` object:
 
 ```json
-"githubPRContext": true
+"includeGithubPRContext": true
 ```
 
 **Enabling this permits linked private PR descriptions to be sent to every
@@ -551,7 +551,7 @@ the latest eligible human request from before that window, within the same
 compaction boundary, plus the optional explicitly configured global
 `contextFile` snapshot. This text may contain sensitive information.
 Every fallback provider also receives that snapshot.
-With `githubPRContext: true`, attempted providers may also receive descriptions
+With `includeGithubPRContext: true`, attempted providers may also receive descriptions
 and metadata of linked public or authenticated private PRs. Keep it disabled if
 that disclosure is not acceptable; the default is `false`.
 Tool output, reasoning, attachments, conversation instruction payloads, synthetic
