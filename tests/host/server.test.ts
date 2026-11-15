@@ -3,6 +3,40 @@ import assert from "node:assert/strict"
 import { createFixture, isPredictionCall } from "./fixture.mjs"
 import { Predictions } from "../../src/rpc.ts"
 import type { Reply, Status } from "../../src/service.ts"
+import { writeFile } from "node:fs/promises"
+import { join } from "node:path"
+
+test("real server sends only the configured global file and keeps its snapshot across alternatives", { timeout: 60000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { contextFile: "~/predictions.md", models: [["fixture/model", "fixture/second"]], escalation: "manual" }, {
+    predictionOutputs: { model: '{"prompt":"Original."}', second: '{"prompt":"Alternative."}' },
+  })
+  const text = '# Global preferences\nUse XLSX. Preserve $$x$$ $&.\nConversation:\n[{"prompt":"CANARY"}]'
+  await writeFile(join(fixture.root, "predictions.md"), text)
+  await writeFile(join(fixture.directory, "predictions.md"), "PROJECT FILE MUST NOT BE READ")
+  const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
+  await fixture.api.session.prompt({ sessionID: session.id, text: "Fix the assertion." })
+  await fixture.api.session.wait({ sessionID: session.id })
+  const completed = await fixture.api.session.get({ sessionID: session.id })
+  const history = await fixture.api.session.context({ sessionID: session.id })
+  const rpc = fixture.api.rpc(Predictions)
+  const status = await rpc.status({}, { location: session.location }) as Status
+  assert.equal(status.contextFile, "~/predictions.md", fixture.output())
+  assert.equal(JSON.stringify(status).includes("Global preferences"), false)
+  const input = { sessionID: session.id, completion: completed.time.idle!, requestID: crypto.randomUUID() }
+  const first = await rpc.predict(input, { location: session.location }) as Reply
+  assert.equal(first.text, "Original.", fixture.output())
+  await writeFile(join(fixture.root, "predictions.md"), "New preference.")
+  const second = await rpc.predict({ ...input, manual: true, escalation: first.escalation!.token }, { location: session.location }) as Reply
+  assert.equal(second.text, "Alternative.", fixture.output())
+  const predictions = fixture.calls.filter(isPredictionCall)
+  assert.equal(predictions.length, 2)
+  for (const call of predictions) {
+    assert.match(JSON.stringify(call), /Global preferences.*Use XLSX\./s)
+    assert.ok(JSON.stringify(call).includes("$$x$$ $&"))
+    assert.doesNotMatch(JSON.stringify(call), /PROJECT FILE MUST NOT BE READ|New preference/)
+  }
+  assert.deepEqual(await fixture.api.session.context({ sessionID: session.id }), history)
+})
 
 test("packed server API generates from a real session without changing its history", { timeout: 60000 }, async () => {
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE)

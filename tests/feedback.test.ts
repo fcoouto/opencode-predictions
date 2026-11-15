@@ -1,9 +1,27 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { statusNotice, formatStatus } from "../src/feedback.ts"
+import { statusNotice, reasonNotice, formatStatus } from "../src/feedback.ts"
 import type { Status } from "../src/service.ts"
 
 const ready: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "instance", warnings: [] }
+
+test("global context path and fixed file errors stay readable without disclosing file contents", () => {
+  const view = formatStatus({ ...ready, contextFile: "/home/user/preferences.md", lastOutcome: "context_file_unavailable" }, {
+    lastNotice: reasonNotice("context_file_unavailable"),
+  })
+  assert.match(view.summary, /Context file: \/home\/user\/preferences.md/)
+  assert.match(view.summary, /contextFile/)
+  for (const code of ["context_file_unavailable", "context_file_too_large", "context_file_invalid"]) {
+    const notice = reasonNotice(code)!
+    assert.equal(notice.code, code)
+    assert.equal(notice.severity, "error")
+    assert.match(notice.message, /contextFile/)
+  }
+  assert.match(reasonNotice("context_file_too_large")!.message, /8192/)
+  assert.match(reasonNotice("context_file_invalid")!.message, /UTF-8/)
+  const invalid = statusNotice({ ...ready, reason: "contextFile must be an absolute path or start with ~/" })!
+  assert.match(invalid.message, /contextFile must be an absolute path/)
+})
 
 test("configuration blockers explain the cause and recovery without debug", () => {
   for (const [reason, title, recovery] of [

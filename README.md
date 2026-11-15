@@ -101,6 +101,7 @@ if the shortcut is not delivered, use **Predict next prompt** from the command p
 | `models` | unset | Required. Selector text for one ranking group, or an ordered array of selector groups. |
 | `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. |
+| `contextFile` | unset | Optional absolute or `~/` path to one shared UTF-8 text/Markdown file on the OpenCode server. Maximum `8192` bytes. |
 | `automatic` | `true` | Predict after a completed response. Set `false` for manual requests only. |
 | `escalation` | `"manual"` | `"off"` disables alternatives; `"manual"` uses **Alt+Shift+P** to try another model; `"automatic"` permits one abstention-triggered transition. Errors fall back automatically in all modes. |
 | `enabled` | `true` | Enable predictions. |
@@ -112,6 +113,53 @@ default reasoning. The plugin never changes your main session model.
 `*` matches model IDs or display names case-insensitively. Matches within each
 wildcard selector use stable provider/model-ID order, not speed or price.
 Only enabled models supporting the requested variant are selected.
+
+### Global standing context
+
+To supply stable preferences or work constraints, add this option inside the
+plugin's existing `options` object in your **global** `opencode.json(c)`:
+
+```json
+"contextFile": "~/.config/opencode/predictions.md"
+```
+
+Create that file yourself, for example:
+
+```markdown
+For inventory reports, prefer XLSX.
+Keep suggested prompts concise.
+Do not suggest publishing or deployment unless I explicitly request it.
+```
+
+This first release uses **one shared file across projects**. It does not discover
+project files, read `AGENTS.md`, or merge global and project context. Use an
+absolute path or `~/`; project-relative paths and URLs are rejected. `~/` refers
+to the **server user's home directory**, which may differ from the Desktop or
+CLI machine. If you use `XDG_CONFIG_HOME`, point to your chosen file explicitly.
+
+The file must be a regular UTF-8 text file of at most **8192 bytes**, without
+binary control characters. Empty or whitespace-only files add nothing.
+Unreadable, oversized, or invalid files stop that prediction with an actionable
+notice; the plugin never silently ignores or truncates a configured file.
+**Prediction status and preview** shows the configured path and last outcome,
+not file contents or raw filesystem errors.
+
+Each prediction cycle reads one snapshot and includes it in every model attempt,
+including error fallback and alternative predictions. Edits apply to new cycles
+after another completed response or a plugin reload. Existing cached suggestions
+and their alternatives keep the original snapshot. Use `/reload` to apply edits
+to the same completed response; file edits alone do not trigger a reload.
+With `escalation: "off"`, an explicit refresh starts a new cycle.
+
+Standing guidance informs relevant preferences and constraints, but current
+explicit user instructions take precedence. It does not authorize more work or
+replace the predictor's JSON output and abstention rules. Model compliance is
+best-effort. The file shares the existing **32768-byte total prompt budget** with
+conversation text, so larger guidance can reduce retained conversation context.
+Without `contextFile`, prediction behavior is unchanged.
+
+**Do not include secrets. Every attempted prediction model receives the file,
+including fallback providers and paid models—not only your main session model.**
 
 ### Progress and alternative predictions
 
@@ -344,13 +392,17 @@ the provider stops generating or billing. Two clients viewing the same session
 can independently incur prediction costs.
 
 The selected provider receives recent user and assistant text, which may contain
-sensitive information. Tool output, reasoning, attachments, instruction payloads,
-synthetic messages, other sessions, and unsent drafts are excluded. Oversized
-context uses marked excerpts that may omit details.
+sensitive information, plus the optional explicitly configured global
+`contextFile` snapshot. Every fallback provider also receives that snapshot.
+Tool output, reasoning, attachments, conversation instruction payloads, synthetic
+messages, other sessions, and unsent drafts are excluded. Oversized conversation
+context uses marked excerpts that may omit details; the context file is never
+silently truncated.
 
 The plugin keeps context and suggestions in memory. It adds no conversation
 archive or telemetry. OpenCode and provider retention policies still apply.
-Project instruction processing and preference memory are not supported.
+Automatic project instruction processing and learned preference memory are not
+supported. Only the explicitly configured global context file is read.
 
 Git installation stores plugin code in OpenCode's managed package cache
 (`~/.cache/opencode/npm/` by default, or under `XDG_CACHE_HOME`). Settings remain

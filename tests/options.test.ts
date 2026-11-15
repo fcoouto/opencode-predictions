@@ -2,6 +2,23 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { parseOptions } from "../src/options.ts"
 
+test("contextFile accepts only explicit absolute or home-relative global file paths", () => {
+  for (const contextFile of ["/home/user/predictions.md", "~/predictions.txt", "C:\\Users\\user\\predictions.md", "\\\\server\\share\\predictions.md"]) {
+    const result = parseOptions({ contextFile })
+    assert.ok(result.ok)
+    assert.equal(result.value.contextFile, contextFile)
+    assert.deepEqual(result.warnings, [])
+  }
+  const defaults = parseOptions({})
+  assert.ok(defaults.ok)
+  assert.equal("contextFile" in defaults.value, false)
+  for (const contextFile of [null, false, 1, [], {}, "", " ", "predictions.md", "./predictions.md", "../predictions.md", "https://example.com/context.md", "file:///context.md", "~other/context.md", "/private\npath", "/private\u0000path", "/private\u009bpath"]) {
+    const result = parseOptions({ contextFile })
+    assert.equal(result.ok, false, JSON.stringify(contextFile))
+    if (!result.ok) assert.equal(result.reason, "contextFile must be an absolute path or start with ~/")
+  }
+})
+
 test("escalation defaults to manual and rejects unsupported policies", () => {
   const defaults = parseOptions({})
   assert.ok(defaults.ok)
