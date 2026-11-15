@@ -118,3 +118,45 @@ A fresh read-only review accepted research checkpoint `cffe431` with no Critical
 One Minor remains deferred: assert the runtime patch schema in the capability test, rather than only logging its fields. Otherwise a future API change could leave the malformed-request test green while the report's capability conclusion becomes stale. This does not invalidate the schema/declaration evidence collected for the tested version.
 
 The reviewer explicitly left the unimplemented editor/provenance policy, broader source matrix, save activation/restart, remote-machine behavior, generation suppression, setup draft state, native UI/accessibility, and installed setup flows unverified. No readiness claim extends to those areas.
+
+## Upstream Follow-up: Supported API Search
+
+The user selected investigation of a supported upstream operation rather than weakening the conflict guarantee.
+
+### Result
+
+No supported operation meeting the approved requirements was found. Updating this plugin's SDK to the current npm stable version would not supply it:
+
+- npm reports `@opencode/client` stable `2.3.0`. Its published `ExperimentalConfigUpdateInput` still contains only required `shell: string | null`.
+- The published `@opencode/plugin` `2.3.0` server `Context` still exposes neither a config-editing domain nor a general authenticated client.
+- The current official OpenAPI still exposes only the shell patch. It provides no expected-revision or conditional-write input for configuration.
+- Upstream `dev` was inspected at immutable commit `d432a06b9c07bab0be4e8d642173b1cb14137f11`. Its schema and route still accept only `Config.Patch` containing `shell`.
+
+These are remote documentation, published declaration, and source inspections. No `2.3.0` runtime was installed or tested.
+
+### Existing Upstream Implementation Does Not Close the Gap
+
+Upstream's config updater already uses JSONC-preserving edits and serializes its own update calls with a semaphore. However, it edits only `shell`, writes through the filesystem service, and accepts no expected document revision.
+
+The internal `FileMutation` service is not a supported config-editing operation on the plugin context. Its source explicitly states:
+
+> Mutation locking is process-local and serializes cooperating OpenCode changes; external writes can still race.
+
+Therefore, exposing the existing lock or adding plugin options to the patch alone would not establish the stronger external-editor guarantee. An upstream enhancement needs an explicit conflict/recovery contract, not merely a new endpoint or a mutex.
+
+### Related Work
+
+[Open issue #61617: Interactive setup questions for plugins](https://github.com/anomalyco/opencode/issues/61617) proposes collecting plugin options during installation. It does not specify runtime settings editing, revision preconditions, or protection against racing external edits. It is related work, not an available solution.
+
+The remaining upstream requirements are the already-approved ones: scoped edits to an identified global plugin entry; JSONC/unrelated-content preservation; an explicit conditional-write/conflict contract; and inspectable persistence/activation outcomes. External-editor races must be covered honestly by that contract.
+
+### Sources
+
+- [Published API contract](https://opencode.ai/docs/openapi.json).
+- [Stable client 2.3.0 declarations](https://unpkg.com/@opencode/client@2.3.0/dist/promise/generated/types.d.ts).
+- [Stable plugin 2.3.0 server context](https://unpkg.com/@opencode/plugin@2.3.0/dist/promise/plugin.d.ts).
+- [Pinned upstream config schema](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/schema/src/config.ts).
+- [Pinned upstream config implementation](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/core/src/config.ts#L469-L491).
+- [Pinned upstream file-mutation limitation](https://github.com/anomalyco/opencode/blob/d432a06b9c07bab0be4e8d642173b1cb14137f11/packages/core/src/file-mutation.ts#L67-L75).
+
+NO-GO remains. No upstream issue, comment, PR, or installation change was submitted.
