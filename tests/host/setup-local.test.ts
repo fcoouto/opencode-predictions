@@ -8,7 +8,7 @@ import { createServer, request } from "node:http"
 import { _electron as electron } from "playwright"
 import { build } from "esbuild"
 import { Service } from "@opencode/client/service"
-import { createFixture } from "./fixture.mjs"
+import { createFixture, isPredictionCall } from "./fixture.mjs"
 import { Predictions } from "../../src/rpc.ts"
 import { readLocalSetup, saveLocalSetup } from "../../src/setup-local.ts"
 import type { SetupSnapshot } from "../../src/setup.ts"
@@ -59,6 +59,48 @@ test("setup local Desktop saves through production main IPC and reconciles watch
     assert.notEqual(after.serviceVersion, before.serviceVersion)
     assert.equal(fixture.calls.length, 0)
     assert.match(await readFile(fixture.configFile!, "utf8"), /"debug": true/)
+  } finally { await app.close() }
+})
+
+test("setup local Desktop Save preserves the composer draft and creates no prediction", { timeout: 90000, skip: process.platform !== "darwin" }, async () => {
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: true }, {}, { configSource: "global-jsonc" })
+  const observer = { package: resolve("tests/host/observer"), options: { directory: fixture.directory, setupProbe: true } }
+  await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, observer] })
+  const app = await electron.launch({
+    executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode",
+    args: ["--user-data-dir=" + join(fixture.root, "save-composer-profile")],
+    env: fixture.env as Record<string, string>, timeout: 30000,
+  })
+  try {
+    const page = await app.firstWindow()
+    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
+    await page.waitForFunction(() => (window as any).__predictionFixture?.setupReady(), undefined, { timeout: 5000 })
+    await page.evaluate(() => (window as any).__predictionFixture.launch())
+    const editor = page.locator('[data-component="composer-editor"][contenteditable="true"]')
+    await editor.waitFor({ state: "visible", timeout: 20000 })
+    await page.waitForFunction(() => document.querySelector('[data-component="composer-editor"]')?.textContent === "Fix the assertion.")
+    await editor.press("Enter")
+    await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 15000 })
+    const before = await page.evaluate(() => (window as any).__predictionFixture.setupRead())
+    assert.equal(before.writable, true)
+    const callsBefore = fixture.calls.filter(isPredictionCall).length
+    await editor.fill("my existing draft")
+    const result = await page.evaluate(() => (window as any).__predictionFixture.setupSave())
+    assert.ok(["saved", "saved_not_active"].includes(result.kind))
+    let after = before
+    const deadline = Date.now() + 10000
+    while (Date.now() < deadline) {
+      after = await page.evaluate(() => (window as any).__predictionFixture.setupRead())
+      if (after?.effective.debug === true && after.serviceVersion !== before.serviceVersion) break
+      await page.waitForTimeout(100)
+    }
+    assert.equal(after.effective.debug, true, "the Save must activate through the real watcher")
+    assert.equal(await editor.innerText(), "my existing draft", "Save and reload must not touch the composer")
+    await editor.fill("")
+    await page.waitForTimeout(2300)
+    assert.equal(fixture.calls.filter(isPredictionCall).length, callsBefore, "Save must not cause a prediction call")
+    assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
   } finally { await app.close() }
 })
 

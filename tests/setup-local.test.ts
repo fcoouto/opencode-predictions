@@ -29,8 +29,9 @@ async function fixture(t: TestContext) {
     async save(input: SaveInput) {
       saves++
       if (input.revision !== snapshot.revision) return { kind: "conflict" as const, message: "Stale revision." }
-      await writeFile(file, JSON.stringify(input.fields))
+      // The real store serializes under its write lock; claim the revision before awaiting I/O.
       snapshot.revision = "after"; snapshot.fields = { ...snapshot.fields, ...input.fields }
+      await writeFile(file, JSON.stringify(input.fields))
       return { kind: "saved_not_active" as const, revision: "after", message: "Saved on disk." }
     },
   }
@@ -184,4 +185,36 @@ test("local setup caps simultaneous idle clients and expires unterminated frames
   await new Promise<void>(resolve => extra.on("close", resolve))
   await Promise.all(clients.map(socket => new Promise<void>(resolve => socket.on("close", resolve))))
   assert.equal(f.counts().saves, 0)
+})
+
+test("two authorized local clients serialize: the second stale Save conflicts and nothing is repeated", async t => {
+  const f = await fixture(t)
+  assert.ok(f.authority)
+  const results = await Promise.all([
+    saveLocalSetup(f.target, { revision: "before", fields: { debug: true } }, signal()),
+    saveLocalSetup(f.target, { revision: "before", fields: { contextTurns: 5 } }, signal()),
+  ])
+  assert.deepEqual(results.map(result => result.kind).sort(), ["conflict", "saved_not_active"])
+  assert.equal(f.counts().saves, 2)
+})
+
+test("a new authority never deletes or reuses an unknown stale authority directory", async t => {
+  const f = await fixture(t)
+  const stale = join(f.root, "pp-0123456789abcdef")
+  await mkdir(stale, { mode: 0o700 })
+  await writeFile(join(stale, "s"), "not ours")
+  const other = await startLocalSetup(location, f.api)
+  assert.ok(other)
+  assert.notEqual(other.id, "0123456789abcdef")
+  await other.dispose()
+  assert.equal(await readFile(join(stale, "s"), "utf8"), "not ours", "unknown stale files must be left alone")
+})
+
+test("local setup responses and errors never contain raw socket errors or configuration contents", async t => {
+  const f = await fixture(t)
+  assert.ok(f.authority)
+  f.api.save = async () => { throw new Error("PRIVATE /Users/example/.config recovery bytes") }
+  const output = await raw(f.path, JSON.stringify({ id: f.target.id, serviceVersion: f.target.serviceVersion, serverPid: process.pid, location, method: "save", input: { revision: "before", fields: { debug: true } } }) + "\n")
+  assert.doesNotMatch(output, /PRIVATE|\/Users|recovery/)
+  await assert.rejects(saveLocalSetup(f.target, { revision: "before", fields: { debug: true } }, signal()), error => !/PRIVATE|\/Users|recovery/.test(String(error)))
 })

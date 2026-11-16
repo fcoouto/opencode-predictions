@@ -41,7 +41,7 @@ export function registerSetupMain(ctx: Parameters<GUIPlugin.MainSetup>[0]): () =
       try { return await get(caller.window, input).read(caller.signal) }
       catch { throw new Error("Local setup is unavailable.") }
     },
-    save: (input, caller) => get(caller.window, input).save(input.input, caller.signal),
+    save: async (input, caller) => get(caller.window, input).save(input.input, caller.signal),
   })
   const stop = ctx.windows.on("close", window => {
     for (const [key, api] of apis) if (JSON.parse(key)[0] === window.id) { api.dispose(); apis.delete(key) }
