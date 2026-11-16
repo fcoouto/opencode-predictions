@@ -87,8 +87,10 @@ def settle(seconds):
 
 def choose(label, wait=0.8):
     """Type to filter the real select dialog, then press Enter on the match."""
+    output.clear()
     os.write(master, label.encode())
-    settle(0.5)
+    pump_until(lambda: label in screen_text(), 10)
+    settle(0.4)
     os.write(master, b"\r")
     settle(wait)
 
@@ -133,7 +135,7 @@ try:
         pump_until(lambda: "Predictions Setup" in screen_text() and "PR on" in screen_text(), 20)
         capture("full-reopened")
         text = screen_text()
-        assert "After replies on" in text and "auto" in text and "9000 ms" in text and "5 recent" in text, text[-1500:]
+        assert "Off · After replies on · auto" in text and "9000 ms · 5 recent · PR on" in text, text[-1500:]
         print(json.dumps({"fullSetup": True}))
     elif os.environ.get("PREDICTIONS_SETUP_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())

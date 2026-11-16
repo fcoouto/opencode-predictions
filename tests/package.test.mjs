@@ -39,9 +39,20 @@ test("packed setup surface: inspection-only RPC, no network Save or proof signin
   // The Desktop main-process bridge is the only Node socket client; window modules perform no Node I/O.
   assert.match(gui, /require\("node:net"\)/, "private-socket client ships for the Desktop main process")
   assert.match(gui, /main:/, "the Desktop main entry is registered")
-  for (const file of ["gui.ts", "setup-gui.ts", "setup-gui-api.ts", "setup-copy.ts", "setup.ts", "client.ts", "feedback.ts"]) {
-    assert.equal(/from "node:/.test(await readFile(`src/${file}`, "utf8")), false, `${file} runs in the window and must not import Node modules`)
+  // Walk the window's static import graph from the GUI entry. The Desktop main bridge is loaded with a dynamic import,
+  // so it is deliberately outside this graph.
+  const seen = new Set(), pending = ["src/gui.ts"]
+  const nodeUse = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']node:/
+  while (pending.length) {
+    const file = pending.pop()
+    if (seen.has(file)) continue
+    seen.add(file)
+    const source = await readFile(file, "utf8")
+    assert.equal(nodeUse.test(source), false, `${file} runs in the window and must not use Node modules`)
+    for (const match of source.matchAll(/(?:^|\n)\s*(?:import|export)\s[^\n]*?from\s*["'](\.\/[^"']+)["']|(?:^|\n)\s*import\s*["'](\.\/[^"']+)["']/g)) pending.push("src/" + (match[1] ?? match[2]).replace(/^\.\//, ""))
   }
+  for (const file of ["src/gui.ts", "src/setup-gui.ts", "src/setup-gui-api.ts", "src/setup.ts"]) assert.ok(seen.has(file), `${file} is part of the window graph`)
+  assert.equal(seen.has("src/setup-main.ts"), false, "the main-process bridge is not part of the window graph")
   const tui = await readFile(pkg.exports["./tui"], "utf8")
   assert.match(tui, /predictions\.setup/, "the CLI setup command ships")
   assert.equal(tui.includes(".predictions-backup"), false, "the CLI never writes the configuration itself")

@@ -226,6 +226,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
         }),
         { title: all.length ? "Add fallback group (model)" : "Add a model", value: "new-model", category: "Add" },
         { title: all.length ? "Add fallback group (pattern)" : "Add model pattern", value: "new-pattern", category: "Add" },
+        ...(editor.state().previewError ? [{ title: "Preview unavailable", description: "Match counts hidden.", value: "preview", category: "More" }] : []),
         { title: "Preview matches", description: "Names only; sends nothing.", value: "preview", category: "More" },
         { title: "About models", description: "Cost, order, fallback.", value: "about", category: "More" },
       ]

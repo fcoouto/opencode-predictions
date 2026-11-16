@@ -24,7 +24,7 @@ export async function nativeFixture(t: TestContext) {
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, socketReads = 0, metadataReads = 0, unavailable = 0
-  const hooks: { afterWrite?: () => void; settingsFails?: boolean } = {}
+  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean } = {}
   const authority = await startLocalSetup(location, {
     async read() { socketReads++; return structuredClone(snapshot) },
     async save(input) {
@@ -48,6 +48,7 @@ export async function nativeFixture(t: TestContext) {
       if (unavailable-- > 0) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "RPC is starting." })); return }
       response.end(JSON.stringify({ output: { ...snapshot, writable: false, localAuthority: { id: authority.id } } }))
     }
+    else if (hooks.previewFails) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "PRIVATE preview" })) }
     else response.end(JSON.stringify({ output: { groups: [], issues: [] } }))
   })
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve))

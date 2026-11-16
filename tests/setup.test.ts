@@ -222,3 +222,33 @@ test("a read-only target shows the values predictions actually use, not an empty
   assert.deepEqual({ automatic: state.fields.automatic, timeoutMs: state.fields.timeoutMs, includeGithubPRContext: state.fields.includeGithubPRContext }, { automatic: false, timeoutMs: 9000, includeGithubPRContext: true })
   assert.equal(state.dirty, false, "showing effective values is not an edit")
 })
+
+test("after a conflict the next Save explains that settings must be reloaded, and reloading clears the block", async () => {
+  const { api, snapshot } = editorFixture()
+  const editor = createSetupEditor({ ...api, save: async () => ({ kind: "conflict", message: "Configuration changed. Reload settings before trying again." }) }, () => {})
+  await editor.load()
+  editor.change({ debug: true })
+  assert.equal((await editor.save()).kind, "conflict")
+  assert.equal(editor.state().blocked, true)
+  editor.change({ debug: false }); editor.change({ debug: true })
+  const again = await editor.save()
+  assert.equal(again.kind, "failed")
+  assert.match((again as { message: string }).message, /Reload settings/)
+  assert.deepEqual(editor.state().lastSave, again, "the page can show why Save did nothing")
+  await editor.load()
+  assert.equal(editor.state().blocked, false)
+  void snapshot
+})
+
+test("a failed preview is reported separately and never looks like a load failure that discards the draft", async () => {
+  const { api } = editorFixture()
+  const editor = createSetupEditor({ ...api, preview: async () => { throw new Error("PRIVATE") } }, () => {})
+  await editor.load()
+  editor.change({ debug: true })
+  await editor.preview()
+  const state = editor.state()
+  assert.equal(state.error, undefined, "state.error means settings could not be loaded")
+  assert.equal(state.previewError, "Model preview is unavailable.")
+  assert.equal(state.dirty, true)
+  assert.equal(state.fields.debug, true, "the draft is intact")
+})

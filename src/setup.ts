@@ -18,7 +18,7 @@ export type SetupAPI = {
   save(input: SaveInput, signal: AbortSignal): Promise<SaveResult>
   dispose?(): void
 }
-export type SetupState = { snapshot?: SetupSnapshot; fields: SettingsInput; groups?: string[][]; issues: SetupIssue[]; preview?: SetupPreview; dirty: boolean; loading: boolean; previewing: boolean; saving: boolean; lastSave?: SaveResult; error?: string }
+export type SetupState = { snapshot?: SetupSnapshot; fields: SettingsInput; groups?: string[][]; issues: SetupIssue[]; preview?: SetupPreview; dirty: boolean; loading: boolean; previewing: boolean; saving: boolean; lastSave?: SaveResult; error?: string; previewError?: string; blocked: boolean }
 export type SetupEditor = ReturnType<typeof createSetupEditor>
 
 export async function waitForSetupSnapshot(read: SetupAPI["read"], signal: AbortSignal): Promise<SetupSnapshot> {
@@ -44,9 +44,9 @@ export function validateSettings(fields: SettingsInput): SetupIssue[] {
 }
 
 export function createSetupEditor(api: SetupAPI, changed: () => void) {
-  const state: SetupState = { fields: {}, issues: [], dirty: false, loading: false, previewing: false, saving: false }
+  const state: SetupState = { fields: {}, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false }
   const lifetime = new AbortController()
-  let generation = 0, previewAbort: AbortController | undefined, blocked = false
+  let generation = 0, previewAbort: AbortController | undefined
   const notify = () => { if (!lifetime.signal.aborted) changed() }
   const resetPreview = () => { generation++; previewAbort?.abort(); state.preview = undefined; state.previewing = false }
   const groups = () => { try { state.groups = readGroups(state.fields) } catch { state.groups = undefined } }
@@ -88,7 +88,7 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
       try {
         const snapshot = await abortable(() => api.read(lifetime.signal), lifetime.signal)
         if (revision !== generation || lifetime.signal.aborted) return
-        adopt(snapshot); blocked = false; state.lastSave = undefined
+        adopt(snapshot); state.blocked = false; state.lastSave = undefined
       } catch { if (revision === generation && !lifetime.signal.aborted) state.error = "Settings are unavailable. Reopen settings to try again." }
       finally { if (revision === generation) { state.loading = false; notify() } }
     },
@@ -105,18 +105,22 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
       const abort = new AbortController()
       previewAbort = abort
       const signal = AbortSignal.any([abort.signal, lifetime.signal])
-      state.previewing = true; state.error = undefined; notify()
+      state.previewing = true; state.previewError = undefined; notify()
       try {
         const result = await abortable(() => api.preview(structuredClone(state.fields), signal), signal)
         if (revision !== generation || signal.aborted) return
         state.preview = result; state.issues = result.issues
-      } catch { if (revision === generation && !signal.aborted) state.error = "Model preview is unavailable." }
+      } catch { if (revision === generation && !signal.aborted) state.previewError = "Model preview is unavailable." }
       finally { if (revision === generation) { state.previewing = false; notify() } }
     },
     async save(): Promise<SaveResult> {
       const failed = (message: string): SaveResult => ({ kind: "failed", message })
       if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot) return failed("Settings are unavailable.")
-      if (blocked) return state.lastSave ?? failed("Reload settings before trying again.")
+      if (state.blocked) {
+        // change() clears the last result, so say why Save does nothing instead of returning silently.
+        state.lastSave = failed("Reload settings before trying again. Reloading discards your unsaved changes."); notify()
+        return state.lastSave
+      }
       const issues = validateSettings(state.fields)
       if (issues.length) { state.issues = issues; notify(); return { kind: "invalid", issues } }
       if (!state.dirty) return failed("No changes to save.")
@@ -152,7 +156,7 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
         result ??= failed("Changes may have been saved. Reopen settings before trying again.")
         if (result.kind === "saved" || result.kind === "saved_not_active") {
           if (state.dirty) { state.snapshot = { ...before, fields: expected, revision: result.revision }; state.dirty = false }
-        } else if (result.kind !== "invalid") blocked = true
+        } else if (result.kind !== "invalid") state.blocked = true
         state.lastSave = result
         if (result.kind === "invalid") state.issues = result.issues
         return result

@@ -24,13 +24,14 @@ const text = (value: string): Step => () => value
 const yes = (value: boolean): Step => () => value
 const ok: Step = () => undefined
 
-async function harness(t: TestContext, options: { argv?: string[]; fields?: object; noSession?: boolean; settingsFails?: boolean } = {}) {
+async function harness(t: TestContext, options: { argv?: string[]; fields?: object; noSession?: boolean; settingsFails?: boolean; previewFails?: boolean } = {}) {
   const f = await nativeFixture(t)
   f.snapshot.catalog = catalog as any
   if (options.fields) f.snapshot.fields = options.fields as any
   f.snapshot.effective = { ...f.snapshot.effective, ...f.snapshot.fields } as any
   if (options.argv) f.runtime.argv = options.argv
   f.hooks.settingsFails = options.settingsFails
+  f.hooks.previewFails = options.previewFails
   const script: Step[] = []
   const calls: Call[] = []
   const answer = async (kind: Call["kind"], dialog: unknown) => {
@@ -291,4 +292,9 @@ test("every menu description fits the CLI dialog width, because the host truncat
     if (row.description === undefined) continue
     assert.ok(row.title.length + row.description.length <= 44, `${call.options.title} › ${row.title}: ${row.title.length + row.description.length} chars: ${row.description}`)
   }
+})
+
+test("a failed model preview is explained in the Models menu instead of silently losing the match counts", async t => {
+  const h = await harness(t, { fields: { models: [["local/b"]] }, previewFails: true })
+  await h.run(pick("Models"), call => { const row = option(call, "Preview unavailable"); assert.ok(row, JSON.stringify(titles(call))); assert.ok(row.title.length + row.description.length <= 44); assert.doesNotMatch(JSON.stringify(call.options), /PRIVATE/); return undefined }, cancel)
 })

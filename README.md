@@ -203,15 +203,29 @@ Predictions use provider quota and may incur charges. A model's name does not me
 
 ### Where Save works
 
-Setup reads settings everywhere, but Save currently works only on this computer:
+Setup shows your current settings everywhere. **Save is available only in a narrow, verified
+setup** and otherwise the page stays read-only (Desktop: "Read-only"; CLI: "Read-only" row).
+Save needs all of the following, because anything else cannot be checked safely:
 
-- **Desktop** (macOS): the app's own bundled server, with server version `2.2.6` or `2.3.0`.
-  A server that Desktop merely connects to stays read-only.
-- **CLI**: only a session started with `opencode --standalone`. A shared-service session, an
-  explicit `--server` connection, a remote server or any session whose origin cannot be
-  verified stays read-only and says: "Local setup writes currently require a verified
-  opencode --standalone session." Do not change how you launch OpenCode only to enable setup.
-  Edit the file by hand instead.
+- **macOS**, with the OpenCode server running on this computer.
+- **Desktop:** app version `2.3.0`, using the app's own bundled server. A server Desktop only
+  connects to stays read-only. Desktop `2.2.7` is read-only.
+- **CLI:** version `2.2.6`, started as `opencode --standalone` (optionally with `--continue`,
+  `--auto`, `--print-logs`, `--session`, `--prompt`, `--log-level` and one project directory).
+  Any other flag, a shared service, `--server`, a remote server, or `OPENCODE_SERVER`,
+  `OPENCODE_SERVER_URL`, a proxy variable, `NODE_OPTIONS` or `BUN_OPTIONS` in the environment
+  makes it read-only and says: "Local setup writes currently require a verified
+  opencode --standalone session."
+- **The server's environment:** `OPENCODE_DISABLE_PROJECT_CONFIG=1`, and none of
+  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT` or `OPENCODE_CONFIG_DIR`. Project, inline or
+  explicitly selected configuration cannot be edited here.
+- **The configuration:** exactly one of `~/.config/opencode/opencode.json` or `opencode.jsonc`,
+  owned by you and not writable by others, with no `plugins` folder beside it. The plugin must
+  be listed there once, as an object with an `options` object, by the **absolute local path it
+  is installed from**. A Git-installed plugin cannot be verified and stays read-only.
+
+If setup is read-only for you, edit the configuration by hand (see [Settings](#settings)). Do not
+change how you launch OpenCode only to enable setup.
 
 ### Limits and recovery
 
@@ -631,7 +645,7 @@ The optional model-pilot tool writes a JSON report only when invoked, under
 
 ## Compatibility
 
-Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`. Saving from Predictions Setup is verified only for the combinations in [Where Save works](#where-save-works).
+Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`. Saving from Predictions Setup is verified only for the exact combinations in [Where Save works](#where-save-works), including Desktop `2.3.0`.
 These are tested versions, not an allowlist. Private editor integration and the
 experimental Desktop API may need updates after OpenCode changes.
 

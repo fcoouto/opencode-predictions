@@ -479,3 +479,35 @@ test("match counts appear after load through metadata-only preview, without gene
     assert.equal(await page.evaluate(() => (window as any).log.predictions + (window as any).log.fetches), 0)
   } finally { await page.close() }
 })
+
+test("an invalid timeout explains itself in text, not only with a red field", async () => {
+  const page = await mount()
+  try {
+    await idle(page)
+    await page.getByRole("button", { name: "Show advanced settings" }).click()
+    await page.getByLabel("Timeout per model").fill("8000oops")
+    const alert = row(page, "predictions-advanced-timeout").getByRole("alert")
+    assert.match((await alert.textContent())!, /whole number/i)
+    await page.getByLabel("Timeout per model").fill("9000")
+    assert.equal(await row(page, "predictions-advanced-timeout").getByRole("alert").count(), 0, "the message goes away with the problem")
+  } finally { await page.close() }
+})
+
+test("after a conflict Save explains itself and Reload settings recovers", async () => {
+  const page = await mount({ saveKind: "conflict" })
+  try {
+    await idle(page)
+    await page.getByRole("switch", { name: "Enable Predictions" }).uncheck()
+    await save(page).click()
+    await page.waitForFunction(() => /Configuration changed/.test(document.querySelector('[data-footer] [role="status"]')?.textContent ?? ""))
+    assert.equal(await page.getByRole("button", { name: "Reload settings" }).count(), 1, "a blocked Save offers the way out")
+    await page.getByRole("switch", { name: "Enable Predictions" }).check()
+    await page.getByRole("switch", { name: "Enable Predictions" }).uncheck()
+    await save(page).click()
+    await page.waitForFunction(() => /Reload settings before trying again/.test(document.querySelector('[data-footer] [role="status"]')?.textContent ?? ""))
+    await page.getByRole("button", { name: "Reload settings" }).click()
+    await page.waitForFunction(() => !document.querySelector('[role="status"]')?.textContent?.includes("Reload settings"))
+    assert.equal(await page.getByRole("button", { name: "Reload settings" }).count(), 0)
+    assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isChecked(), true, "reloading shows the stored value")
+  } finally { await page.close() }
+})

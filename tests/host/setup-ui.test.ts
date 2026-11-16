@@ -83,7 +83,7 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
 
 test("setup ui: an inline configuration override keeps Desktop setup inspectable and read-only", { timeout: 90000, skip }, async () => {
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] })
-  const { app, page, show } = await open(fixture, "inline-profile")
+  const { app, page } = await open(fixture, "inline-profile")
   try {
     await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
     await page.evaluate(() => (window as any).__predictionFixture.openSetup())
@@ -92,7 +92,6 @@ test("setup ui: an inline configuration override keeps Desktop setup inspectable
     assert.equal(await page.getByRole("button", { name: "Save changes" }).isDisabled(), true)
     assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isDisabled(), true)
     assert.equal(fixture.calls.length, 0)
-    void show
   } finally { await app.close() }
 })
 
@@ -103,18 +102,26 @@ test("setup ui: an edit made elsewhere while the page is open is never overwritt
     await show()
     await page.getByRole("button", { name: "Show advanced settings" }).click()
     await flip(page, "Debug notices")
-    // Another client edits the same file after this page loaded it. The server reloads the plugin, which also reloads this page.
+    assert.equal(await page.getByRole("button", { name: "Save changes" }).isEnabled(), true, "the page holds an unsaved draft")
+    // Another client edits the same file after this page loaded it; the server then reloads the plugin and this page with it.
     const changed = { ...fixture.config, plugins: fixture.config.plugins.map((plugin: any, index: number) => index === 0 ? { ...plugin, options: { ...plugin.options, timeoutMs: 7000 } } : plugin) }
     await fixture.writeConfig(changed)
+    const until = Date.now() + 20000
+    let seen: SetupSnapshot | undefined
+    while (Date.now() < until && seen?.effective?.timeoutMs !== 7000) { seen = await settings(fixture).catch(() => seen); await page.waitForTimeout(150) }
+    assert.equal(seen?.effective?.timeoutMs, 7000, "the server activated the other client's edit")
     await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
-    await page.waitForTimeout(3000)
-    // Whatever the page does with its draft, it must not write over the other client's edit.
-    const saveButton = page.getByRole("button", { name: "Save changes" })
-    if (await saveButton.isEnabled().catch(() => false)) await saveButton.click()
-    await page.waitForTimeout(2000)
+    // Known limit: the reload drops the draft. Whichever state the page is in, a Save from it must not overwrite the edit.
+    const save = page.getByRole("button", { name: "Save changes" })
+    const visible = await save.isVisible().catch(() => false)
+    if (visible && await save.isEnabled()) {
+      await save.click()
+      await page.getByText(/Configuration changed|Reload settings/).first().waitFor({ state: "visible", timeout: 20000 })
+    } else assert.ok(!visible || await save.isDisabled(), "a clean page cannot save")
     const { config } = await stored(fixture)
     const options = config.plugins.find((plugin: any) => typeof plugin === "object" && plugin.options?.models).options
     assert.equal(options.timeoutMs, 7000, "the other client's edit is kept")
+    assert.equal(options.debug, undefined, "the stale draft was not written")
     assert.equal(fixture.calls.filter(isPredictionCall).length, 0)
-  } catch (error) { await writeFile("/tmp/probe/conflict.txt", await page.locator("body").innerText().catch(() => "n/a")); throw error } finally { await app.close() }
+  } finally { await app.close() }
 })

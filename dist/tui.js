@@ -1003,9 +1003,9 @@ function validateSettings(fields) {
   return parsed.ok ? [] : [{ field: settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }];
 }
 function createSetupEditor(api, changed) {
-  const state = { fields: {}, issues: [], dirty: false, loading: false, previewing: false, saving: false };
+  const state = { fields: {}, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false };
   const lifetime = new AbortController();
-  let generation = 0, previewAbort, blocked = false;
+  let generation = 0, previewAbort;
   const notify = () => {
     if (!lifetime.signal.aborted) changed();
   };
@@ -1066,7 +1066,7 @@ function createSetupEditor(api, changed) {
         const snapshot = await abortable(() => api.read(lifetime.signal), lifetime.signal);
         if (revision !== generation || lifetime.signal.aborted) return;
         adopt(snapshot);
-        blocked = false;
+        state.blocked = false;
         state.lastSave = void 0;
       } catch {
         if (revision === generation && !lifetime.signal.aborted) state.error = "Settings are unavailable. Reopen settings to try again.";
@@ -1096,7 +1096,7 @@ function createSetupEditor(api, changed) {
       previewAbort = abort;
       const signal = AbortSignal.any([abort.signal, lifetime.signal]);
       state.previewing = true;
-      state.error = void 0;
+      state.previewError = void 0;
       notify();
       try {
         const result = await abortable(() => api.preview(structuredClone(state.fields), signal), signal);
@@ -1104,7 +1104,7 @@ function createSetupEditor(api, changed) {
         state.preview = result;
         state.issues = result.issues;
       } catch {
-        if (revision === generation && !signal.aborted) state.error = "Model preview is unavailable.";
+        if (revision === generation && !signal.aborted) state.previewError = "Model preview is unavailable.";
       } finally {
         if (revision === generation) {
           state.previewing = false;
@@ -1115,7 +1115,11 @@ function createSetupEditor(api, changed) {
     async save() {
       const failed = (message) => ({ kind: "failed", message });
       if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot) return failed("Settings are unavailable.");
-      if (blocked) return state.lastSave ?? failed("Reload settings before trying again.");
+      if (state.blocked) {
+        state.lastSave = failed("Reload settings before trying again. Reloading discards your unsaved changes.");
+        notify();
+        return state.lastSave;
+      }
       const issues = validateSettings(state.fields);
       if (issues.length) {
         state.issues = issues;
@@ -1161,7 +1165,7 @@ function createSetupEditor(api, changed) {
             state.snapshot = { ...before, fields: expected, revision: result.revision };
             state.dirty = false;
           }
-        } else if (result.kind !== "invalid") blocked = true;
+        } else if (result.kind !== "invalid") state.blocked = true;
         state.lastSave = result;
         if (result.kind === "invalid") state.issues = result.issues;
         return result;
@@ -1614,6 +1618,7 @@ ${setupTUIText.fuller}`);
         }),
         { title: all.length ? "Add fallback group (model)" : "Add a model", value: "new-model", category: "Add" },
         { title: all.length ? "Add fallback group (pattern)" : "Add model pattern", value: "new-pattern", category: "Add" },
+        ...editor.state().previewError ? [{ title: "Preview unavailable", description: "Match counts hidden.", value: "preview", category: "More" }] : [],
         { title: "Preview matches", description: "Names only; sends nothing.", value: "preview", category: "More" },
         { title: "About models", description: "Cost, order, fallback.", value: "about", category: "More" }
       ];

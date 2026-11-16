@@ -236,7 +236,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                   const next = switching()
                   if (!next || (state()?.dirty && !await ctx.dialogs.confirm({ title: "Discard unsaved prediction settings?", description: `Your changes apply to ${pinned?.target.label} and will be discarded.`, confirm: "Discard and switch", danger: true }))) return
                   pinned?.editor.dispose(); open(next)
-                })
+                }, { disabled: () => !!state()?.saving })
               },
             })
           },
@@ -265,7 +265,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
           }),
           createComponent(ui.SettingsSection, {
             title: "Models",
-            get footer() { return note(() => setupText.cost) },
+            get footer() { return column(note(() => setupText.cost), when(() => !!state()?.previewError, () => note(() => state()?.previewError, "status"))) },
             get children() {
               return [
                 when(() => groups().length === 0, () => createComponent(ui.SettingsRow, {
@@ -286,7 +286,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
               return [
                 createComponent(ui.SettingsRow, { id: "predictions-advanced", title: "Advanced settings", description: "Timeout, recent interactions, GitHub PR context and debug notices.", get children() { return button(() => (advanced() ? "Hide advanced settings" : "Show advanced settings"), () => setAdvanced(!advanced())) } }),
                 when(advanced, () => [
-                  createComponent(ui.SettingsRow, { id: "predictions-advanced-timeout", title: "Timeout per model", description: "Milliseconds, a whole number from 1 to 2147483647. Default 8000.", get children() { return createComponent(ui.TextInput, { get value() { return timeoutText() ?? String(fields().timeoutMs ?? 8000) }, onInput: (value: string) => { setTimeoutText(value); const text = value.trim(); edit({ timeoutMs: /^[0-9]+$/.test(text) ? Number(text) : null }) }, label: "Timeout per model", get disabled() { return locked() }, get invalid() { return !!state()?.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error") } }) } }),
+                  createComponent(ui.SettingsRow, { id: "predictions-advanced-timeout", title: "Timeout per model", get description() { return column(note(() => "Milliseconds, a whole number from 1 to 2147483647. Default 8000."), when(() => !!state()?.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error"), () => note(() => state()?.issues.find(issue => issue.field === "timeoutMs")?.message, "alert"))) }, get children() { return createComponent(ui.TextInput, { get value() { return timeoutText() ?? String(fields().timeoutMs ?? 8000) }, onInput: (value: string) => { setTimeoutText(value); const text = value.trim(); edit({ timeoutMs: /^[0-9]+$/.test(text) ? Number(text) : null }) }, label: "Timeout per model", get disabled() { return locked() }, get invalid() { return !!state()?.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error") } }) } }),
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-context", title: "Recent interactions", description: "How many recent interactions predictions read, 1 to 5. Default 3.", get children() { return createComponent(ui.Select, { options: turnOptions, get value() { return String(fields().contextTurns ?? 3) }, onChange: (value: string) => edit({ contextTurns: Number(value) }), label: "Recent interactions", get disabled() { return locked() } }) } }),
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-github", title: "Include GitHub PR context", description: setupText.github, get children() { return createComponent(ui.Switch, { get checked() { return flag("includeGithubPRContext", false) }, onChange: (checked: boolean) => edit({ includeGithubPRContext: checked }), label: "Include GitHub PR context", hideLabel: true, get disabled() { return locked() } }) } }),
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-debug", title: "Debug notices", description: "Show safe progress and failure notices, never raw provider errors.", get children() { return createComponent(ui.Switch, { get checked() { return flag("debug", false) }, onChange: (checked: boolean) => edit({ debug: checked }), label: "Debug notices", hideLabel: true, get disabled() { return locked() } }) } }),
@@ -301,6 +301,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                 id: "predictions-save", title: "Save changes", get description() { return note(() => setupText.warning) },
                 get children() {
                   return box(
+                    when(() => !!state()?.blocked, () => button(() => "Reload settings", () => { setTimeoutText(undefined); void pinned?.editor.load() }, { disabled: () => !!state()?.saving })),
                     button(() => "Discard changes", () => { current()?.discard(); setTimeoutText(undefined) }, { disabled: () => !state()?.dirty || !!state()?.saving }),
                     button(() => (state()?.saving ? "Saving…" : "Save changes"), () => void current()?.save(), { variant: "contrast", disabled: () => readOnly() || !state()?.dirty || !!state()?.saving || !!state()?.issues.some(issue => issue.severity === "error") }))
                 },
