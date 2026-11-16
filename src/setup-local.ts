@@ -171,3 +171,20 @@ export async function saveLocalSetup(target: LocalSetupTarget, input: SaveInput,
   if (!["saved", "saved_not_active", "invalid", "conflict", "read_only", "failed"].includes(value.kind)) throw failure()
   return value
 }
+
+type Authority = { id: string; dispose(): Promise<void> }
+// Reuse a started authority, but retry a failed start on the next read instead of caching the failure.
+export function lazyLocalSetup(start: () => Promise<Authority | undefined>) {
+  let current: Promise<Authority | undefined> | undefined, closed = false
+  return {
+    get(): Promise<Authority | undefined> {
+      if (closed) return Promise.resolve(undefined)
+      const pending: Promise<Authority | undefined> = current ??= start().then(authority => {
+        if (!authority && current === pending) current = undefined
+        return authority
+      })
+      return pending
+    },
+    async dispose() { closed = true; const pending = current; current = undefined; await (await pending)?.dispose() },
+  }
+}

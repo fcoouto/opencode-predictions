@@ -1302,6 +1302,25 @@ async function startLocalSetup(location, api) {
     return;
   }
 }
+function lazyLocalSetup(start) {
+  let current, closed = false;
+  return {
+    get() {
+      if (closed) return Promise.resolve(void 0);
+      const pending = current ??= start().then((authority) => {
+        if (!authority && current === pending) current = void 0;
+        return authority;
+      });
+      return pending;
+    },
+    async dispose() {
+      closed = true;
+      const pending = current;
+      current = void 0;
+      await (await pending)?.dispose();
+    }
+  };
+}
 
 // src/context-file.ts
 import { constants } from "node:fs";
@@ -1478,15 +1497,16 @@ var index_default = Plugin.define({
       options: () => ctx.options
     });
     const setup = createSetupService(store, async (signal) => (await ctx.model.list(void 0, { signal })).data, () => ({ options: ctx.options, version: service.status().version }));
-    let local, closing = false;
+    let closing = false;
+    let location;
+    const local = lazyLocalSetup(() => startLocalSetup(location, setup));
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input, context.signal),
       status: (_input, context) => service.inspect(context.signal),
       settings: async (_input, context) => {
         const snapshot = await setup.read(context.signal);
-        const location = { directory: ctx.location.directory, ..."workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {} };
-        const authority = snapshot.writable && !closing ? await (local ??= startLocalSetup(location, setup)) : void 0;
-        if (closing) await authority?.dispose();
+        location ??= { directory: ctx.location.directory, ..."workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {} };
+        const authority = snapshot.writable && !closing ? await local.get() : void 0;
         return { ...snapshot, ...authority && !closing ? { localAuthority: { id: authority.id } } : {}, writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." };
       },
       previewSettings: (input, context) => setup.preview(input.fields, context.signal)
@@ -1494,7 +1514,7 @@ var index_default = Plugin.define({
     return async () => {
       closing = true;
       service.dispose();
-      await (await local)?.dispose();
+      await local.dispose();
       await registration.dispose();
     };
   }

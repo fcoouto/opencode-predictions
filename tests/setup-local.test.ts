@@ -6,7 +6,7 @@ import { createServer } from "node:net"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { parseOptions } from "../src/options.ts"
-import { startLocalSetup, readLocalSetup, saveLocalSetup, type LocalSetupTarget } from "../src/setup-local.ts"
+import { startLocalSetup, lazyLocalSetup, readLocalSetup, saveLocalSetup, type LocalSetupTarget } from "../src/setup-local.ts"
 import type { SetupSnapshot, SaveInput } from "../src/setup.ts"
 
 const signal = () => new AbortController().signal
@@ -217,4 +217,34 @@ test("local setup responses and errors never contain raw socket errors or config
   const output = await raw(f.path, JSON.stringify({ id: f.target.id, serviceVersion: f.target.serviceVersion, serverPid: process.pid, location, method: "save", input: { revision: "before", fields: { debug: true } } }) + "\n")
   assert.doesNotMatch(output, /PRIVATE|\/Users|recovery/)
   await assert.rejects(saveLocalSetup(f.target, { revision: "before", fields: { debug: true } }, signal()), error => !/PRIVATE|\/Users|recovery/.test(String(error)))
+})
+
+test("a failed authority start is retried on the next read instead of being cached until reload", async () => {
+  let starts = 0, disposed = 0
+  const holder = lazyLocalSetup(async () => (++starts === 1 ? undefined : { id: "0123456789abcdef", dispose: async () => { disposed++ } }))
+  assert.equal(await holder.get(), undefined)
+  assert.equal((await holder.get())?.id, "0123456789abcdef")
+  assert.equal((await holder.get())?.id, "0123456789abcdef")
+  assert.equal(starts, 2, "a successful authority is reused, a failed start is retried")
+  await holder.dispose()
+  assert.equal(disposed, 1)
+  assert.equal(await holder.get(), undefined, "a disposed holder never starts a new authority")
+  assert.equal(starts, 2)
+})
+
+test("a committed Save whose connection is destroyed before the reply rejects and is never repeated", async t => {
+  const f = await fixture(t)
+  assert.ok(f.authority)
+  const authority = f.authority
+  const commit = f.api.save
+  f.api.save = async input => {
+    const result = await commit(input)
+    await authority.dispose()
+    return result
+  }
+  await assert.rejects(saveLocalSetup(f.target, { revision: "before", fields: { debug: true } }, signal()), /Local setup is unavailable/)
+  assert.equal(await readFile(f.file, "utf8"), '{"debug":true}', "the write committed")
+  assert.equal(f.counts().saves, 1)
+  await assert.rejects(saveLocalSetup(f.target, { revision: "before", fields: { debug: true } }, signal()))
+  assert.equal(f.counts().saves, 1, "no automatic or later repeat reaches the writer")
 })

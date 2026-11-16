@@ -15,10 +15,21 @@ export type StandaloneRuntime = {
 export type SetupOrigin<Identity> = {
   dispatch<Value>(signal: AbortSignal, local: (identity: Identity, signal: AbortSignal) => Promise<Value>): Promise<Value>
   dispose(): void
+  revoked(): boolean
 }
 
+// Thrown only before any local operation runs, so callers may treat it as "nothing was written".
+export class OriginRefusal extends Error {
+  constructor() { super("This target is not verified for local setup.") }
+}
 function refuse(lifetime: AbortController): never {
-  const error = new Error("This target is not verified for local setup.")
+  const error = new OriginRefusal()
+  lifetime.abort(error)
+  throw error
+}
+// After local work returned a write may have committed: revoke the origin, but never claim a refusal.
+function ambiguous(lifetime: AbortController): never {
+  const error = new Error("Local setup is unavailable.")
   lifetime.abort(error)
   throw error
 }
@@ -41,10 +52,11 @@ export function createDesktopSetupOrigin(host: DesktopHost, serverID: string): S
       if (!pinned || snapshot() !== pinned) refuse(lifetime)
       const value = await abortable(() => local({ serverID }, signal), signal)
       signal.throwIfAborted()
-      if (snapshot() !== pinned) refuse(lifetime)
+      if (snapshot() !== pinned) ambiguous(lifetime)
       return value
     },
     dispose() { lifetime.abort() },
+    revoked: () => lifetime.signal.aborted,
   }
 }
 
@@ -123,9 +135,10 @@ export function createStandaloneSetupOrigin(host: StandaloneHost, runtime: Stand
       }
       const value = await abortable(() => local({ serverPid }, signal), signal)
       signal.throwIfAborted()
-      if (!qualified()) refuse(lifetime)
+      if (!qualified()) ambiguous(lifetime)
       return value
     },
     dispose() { lifetime.abort() },
+    revoked: () => lifetime.signal.aborted,
   }
 }

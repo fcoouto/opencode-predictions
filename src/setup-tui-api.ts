@@ -9,5 +9,5 @@ export function createTUISetupAPI(ctx: Pick<TUIPlugin.Context, "app" | "client">
   return createNativeSetupAPI({
     read: async signal => await client.rpc(Predictions).settings({}, { location: pinned, signal }) as SetupSnapshot,
     preview: async (fields, signal) => await client.rpc(Predictions).previewSettings({ fields }, { location: pinned, signal }) as SetupPreview,
-  }, pinned, (signal, local) => origin.dispatch(signal, (identity, signal) => local(identity.serverPid, signal)), () => origin.dispose())
+  }, pinned, (signal, local) => origin.dispatch(signal, (identity, signal) => local(identity.serverPid, signal)), () => origin.dispose(), () => origin.revoked())
 }

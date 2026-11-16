@@ -112,3 +112,38 @@ test("a window cannot save through another window's unread target", async t => {
   assert.equal(result.kind, "read_only")
   assert.equal(f.counts().saves, 0)
 })
+
+test("an origin change after a Save committed is an ambiguous failure for readback, never read-only", async t => {
+  const f = await nativeFixture(t)
+  const api = createMainSetupAPI(f.host, "sidecar", f.location)
+  assert.equal((await api.read(signal())).writable, true)
+  f.hooks.afterWrite = () => { f.endpoint.url += "/rotated" }
+  await assert.rejects(api.save({ revision: "revision-one", fields: { debug: true } }, signal()), /Local setup is unavailable/)
+  assert.equal(await readFile(f.file, "utf8"), '{"debug":true}', "the write committed")
+  assert.equal(f.counts().saves, 1)
+  assert.equal((await api.read(signal())).writable, false, "afterwards only read-only inspection remains")
+})
+
+test("a revoked target is rebuilt on the next read instead of staying read-only until the window closes", async t => {
+  const f = await nativeFixture(t)
+  const r = registered(f)
+  t.after(() => r.stop())
+  const original = f.endpoint.url
+  assert.equal((await r.impl().read(read(), r.caller())).writable, true)
+  f.endpoint.url = original + "/transient"
+  assert.equal((await r.impl().read(read(), r.caller())).writable, false)
+  f.endpoint.url = original
+  assert.equal((await r.impl().read(read(), r.caller())).writable, true)
+})
+
+test("main IPC Save failures expose only the fixed safe copy", async t => {
+  const f = await nativeFixture(t)
+  const r = registered(f)
+  t.after(() => r.stop())
+  await r.impl().read(read(), r.caller())
+  f.endpoint.url = "http://127.0.0.1:1/PRIVATE-port"
+  const outcome = await r.impl().save({ ...read(), input: { revision: "revision-one", fields: { debug: true } } }, r.caller()).then((value: { kind: string }) => ({ value }), (error: Error) => ({ error }))
+  if ("error" in outcome) assert.doesNotMatch(outcome.error.message, /PRIVATE|127\.0\.0\.1/)
+  else assert.equal(outcome.value.kind, "read_only")
+  assert.equal(f.counts().saves, 0)
+})

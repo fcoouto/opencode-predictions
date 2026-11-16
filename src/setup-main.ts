@@ -19,7 +19,7 @@ export function createMainSetupAPI(host: Pick<Parameters<GUIPlugin.MainSetup>[0]
   }, pinned, (signal, local) => origin.dispatch(signal, async (_, signal) => {
     const info = await client.server.info({ signal })
     return origin.dispatch(signal, (_, signal) => local(info.pid, signal))
-  }), () => origin.dispose())
+  }), () => origin.dispose(), () => origin.revoked())
 }
 
 export function registerSetupMain(ctx: Parameters<GUIPlugin.MainSetup>[0]): () => void {
@@ -28,6 +28,8 @@ export function registerSetupMain(ctx: Parameters<GUIPlugin.MainSetup>[0]): () =
     if (Object.keys(input).some(key => !["serverID", "location", "input"].includes(key)) || !validSetupLocation(input.location)) throw new Error("Local setup is unavailable.")
     const key = JSON.stringify([window, input.serverID, input.location.directory, input.location.workspaceID])
     let api = apis.get(key)
+    // A revoked origin never recovers; rebuild from the current native endpoint rather than stay read-only.
+    if (api?.revoked()) { api.dispose(); apis.delete(key); api = undefined }
     if (!api) {
       if (apis.size >= 64) throw new Error("Reopen the window before opening more setup targets.")
       api = createMainSetupAPI(ctx, input.serverID, input.location)
@@ -41,7 +43,10 @@ export function registerSetupMain(ctx: Parameters<GUIPlugin.MainSetup>[0]): () =
       try { return await get(caller.window, input).read(caller.signal) }
       catch { throw new Error("Local setup is unavailable.") }
     },
-    save: async (input, caller) => get(caller.window, input).save(input.input, caller.signal),
+    save: async (input, caller) => {
+      try { return await get(caller.window, input).save(input.input, caller.signal) }
+      catch { throw new Error("Local setup is unavailable.") }
+    },
   })
   const stop = ctx.windows.on("close", window => {
     for (const [key, api] of apis) if (JSON.parse(key)[0] === window.id) { api.dispose(); apis.delete(key) }

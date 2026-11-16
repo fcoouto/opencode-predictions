@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { createConfigStore } from "./config.ts"
 import { createSetupService } from "./setup-service.ts"
 import type { SettingsInput } from "./setup.ts"
-import { startLocalSetup } from "./setup-local.ts"
+import { lazyLocalSetup, startLocalSetup } from "./setup-local.ts"
 import { readContextFile } from "./context-file.ts"
 import { createGitHubContext } from "./github.ts"
 
@@ -40,15 +40,16 @@ export default Plugin.define({
       options: () => ctx.options,
     })
     const setup = createSetupService(store, async signal => (await ctx.model.list(undefined, { signal })).data, () => ({ options: ctx.options, version: service.status().version }))
-    let local: ReturnType<typeof startLocalSetup> | undefined, closing = false
+    let closing = false
+    let location: { directory: string; workspaceID?: string } | undefined
+    const local = lazyLocalSetup(() => startLocalSetup(location!, setup))
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input as Request, context.signal),
       status: (_input, context) => service.inspect(context.signal),
       settings: async (_input, context) => {
         const snapshot = await setup.read(context.signal)
-        const location = { directory: ctx.location.directory, ...("workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {}) }
-        const authority = snapshot.writable && !closing ? await (local ??= startLocalSetup(location, setup)) : undefined
-        if (closing) await authority?.dispose()
+        location ??= { directory: ctx.location.directory, ...("workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {}) }
+        const authority = snapshot.writable && !closing ? await local.get() : undefined
         return { ...snapshot, ...(authority && !closing ? { localAuthority: { id: authority.id } } : {}), writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." }
       },
       previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, context.signal),
@@ -56,7 +57,7 @@ export default Plugin.define({
     return async () => {
       closing = true
       service.dispose()
-      await (await local)?.dispose()
+      await local.dispose()
       await registration.dispose()
     }
   },

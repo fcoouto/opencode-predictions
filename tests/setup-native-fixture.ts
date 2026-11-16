@@ -24,9 +24,10 @@ export async function nativeFixture(t: TestContext) {
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, socketReads = 0, metadataReads = 0, unavailable = 0
+  const hooks: { afterWrite?: () => void } = {}
   const authority = await startLocalSetup(location, {
     async read() { socketReads++; return structuredClone(snapshot) },
-    async save(input) { saves++; await writeFile(file, JSON.stringify(input.fields)); return { kind: "saved_not_active", revision: "revision-two", message: "Saved on disk." } },
+    async save(input) { saves++; await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.(); return { kind: "saved_not_active", revision: "revision-two", message: "Saved on disk." } },
   })
   assert.ok(authority)
   t.after(() => authority.dispose())
@@ -56,5 +57,5 @@ export async function nativeFixture(t: TestContext) {
     platform: "darwin", uid: 501, pid: process.pid - 1, executable: "/native/opencode", argv: ["/native/opencode", "/native/opencode", "--standalone"], env: {},
     inspect: async () => ({ parent: process.pid - 1, uid: 501, command: "/native/opencode serve --stdio --port 0", started: "Sun Nov 15 12:00:00 2026" }),
   }
-  return { root, file, snapshot, location, endpoint, host, client, runtime, authority, lifetime, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, socketReads, metadataReads }) }
+  return { hooks, root, file, snapshot, location, endpoint, host, client, runtime, authority, lifetime, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, socketReads, metadataReads }) }
 }

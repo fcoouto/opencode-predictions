@@ -80,6 +80,7 @@ test("setup local Desktop Save preserves the composer draft and creates no predi
     const editor = page.locator('[data-component="composer-editor"][contenteditable="true"]')
     await editor.waitFor({ state: "visible", timeout: 20000 })
     await page.waitForFunction(() => document.querySelector('[data-component="composer-editor"]')?.textContent === "Fix the assertion.")
+    await page.getByRole("button", { name: "Fixture / Fixture Flash", exact: true }).waitFor({ state: "visible" })
     await editor.press("Enter")
     await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 15000 })
     const before = await page.evaluate(() => (window as any).__predictionFixture.setupRead())
@@ -119,10 +120,9 @@ test("setup local Save writes the server-owned JSONC and rediscovers watcher act
   const local = await readLocalSetup(target, new AbortController().signal)
   assert.equal(local.writable, true)
   const original = await readFile(fixture.configFile!, "utf8")
-  try {
-    const result = await saveLocalSetup(target, { revision: local.revision, fields: { debug: true } }, new AbortController().signal)
-    assert.equal(result.kind, "saved_not_active")
-  } catch { /* Watcher unload may destroy the committed write's response. Do not repeat Save. */ }
+  // Watcher unload may destroy the committed write's response. Do not repeat Save.
+  const outcome = await saveLocalSetup(target, { revision: local.revision, fields: { debug: true } }, new AbortController().signal).then(value => ({ value }), error => ({ error }))
+  if ("value" in outcome) assert.equal(outcome.value.kind, "saved_not_active")
   const bytes = await readFile(fixture.configFile!, "utf8")
   assert.notEqual(bytes, original)
   assert.match(bytes, /Synthetic global fixture configuration/)
