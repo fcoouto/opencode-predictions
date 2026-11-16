@@ -81,8 +81,61 @@ def send_and_wait(keys, expected, seconds=15):
     os.write(master, keys)
     pump_until(lambda: expected in screen_text(), seconds)
 
+def settle(seconds):
+    end = time.monotonic() + seconds
+    pump_until(lambda: time.monotonic() >= end, seconds + 3)
+
+def choose(label, wait=0.8):
+    """Type to filter the real select dialog, then press Enter on the match."""
+    os.write(master, label.encode())
+    settle(0.5)
+    os.write(master, b"\r")
+    settle(wait)
+
 try:
-    if os.environ.get("PREDICTIONS_SETUP_TEST") == "1":
+    if os.environ.get("PREDICTIONS_SETUP_FULL") == "1":
+        pump_until(lambda: pathlib.Path(observation + ".ready").exists())
+        send_and_wait(b"\x1b[17~", "Predictions Setup")
+        pump_until(lambda: "Behavior" in screen_text())
+        capture("full-root")
+        choose("Behavior")
+        choose("Enable Predictions")
+        choose("Predict After Replies")
+        choose("Escalation Mode")
+        choose("Automatically")
+        pump_until(lambda: "Auto once" in screen_text())
+        os.write(master, b"\x1b"); settle(0.8)
+        choose("Advanced")
+        choose("Timeout per model")
+        os.write(master, b"\x01\x0b"); settle(0.3)
+        os.write(master, b"9000\r"); settle(0.8)
+        choose("Recent interactions")
+        choose("5")
+        choose("Include GitHub PR context")
+        choose("Debug notices")
+        capture("full-advanced")
+        os.write(master, b"\x1b"); settle(0.8)
+        choose("Models")
+        choose("Group 2")
+        choose("Move group up")
+        capture("full-models")
+        os.write(master, b"\x1b"); settle(0.6)
+        os.write(master, b"\x1b"); settle(0.8)
+        pump_until(lambda: "unsaved changes" in screen_text())
+        choose("Save changes", 2.0)
+        pump_until(lambda: "Saved" in screen_text(), 20)
+        capture("full-saved")
+        os.write(master, b"\r"); settle(1.0)
+        # Leaving a saved (clean) menu needs no confirmation; reopening shows the saved values.
+        os.write(master, b"\x1b"); settle(1.0)
+        output.clear()
+        os.write(master, b"\x1b[17~")
+        pump_until(lambda: "Predictions Setup" in screen_text() and "PR on" in screen_text(), 20)
+        capture("full-reopened")
+        text = screen_text()
+        assert "After replies on" in text and "auto" in text and "9000 ms" in text and "5 recent" in text, text[-1500:]
+        print(json.dumps({"fullSetup": True}))
+    elif os.environ.get("PREDICTIONS_SETUP_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
         send_and_wait(b"\x1b[17~", "Predictions Setup")
         pump_until(lambda: "Behavior" in screen_text() and "Advanced" in screen_text())

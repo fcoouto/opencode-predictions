@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { readFile } from "node:fs/promises"
+import { parse } from "jsonc-parser"
 import { resolve, join } from "node:path"
 import { createFixture, isPredictionCall } from "./fixture.mjs"
 
@@ -81,4 +82,23 @@ for (const columns of [100, 56]) test(`real CLI PTY Predictions Setup edits and 
   assert.equal(JSON.parse(stdout).setupSaved, true)
   assert.match(await readFile(fixture.configFile!, "utf8"), /"enabled": false/)
   assert.equal(fixture.calls.filter(isPredictionCall).length, 0, "setup and Save never generate")
+})
+
+test("real CLI PTY Predictions Setup configures all eight settings, reorders groups, saves and reopens", { timeout: 150000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] }, {}, { configSource: "global-jsonc" })
+  const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
+  const observation = join(fixture.root, "setup-full.json")
+  await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer") }] })
+  const { stdout } = await promisify(execFile)("python3", [resolve("tests/host/terminal.py"), process.env.OPENCODE_BIN ?? "opencode", session.id, fixture.directory, observation], {
+    env: { ...fixture.env, PREDICTIONS_OBSERVER: observation, PREDICTIONS_SETUP_FULL: "1", PREDICTIONS_CAPTURE_DIR: resolve(".test-artifacts/setup-cli/full") },
+    timeout: 130000, maxBuffer: 1024 * 1024,
+  })
+  assert.equal(JSON.parse(stdout).fullSetup, true)
+  const text = await readFile(fixture.configFile!, "utf8")
+  assert.match(text, /Synthetic global fixture configuration/, "JSONC comments survive")
+  const options = parse(text).plugins.find((plugin: any) => typeof plugin === "object" && plugin.options?.models).options
+  assert.deepEqual(options.models, [["nomatch/*"], ["fixture/model"]], "group order is saved")
+  assert.deepEqual({ enabled: options.enabled, automatic: options.automatic, escalation: options.escalation, timeoutMs: options.timeoutMs, contextTurns: options.contextTurns, includeGithubPRContext: options.includeGithubPRContext, debug: options.debug }, { enabled: false, automatic: true, escalation: "automatic", timeoutMs: 9000, contextTurns: 5, includeGithubPRContext: true, debug: true })
+  assert.ok(parse(text).plugins.some((plugin: any) => typeof plugin === "object" && plugin.package === resolve("tests/host/observer")), "other plugins survive")
+  assert.equal(fixture.calls.filter(isPredictionCall).length, 0, "setup never generates")
 })

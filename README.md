@@ -175,9 +175,67 @@ if the shortcut is not delivered, use **Predict next prompt** from the command p
 
 </details>
 
+## Predictions Setup
+
+Change every setting below without editing JSON. Open **Predictions Setup** from
+the command palette in the CLI or Desktop, or use **Predictions** in Desktop's
+settings. Desktop shows one page. The CLI shows menus in the same order:
+
+1. **Behavior**: **Enable Predictions**, **Predict After Replies** and **Escalation Mode**.
+2. **Models**: ordered groups of models. Add a model by searching its name, or add a wildcard pattern such as `provider/family-*`. Choose a reasoning variant, move entries and groups, or remove them. Patterns stay patterns and are matched against current models.
+3. **Advanced** (collapsed in Desktop): **Timeout per model**, **Recent interactions**, **Include GitHub PR context** and **Debug notices**. GitHub PR context is off by default; turning it on may send descriptions and metadata of linked public and accessible private PRs to every attempted provider, including fallback and paid models.
+
+Changes stay in a draft until you choose **Save changes**. **Discard changes** restores
+the saved values. Leaving the CLI menu with unsaved edits asks first. Opening setup,
+previewing matches and saving never generate a prediction, fetch a PR or look up
+GitHub credentials. Previewing checks model names only and sends no conversation.
+A model group with no current match is kept and marked, so you can fix the pattern
+or connect the provider later.
+
+Settings apply to the plugin's entry in the global OpenCode configuration on the server
+you are using. Save edits that existing JSON or JSONC file in place and keeps its comments,
+other plugins and any option setup does not manage. Omitted options keep their defaults
+and are not written unless you change them. Setup cannot edit inline, project or
+otherwise overridden configuration; it then shows the current values read-only.
+Edit that source by hand.
+
+Predictions use provider quota and may incur charges. A model's name does not mean it is free.
+
+### Where Save works
+
+Setup reads settings everywhere, but Save currently works only on this computer:
+
+- **Desktop** (macOS): the app's own bundled server, with server version `2.2.6` or `2.3.0`.
+  A server that Desktop merely connects to stays read-only.
+- **CLI**: only a session started with `opencode --standalone`. A shared-service session, an
+  explicit `--server` connection, a remote server or any session whose origin cannot be
+  verified stays read-only and says: "Local setup writes currently require a verified
+  opencode --standalone session." Do not change how you launch OpenCode only to enable setup.
+  Edit the file by hand instead.
+
+### Limits and recovery
+
+Save is best effort, not conflict-proof. It detects a change made since you opened setup and
+refuses to overwrite it (**Configuration changed**; reopen setup and redo your edit). It cannot
+stop another editor from changing the file during the moment of the save. Avoid editing the
+configuration file elsewhere while saving: such a change can be overwritten, including
+unrelated settings.
+
+Before each save the previous file bytes are copied to `<config file>.predictions-backup`
+next to the configuration (for example `opencode.jsonc.predictions-backup`). It is private
+to you, holds only the most recent save and may contain credentials from your configuration.
+It holds the file as it was just before the save, so it cannot be relied on to contain an
+edit another program made during that save. To recover, compare it with the configuration
+and copy the parts you want back by hand. Nothing restores it automatically.
+
+OpenCode reloads the plugin after a save. If the message says the settings were saved but
+activation is not verified, reopen setup or check **Prediction status and preview**. If a
+connection was lost during Save, reopen setup before trying again: the change may already
+be saved, and setup never repeats a save by itself.
+
 ## Settings
 
-Set these fields inside the plugin's `options` object. The installation example
+Predictions Setup edits these fields for you. To edit them by hand, set them inside the plugin's `options` object. The installation example
 uses a `20000` ms timeout; the plugin default is `8000` ms.
 
 | Setting | Default | Meaning |
@@ -573,7 +631,7 @@ The optional model-pilot tool writes a JSON report only when invoked, under
 
 ## Compatibility
 
-Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`.
+Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`. Saving from Predictions Setup is verified only for the combinations in [Where Save works](#where-save-works).
 These are tested versions, not an allowlist. Private editor integration and the
 experimental Desktop API may need updates after OpenCode changes.
 

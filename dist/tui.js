@@ -1028,7 +1028,14 @@ function createSetupEditor(api, changed) {
     groups();
     notify();
   };
-  const adopt = (snapshot) => {
+  const displayed = (snapshot) => {
+    const effective = snapshot.effective;
+    if (snapshot.writable || !effective) return snapshot;
+    const { models, contextFile: _contextFile, ...rest } = effective;
+    return { ...snapshot, fields: { ...rest, ...models ? { models: models.map((group) => group.split(",").map((selector) => selector.trim())) } : {} } };
+  };
+  const adopt = (incoming) => {
+    const snapshot = displayed(incoming);
     state.snapshot = structuredClone(snapshot);
     state.fields = structuredClone(snapshot.fields);
     state.issues = [...snapshot.issues];

@@ -55,7 +55,16 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     state.dirty = !!state.snapshot && Object.keys(changedFields(state.snapshot.fields, state.fields)).length > 0
     groups(); notify()
   }
-  const adopt = (snapshot: SetupSnapshot) => {
+  // A read-only target (inline, project or unverified source) may store nothing in the file setup could edit while predictions still
+  // run on effective values. Show those values so the page never claims "No models configured" over a working override.
+  const displayed = (snapshot: SetupSnapshot): SetupSnapshot => {
+    const effective = snapshot.effective
+    if (snapshot.writable || !effective) return snapshot
+    const { models, contextFile: _contextFile, ...rest } = effective
+    return { ...snapshot, fields: { ...rest, ...(models ? { models: models.map(group => group.split(",").map(selector => selector.trim())) } : {}) } as SettingsInput }
+  }
+  const adopt = (incoming: SetupSnapshot) => {
+    const snapshot = displayed(incoming)
     state.snapshot = structuredClone(snapshot); state.fields = structuredClone(snapshot.fields)
     state.issues = [...snapshot.issues]; state.dirty = false; groups()
   }

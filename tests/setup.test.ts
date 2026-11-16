@@ -206,3 +206,19 @@ test("only changed own fields are saved, preserving raw model syntax for unrelat
   assert.deepEqual(changedFields({}, { models: undefined }), {})
   assert.deepEqual(changedFields(original, { debug: true }), { debug: true })
 })
+
+test("a read-only target shows the values predictions actually use, not an empty stored file", async () => {
+  const { api, snapshot } = editorFixture()
+  snapshot.writable = false
+  snapshot.reason = "This configuration source is not verified for setup writes."
+  snapshot.fields = {}
+  const parsed = parseOptions({ models: [["local/a", "local/b#low"], "local/*"], automatic: false, timeoutMs: 9000, includeGithubPRContext: true })
+  assert.equal(parsed.ok, true)
+  if (parsed.ok) snapshot.effective = parsed.value
+  const editor = createSetupEditor(api, () => {})
+  await editor.load()
+  const state = editor.state()
+  assert.deepEqual(readGroups(state.fields), [["local/a", "local/b#low"], ["local/*"]])
+  assert.deepEqual({ automatic: state.fields.automatic, timeoutMs: state.fields.timeoutMs, includeGithubPRContext: state.fields.includeGithubPRContext }, { automatic: false, timeoutMs: 9000, includeGithubPRContext: true })
+  assert.equal(state.dirty, false, "showing effective values is not an edit")
+})

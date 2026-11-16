@@ -129,7 +129,12 @@ for (const kind of ["invalid", "temporary"] as const) test(`real isolated Deskto
     }
     const title = kind === "invalid" ? "Prediction settings are invalid" : "Prediction models are temporarily paused"
     await page.getByText(title, { exact: true }).waitFor({ state: "visible", timeout: 20000 })
-    await page.getByRole("button", { name: "Open prediction status", exact: true }).last().click()
+    if (kind === "invalid") {
+      // A configuration problem points at Predictions Setup; status stays reachable from the command and the page.
+      await page.getByRole("button", { name: "Open Predictions Setup", exact: true }).last().click()
+      await page.getByText("Behavior", { exact: true }).first().waitFor({ state: "visible", timeout: 20000 })
+      await page.evaluate(() => (window as any).__predictionFixture.status())
+    } else await page.getByRole("button", { name: "Open prediction status", exact: true }).last().click()
     const dialog = page.getByRole("dialog")
     await dialog.getByText(/Prediction status snapshot/).waitFor({ state: "visible" })
     assert.match(await dialog.innerText(), new RegExp(title))
