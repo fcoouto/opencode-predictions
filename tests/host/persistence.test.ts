@@ -19,9 +19,8 @@ for (const configSource of ["global-jsonc", "inline"] as const) {
     assert.equal(snapshot.scope, "global")
     assert.equal(snapshot.effective?.automatic, false)
     assert.equal(snapshot.serviceVersion, (await api.status({}, { location }) as Status).version)
-    if (configSource === "inline") assert.equal(snapshot.writable, false)
-    else if (process.platform === "darwin") {
-      assert.equal(snapshot.writable, true, snapshot.reason ?? "Verified fixture must be writable")
+    assert.equal(snapshot.writable, false, "Network inspection must not advertise local write permission")
+    if (configSource !== "inline" && process.platform === "darwin") {
       assert.equal(snapshot.source, fixture.configFile)
       assert.equal(snapshot.fields.models, "fixture/model")
     }
@@ -39,6 +38,9 @@ for (const configSource of ["global-jsonc", "inline"] as const) {
     assert.equal(invalid.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error"), true)
     await assert.rejects(api.settings({ source: "/client/home/never-write.json" }, { location }))
     await assert.rejects(api.previewSettings({ fields: { source: "/client/home/never-write.json" } }, { location }))
+    for (const method of ["saveSettings", "proveLocalSettings"]) {
+      await assert.rejects(fixture.api.rpc.call({ rpcID: Predictions.id, method, input: {}, location }), (error: any) => error.type === "rpc.method_not_found")
+    }
     if (fixture.configFile) assert.equal(await readFile(fixture.configFile, "utf8"), original)
     assert.equal(fixture.calls.length, 0)
   })

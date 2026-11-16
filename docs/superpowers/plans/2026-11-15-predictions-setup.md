@@ -12,7 +12,7 @@
 
 **Approved amendment:** `docs/superpowers/specs/2026-11-15-predictions-setup-local-save-design.md`
 
-> **Current resume point: Task 4.** Tasks 1–3 are committed and complete in the execution ledger. Task 4 has uncommitted lifecycle/editor work and passing checkpoint checks, not completed Save qualification. The local-IPC design and narrower initial CLI scope are approved; this amended implementation plan awaits confirmation before new implementation. Preserve the selected native execution method and do not repeat completed tasks.
+> **Current resume point: Task 4.** Tasks 1–3 are committed and complete in the execution ledger. Native-origin qualification and the subsequently authorized production guard/enforcement slice are verified. The user requested a separate guard checkpoint commit; earlier lifecycle/editor work remains uncommitted. Private transport, production setup adapters, and actual Save qualification remain pending. Save stays disabled. Preserve the selected native execution method and do not repeat completed tasks.
 
 ## Global Constraints
 
@@ -223,11 +223,13 @@
 - `createGUISetupAPI(ctx: Parameters<GUIPlugin.Setup>[0], target: { serverID: string; location: SetupLocation }): SetupAPI` in `src/setup-gui-api.ts`; local read/Save use `ctx.main(SetupLocal)`, preview uses the pinned selected-server RPC. Never retarget an instance or accept a renderer-supplied endpoint/credential.
 - `createTUISetupAPI(ctx: TUIPlugin.Context, location: SetupLocation): SetupAPI` in `src/setup-tui-api.ts`. Read/preview inspect the selected client. Enable local reads/Save only with the standalone-origin mechanism actually qualified in Step 1; absence or loss of that mechanism returns read-only.
 
-- [ ] **Step 1: Qualify the native origin anchors before implementing writable adapters.**
+- [x] **Step 1: Qualify the native origin anchors before implementing writable adapters.**
   Extend synthetic observer probes and `tests/host/setup-local.test.ts`. Record how pinned Desktop main establishes `sameMachine`; prove it rejects other ports, unknown server IDs, and remote/proxy selections. For CLI, inspect actual private-server creation and selected-client binding under `--standalone`; cover conflicting `--server` flags, every remote endpoint override recognized by the pinned launcher, and available reconnect/target-change paths. Do not infer provenance from a matching PID or the presence of one argument. Keep secrets out of probe output.
   Run `node --test --test-concurrency=1 --test-name-pattern="setup origin" tests/host/setup-local.test.ts`. Expected: actual-host observations identify a trusted origin mechanism for every case enabled for writing, and explicit remote/shared/ambiguous cases are denied. Record the exact mechanism and invalidation conditions in the existing feasibility report. If standalone origin cannot be established, keep CLI read-only and report that gate as blocked, not passed. Do not weaken the approved gate or invent a signed challenge substitute.
+  Observed: actual Desktop main classifies own/other/relay/unknown endpoints; the pinned CLI root-launch binding and OS-owned private child are characterized across nine cases. Full origin/lifecycle run passed 6/6, with 277/277 project tests and typecheck passing. This establishes the available anchors, not an implemented production origin gate. Invocation parsing, denial-before-socket dispatch, and authority binding remain Step 2 requirements.
 
 - [ ] **Step 2: Add RED tests for local transport, native adapters, and remaining Save lifecycle behavior.**
+  Guard-only slice implemented in `src/setup-origin.ts` with 15 denial, pinning, revocation, cancellation, and deadline tests in `tests/setup-origin.test.ts`. Actual native observers execute these production guards and assert positive dispatches and zero denied dispatches, including after private-child failure. Network settings are read-only, and both write/proof methods are absent. Fresh checks passed 292/292 project and 17/17 sequential host tests, typecheck, bundle, and whitespace. These are pre-transport dispatch counts, not socket/Save tests; the rest of this step remains open.
   Name the native-boundary regressions `Desktop main denies non-sameMachine setup before socket access`, `CLI setup denies unqualified launch origins before socket access`, and `relayed local metadata cannot authorize a selected remote server`. Their observable assertions include:
   ```ts
   assert.equal(remoteSnapshot.writable, false)
@@ -411,7 +413,7 @@
 
 ## Execution Handoff
 
-**Native execution remains selected.** After confirmation of this amended plan, resume Task 4 in the existing isolated worktree. Preserve committed Tasks 1–3 and existing Task 4 changes/evidence; qualify native origins before enabling local Save. Do not require another execution-method choice or reopen the accepted external-editor limitation. Retain one fresh whole-branch review at the end.
+**Native execution remains selected.** The user authorized native-origin qualification and then production guards/enforcement tests; both scoped checkpoints are recorded. Continue with the remaining Step 2 transport/adapter work only when authorized, preserving committed Tasks 1–3 and existing Task 4 changes/evidence. Do not enable local Save before its local authority, persistence, and lifecycle gates pass. Do not require another execution-method choice or reopen the accepted external-editor limitation. Retain one fresh whole-branch review at the end.
 
 Do not treat the historical strict NO-GO as a new failure solely because the accepted external-editor race remains reproducible. Do not treat this amended plan as proof that any remaining check has passed.
 
@@ -434,3 +436,5 @@ Do not treat the historical strict NO-GO as a new failure solely because the acc
 - Task 4 checkpoint added uncommitted controller/service lifecycle safeguards, native memory handoff, event/version suppression, and internal Save/editor contracts. Checks passed 277/277 project, 173/173 focused, and 15/15 actual-host lifecycle/persistence tests, plus typecheck/bundle. These checks did not exercise a public Save or qualify the local boundary.
 - User approved private local Save IPC and the revised, narrower standalone-only initial CLI write scope after a builder check rejected relayable challenge signing. Tasks 4–7 now use trusted native origin gates and inspection-only network RPC. The amended implementation plan awaits confirmation; no local-boundary implementation or new qualification is claimed by this edit.
 - User requested the merged PR #25 setting `includeGithubPRContext` in Advanced. The spec and Tasks 4–7 now cover its default-off switch, full setup round trip, omission preservation, and private-data disclosure. Runtime/base integration is still pending; this documentation change neither merges PR #25 into the worktree nor claims an implemented UI.
+- Native-origin qualification, explicitly authorized by the user, added only test probes, a PTY observer driver, and evidence. Desktop own/other/relay/unknown endpoint classifications and nine CLI origin/failure cases passed within a 6/6 combined host run; the project suite passed 277/277 and typecheck passed. Production origin guards/private Save transport remain unimplemented, and Task 4 is incomplete.
+- Subsequent user-authorized production native-origin guards and enforcement tests passed 15/15 focused, 292/292 project, and 17/17 sequential native host checks, plus typecheck/bundle/whitespace. Network inspection now always reports read-only permission. Private Save transport and production setup adapters remain unimplemented; Task 4 remains incomplete.

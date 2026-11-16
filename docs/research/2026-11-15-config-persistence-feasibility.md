@@ -6,6 +6,102 @@ The user approved `docs/superpowers/specs/2026-11-15-predictions-setup-local-sav
 
 The source/filesystem GO below does not qualify these new origin or IPC gates. Task 4 must record actual native-origin and local Save/reload evidence before enabling a writable case. A builder check rejected relayable network challenge signing; matching metadata or a relayed signature cannot substitute for a trusted native origin anchor. This amendment preserves the accepted external-editor limitation and every existing writer safeguard.
 
+## Task 4 Native-Origin Qualification
+
+Scope: native-origin investigation only. No production origin guard, private Save socket, network write method, or setup UI was added by this qualification.
+
+### Desktop: host-owned anchor observed
+
+Actual OpenCode Desktop `2.3.0`, using the pinned `2.2.6` plugin declarations and isolated fixture configuration:
+
+| Main-process endpoint | Known | `sameMachine` |
+| --- | --- | --- |
+| App-owned `sidecar` | Yes | `true` |
+| Another authenticated loopback port | Yes | `false` |
+| A loopback HTTP relay preserving the other server's PID/version metadata | Yes | `false` |
+| Unknown server ID | No | Not authorized |
+
+The probe reads `ctx.serverEndpoints.get(id)` in the actual Electron main process through a test-only native IPC contract. It returns only identity/classification fields, never endpoint credentials. Window-provided metadata is not the authority.
+
+Verdict: the main-process `sameMachine === true` primitive is available and distinguishes the tested targets. The future production main bridge must resolve it itself, pin the selected ID/location, and recheck the current endpoint before local access. These observations do not qualify another port or remote server for writes.
+
+### CLI: private-launch binding observed
+
+Actual CLI/server `2.2.6` on macOS. The native probe reads the selected client's server metadata, then independently inspects its candidate process with `/bin/ps`. The eligible launch path must bind that process to the TUI as a same-user direct child, using the same executable and exact `serve --stdio --port 0` invocation. A PID returned over RPC is only a candidate for these OS checks.
+
+The installed executable was also inspected read-only to trace actual endpoint ownership:
+
+- Root TUI entry passes its parsed `server` and `standalone` options to `cli.server-connection.resolve`.
+- Explicit server and standalone options together fail with `"--server and --standalone cannot be combined"`.
+- The explicit standalone branch calls `cli.standalone.endpoint`, which spawns a private child through the CLI executable, generates fresh authentication in memory, and receives the endpoint through the child's stdout.
+- The TUI creates its selected client from that returned endpoint. It installs endpoint-replacement/reconnect callbacks only when the resolver returned a shared-service controller; the standalone branch does not return one.
+- No endpoint environment-variable selection occurs in that resolver. The password variables are authentication inputs, not server-selection authority.
+
+Executable inspected: `/opt/homebrew/Cellar/opencode-v2/2.2.6/bin/opencode`.
+SHA-256: `90e4d03597b03d2051b65b4d793467764e55bacd8e22bf4824479c7233ea0e15`.
+The exact extracted resolver/launcher source and offsets are retained in the execution artifacts. Qualification depends on the observed native implementation, not on importing its private modules.
+
+| Native launch case | Observation | Initial writable-origin eligibility |
+| --- | --- | --- |
+| Explicit `--standalone` | Selected server is the TUI's same-user private child, with the expected executable/command | Candidate only after the full native gate |
+| Standalone with unrelated `OPENCODE_SERVER`/`OPENCODE_SERVER_URL` hints and synthetic wrong inherited password variables | Still selects its own private child | Same bounded candidate; those hints are not recognized endpoint overrides |
+| Private child terminated while a usable shared service is registered | Selected client identity stays unchanged and reports the private server unavailable; it does not select the shared server | Revoke access |
+| Ordinary shared-service launch | Selects the registered existing fixture server, not a TUI-owned child | Read-only |
+| No standalone flag, but service disabled | Also spawns a private child | Read-only; child identity alone does not prove the approved explicit launch mode |
+| Explicit `--server` | Selects the external fixture server | Read-only |
+| Explicit server through an identity-preserving HTTP relay | Receives the backend's real PID/version, but no TUI-owned private-child binding | Read-only |
+| Both conflicting-flag orders | Exit `1` with the conflict error before the observer mounts | No access |
+
+Verdict: the pinned root launch path and private-child relationship are characterized; there is no public `ctx.standalone`/peer-origin field in the actual TUI context. The future guard must combine a strictly interpreted, explicitly qualified standalone invocation, the audited native client binding, OS-owned child identity, and that child's matching local authority. Neither an argument scan, a matching RPC PID, a private-looking process, nor a relayed signature suffices alone. Reject ambiguous arguments, custom/unqualified launchers, target/authority replacement, process loss, and unqualified routing/proxy environments. Shared-service and explicit-server CLI modes remain outside writable scope.
+
+At this qualification checkpoint, production guards and local-authority binding were still pending. The later guard enforcement checkpoint below supersedes only the guard status, not the missing local authority or Save transport.
+
+### Evidence and limits
+
+Command:
+
+```sh
+node --test --test-concurrency=1 tests/host/setup-local.test.ts tests/host/lifecycle.test.ts
+```
+
+Fresh result: 6/6 passed, no skips. The two origin tests exercise four Desktop endpoint classes and nine CLI launch/failure cases; the other four tests retain native memory/composer/suppression coverage. No provider calls or changes to the active fixture plugin config occurred in the origin tests. Only synthetic local service registration/preferences and probe observations were written.
+
+`npm test`: 277/277 passed. `npm run typecheck` and `git diff --check` passed. Native runs were sequential. Observations live under `.test-artifacts/host-*/origin-*-observation*.json`; command logs and executable-source extracts are in this plan's execution workspace.
+
+Not qualified here: production Save IPC, origin enforcement in the new adapters, actual Save/reload acknowledgement handling, packed-origin flows, remote writes, other CLI/server versions, non-macOS hosts, or proxy-enabled/custom launchers. Desktop's `2.3.0` UI observation does not expand the writer's `2.2.6` server allowlist. PR #25 integration and its Advanced switch remain pending.
+
+## Task 4 Production Native-Origin Guard Checkpoint
+
+User authorized production guards and enforcement tests, not private Save transport or UI. `src/setup-origin.ts` now provides reusable native-only dispatch guards. The current production UI entry points do not expose Save or use these guards yet; actual native observers execute the production guard functions.
+
+- Desktop requires Desktop `2.3.0` and the main-process registry's exact `sameMachine === true`. Each guard pins the selected ID, URL, password, and headers; a mismatch permanently revokes it. Host teardown, caller cancellation, and disposal cancel guarded work. A completion recheck rejects changed endpoint state without claiming rollback.
+- Standalone requires macOS and CLI/server `2.2.6`, the qualified native executable, an explicitly recognized root `--standalone` invocation, no unqualified routing/proxy/custom-launch hints, and the same selected client. It independently verifies the server candidate as a same-user direct child with the exact executable and `serve --stdio --port 0` command. It pins PID and observed start time, rejects replacement PIDs before OS inspection, and rechecks mutable native state after asynchronous verification.
+- Metadata verification has a `2000` ms deadline even if a dependency ignores cancellation. Native `/bin/ps` inspection has a `1000` ms timeout and `8192`-byte output bound. Inspection failures return fixed safe copy, not raw native errors or credentials.
+- Network `settings` always returns `writable: false`. Existing source refusal reasons remain intact; otherwise it explains that saving requires a verified local setup connection. Network `saveSettings` and `proveLocalSettings` return `rpc.method_not_found`.
+
+Initial guard tests observed RED against unguarded stubs. A separate replacement-PID test observed RED when the guard inspected a new PID before refusing it; the early rejection now passes. Native enforcement assertions also observed RED before the observers invoked the production guards.
+
+Fresh checks:
+
+```sh
+node --test tests/setup-origin.test.ts
+npm test
+npm run typecheck
+npm run bundle
+node --test --test-concurrency=1 tests/host/persistence.test.ts tests/host/lifecycle.test.ts tests/host/setup-local.test.ts
+git diff --check
+```
+
+Results: 15/15 guard tests, 292/292 project tests, and 17/17 native host tests passed with no skips. Typecheck, bundle, and whitespace checks passed. The host run retains existing persistence research and memory-handoff tests; it does not prove an actual setup Save.
+
+Actual Desktop sidecar dispatch count was one; other port, identity-preserving relay, and unknown target counts were zero. Normal standalone dispatched once. Standalone with endpoint hints, shared service, private fallback without the explicit flag, explicit server, and relayed explicit server all dispatched zero times. Conflicting flags still fail before plugin mount. After private-child loss, the unchanged selected client reported unavailable and the guard denied with zero further local dispatches. Origin probes made no provider calls and preserved active fixture configuration bytes.
+
+Evidence: execution logs `task-4-guard-{red,final,suite,host-final,bundle}.log`, `task-4-guard-replacement-red.log`, `task-4-native-guard-{red,green}.log`, and `task-4-network-origin-{red,green}.log`. Latest native observations: `.test-artifacts/host-7HrFNb/origin-desktop-observation.json` and `.test-artifacts/host-dsKhos/origin-cli-observations.json`.
+
+Limits: guards establish only a pre-dispatch native-origin prerequisite. They do not bind a socket authority, location, source, or Save transaction. A cancellation or failed completion check cannot roll back already dispatched work. Future adapters must pin location and authority, verify the socket/server relationship, and preserve persistence/readback safeguards. No private socket, production main/TUI setup adapter, actual Save/reload acknowledgement, installed-package origin flow, upstream PR integration, or new writable case is claimed. Task 4 remains incomplete and Save remains disabled.
+
+For the user-requested guard checkpoint commit, earlier lifecycle/editor changes were excluded from the index. An isolated export of the staged guard candidate passed 271/271 project tests, 13/13 sequential persistence/origin host tests, typecheck, and bundle. The 292/292 and 17/17 results above describe the broader working tree, not the guard-only commit. Only the server entry bundle and source map changed in the isolated build; those generated files accompany the checkpoint.
+
 ## Amended Task 1 Verdict: Scoped GO — Review Corrections Verified
 
 The approved best-effort gate permits production implementation **only for the verified writable subset below**. Task 2 adds the store and Task 3 exposes metadata-only read/preview RPC; public save RPC, lifecycle, and UI remain unbuilt. The initial GO was suspended after checkpoint review exposed a preservation defect and missing production failure-path coverage. The correction checks below restore only this scoped GO, not feature or release approval. The original strict NO-GO remains recorded below.

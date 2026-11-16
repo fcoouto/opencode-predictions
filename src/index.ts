@@ -38,7 +38,10 @@ export default Plugin.define({
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input as Request, context.signal),
       status: (_input, context) => service.inspect(context.signal),
-      settings: (_input, context) => setup.read(context.signal),
+      settings: async (_input, context) => {
+        const snapshot = await setup.read(context.signal)
+        return { ...snapshot, writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." }
+      },
       previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, context.signal),
     })
     return () => registration.dispose()
