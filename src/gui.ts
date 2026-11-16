@@ -5,7 +5,8 @@ import { createDesktopAdapter } from "./adapters/desktop.ts"
 import { startClient } from "./client.ts"
 import { Predictions } from "./rpc.ts"
 import type { Reply, Status } from "./service.ts"
-import { pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
+import { pluginVersion, feedbackRevision, configurationNotice, type Notice } from "./feedback.ts"
+import { registerSetupGUI } from "./setup-gui.ts"
 
 export default Plugin.define({
   main: async ctx => (await import("./setup-main.ts")).registerSetupMain(ctx),
@@ -51,7 +52,7 @@ export default Plugin.define({
       communicate: adapter.communicate,
       focus: () => ctx.screen.current()?.composer.focus(),
       show: notice => {
-        const toast = ctx.toast.show({ title: notice.title, description: notice.message, variant: notice.severity === "error" ? "error" : "default", persistent: !!notice.persistent, duration: 8000, ...(notice.severity !== "info" ? { actions: [{ label: "Open prediction status", run: () => client.status() }] } : {}) })
+        const toast = ctx.toast.show({ title: notice.title, description: notice.message, variant: notice.severity === "error" ? "error" : "default", persistent: !!notice.persistent, duration: 8000, ...(notice.severity !== "info" ? { actions: [configurationNotice(notice) ? { label: "Open Predictions Setup", run: () => ctx.layout.settings("predictions") } : { label: "Open prediction status", run: () => client.status() }] } : {}) })
         if (notice.severity !== "info") errorToast = toast
       },
       clearNotice: () => { errorToast?.dismiss(); errorToast = undefined },
@@ -67,6 +68,7 @@ export default Plugin.define({
             title: "Prediction status and preview", size: "large", children: content,
             footer: [
               createComponent(ctx.ui.Button, { children: "Close", onClick: () => dialog.close() }),
+              createComponent(ctx.ui.Button, { children: "Predictions Setup", onClick: () => { dialog.close(); ctx.layout.settings("predictions") } }),
               createComponent(ctx.ui.Button, { get children() { return technical() ? "Status summary" : "Technical details" }, variant: "contrast", onClick: () => { setTechnical(!technical()); content.textContent = technical() ? view.details : view.summary } }),
             ],
           })
@@ -81,10 +83,11 @@ export default Plugin.define({
       onCleanup(data.on("plugin.updated", () => client.invalidate({ suppressAutomatic: true })))
     })
     createKeyed(() => session()?.key, () => client.invalidate(), { otherwise: () => client.invalidate() })
+    const stopSetup = registerSetupGUI(ctx, () => client.status())
     ctx.add(Command, { id: "accept", title: "Accept prompt prediction", bind: "tab", editable: true, hidden: true, run: () => client.accept() ? undefined : false })
     ctx.add(Command, { id: "request", title: "Predict next prompt", group: "Predictions", run: () => client.request() })
     ctx.add(Command, { id: "request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", editable: true, hidden: true, run: () => client.requestFromShortcut() })
     ctx.add(Command, { id: "status", title: "Prediction status and preview", group: "Predictions", run: () => client.status() })
-    return () => { client.dispose(); adapter.dispose() }
+    return () => { stopSetup(); client.dispose(); adapter.dispose() }
   },
 })

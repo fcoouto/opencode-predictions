@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { readFile, writeFile } from "node:fs/promises"
+import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
 import { createServer, request } from "node:http"
 import { _electron as electron } from "playwright"
@@ -102,6 +102,63 @@ test("setup local Desktop Save preserves the composer draft and creates no predi
     await page.waitForTimeout(2300)
     assert.equal(fixture.calls.filter(isPredictionCall).length, callsBefore, "Save must not cause a prediction call")
     assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
+  } finally { await app.close() }
+})
+
+test("setup page renders in real Desktop with ordered sections, a working command and inspectable captures", { timeout: 90000, skip: process.platform !== "darwin" }, async () => {
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"], ["fixture/*"]] }, {}, { configSource: "global-jsonc" })
+  await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] })
+  const app = await electron.launch({
+    executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode",
+    args: ["--user-data-dir=" + join(fixture.root, "render-profile")],
+    env: fixture.env as Record<string, string>, timeout: 30000,
+  })
+  try {
+    const page = await app.firstWindow()
+    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
+    await page.evaluate(() => (window as any).__predictionFixture.openSetup())
+    const heading = page.getByRole("heading", { name: "Predictions", exact: true })
+    await heading.first().waitFor({ state: "visible", timeout: 15000 })
+    await page.getByText("Group 1 — Try first").waitFor({ state: "visible", timeout: 15000 })
+    // The main bridge may still be starting on first paint; the page must become editable on its own.
+    await page.waitForFunction(() => !document.body.innerText.includes("Read-only"), undefined, { timeout: 10000 })
+    await page.getByRole("button", { name: "Save changes" }).waitFor({ state: "visible" })
+    assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isDisabled(), false, "a writable local server is editable natively")
+    const dir = resolve(".test-artifacts/setup-render")
+    await mkdir(dir, { recursive: true })
+    await page.screenshot({ path: join(dir, "setup-initial.png") })
+    const positions: number[] = []
+    for (const title of ["Behavior", "Models", "Advanced"]) {
+      // The settings nav on the left also lists a "Models" page; section headings are in the content column.
+      const boxes = await page.getByText(title, { exact: true }).evaluateAll(nodes => nodes.map(node => { const r = node.getBoundingClientRect(); return { x: r.x, y: r.y } }))
+      const heading = boxes.find(box => box.x > 250)
+      assert.ok(heading, title + " heading must be visible in the native page")
+      positions.push(heading.y)
+    }
+    assert.deepEqual([...positions].sort((a, b) => a - b), positions, JSON.stringify(positions) + "Behavior, Models, Advanced render top to bottom")
+    assert.equal(await page.getByRole("button", { name: "Show advanced settings" }).count(), 1)
+    assert.equal(await page.getByText("Include GitHub PR context").count(), 0, "collapsed Advanced hides the GitHub row")
+    for (const [width, height] of [[1280, 900], [520, 900]]) {
+      await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(size[0], size[1]), [width, height])
+      await page.waitForTimeout(300)
+      await page.screenshot({ path: join(dir, `setup-${width}.png`) })
+    }
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 900))
+    // Keyboard only: focus a native switch, toggle it with Space, and reach Save without a pointer.
+    const automatic = page.getByRole("switch", { name: "Predict After Replies" })
+    const before = await automatic.isChecked()
+    await automatic.focus()
+    await page.keyboard.press("Space")
+    assert.equal(await automatic.isChecked(), !before, "Space toggles the focused native switch")
+    assert.equal(await page.getByRole("button", { name: "Save changes" }).isDisabled(), false, "an edit enables Save")
+    await page.getByRole("button", { name: "Discard changes" }).click()
+    assert.equal(await automatic.isChecked(), before, "Discard restores the saved value")
+    await page.getByRole("button", { name: "Show advanced settings" }).click()
+    await page.getByText("Include GitHub PR context").first().waitFor({ state: "visible" })
+    await page.screenshot({ path: join(dir, "setup-advanced.png"), fullPage: true })
+    await writeFile(join(dir, "setup-dom.html"), await page.content())
+    assert.equal(fixture.calls.length, 0, "rendering setup must not generate")
   } finally { await app.close() }
 })
 

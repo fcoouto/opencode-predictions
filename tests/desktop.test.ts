@@ -447,14 +447,14 @@ test("Desktop error toasts offer persistent status actions and reopen readable s
     await page.addScriptTag({ content: guiSource })
     await page.evaluate(() => {
       const w = window as any
-      w.notices = []; w.dialogs = []; w.commands = new Map(); w.dismissed = 0
+      w.notices = []; w.dialogs = []; w.commands = new Map(); w.dismissed = 0; w.settings = []
       let failing = true
       const data = { on: () => () => {}, session: { get: () => undefined } }
       const session = { id: "ses_test", key: "server/ses_test", directory: "/project", location: { directory: "/project" }, server: { id: "fixture", connected: true, data, client: { rpc: () => ({ status: async () => {
         if (!failing) throw new Error("PRIVATE")
         return { enabled: false, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], reason: "models_required" }
       } }) } } }
-      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => session }, screen: { current: () => undefined }, add: (_registry: unknown, command: any) => w.commands.set(command.id, command), app: { version: "test" }, toast: { show: (notice: unknown) => { w.notices.push(notice); return { dismiss: () => { w.dismissed++ } } } }, dialogs: { open: (render: any) => render({ close() {} }), confirm: async (options: any) => { w.dialogs.push({ description: options.description, whiteSpace: "normal" }); return false }, alert: async () => {} }, ui: { Dialog: (props: any) => { w.dialogs.push({ description: props.children.textContent, whiteSpace: props.children.style.whiteSpace }); return props.children }, Button: () => document.createElement("button") } })
+      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => session }, screen: { current: () => undefined }, add: (_registry: unknown, command: any) => w.commands.set(command.id, command), layout: { settings: (page: string) => w.settings.push(page) }, app: { version: "test" }, toast: { show: (notice: unknown) => { w.notices.push(notice); return { dismiss: () => { w.dismissed++ } } } }, dialogs: { open: (render: any) => render({ close() {} }), confirm: async (options: any) => { w.dialogs.push({ description: options.description, whiteSpace: "normal" }); return false }, alert: async () => {} }, ui: { Dialog: (props: any) => { w.dialogs.push({ description: props.children.textContent, whiteSpace: props.children.style.whiteSpace }); return props.children }, Button: () => document.createElement("button") } })
       w.disconnect = () => { failing = false }
     })
     await page.waitForFunction(() => (window as any).notices.length === 1)
@@ -462,21 +462,49 @@ test("Desktop error toasts offer persistent status actions and reopen readable s
       const w = window as any
       const notice = w.notices[0]
       await notice.actions[0].run()
+      const opened = [...w.settings]
       await w.commands.get("status").run()
-      return { variant: notice.variant, persistent: notice.persistent, action: notice.actions[0].label, descriptions: w.dialogs.map((dialog: any) => dialog.description), whitespaces: w.dialogs.map((dialog: any) => dialog.whiteSpace), notices: w.notices.length }
+      return { opened, variant: notice.variant, persistent: notice.persistent, action: notice.actions[0].label, descriptions: w.dialogs.map((dialog: any) => dialog.description), whitespaces: w.dialogs.map((dialog: any) => dialog.whiteSpace), notices: w.notices.length }
     })
     assert.equal(first.variant, "error")
     assert.equal(first.persistent, true)
-    assert.equal(first.action, "Open prediction status")
-    assert.equal(first.descriptions.length, 2)
-    assert.deepEqual(first.whitespaces, ["pre-wrap", "pre-wrap"])
+    assert.equal(first.action, "Open Predictions Setup", "configuration blockers point at setup")
+    assert.deepEqual(first.opened, ["predictions"])
+    assert.equal(first.descriptions.length, 1)
+    assert.deepEqual(first.whitespaces, ["pre-wrap"])
     assert.ok(first.descriptions.every((text: string) => /snapshot.*Predictions need a model/s.test(text)))
     assert.equal(first.notices, 1)
-    const after = await page.evaluate(async () => { const w = window as any; w.disconnect(); await w.commands.get("status").run(); return { notices: w.notices.map((notice: any) => ({ variant: notice.variant, persistent: notice.persistent, description: notice.description })), dismissed: w.dismissed } })
+    const after = await page.evaluate(async () => { const w = window as any; w.disconnect(); await w.commands.get("status").run(); return { notices: w.notices.map((notice: any) => ({ variant: notice.variant, persistent: notice.persistent, description: notice.description, actions: notice.actions })), dismissed: w.dismissed } })
     assert.equal(after.notices.at(-1)!.variant, "error")
     assert.equal(after.notices.at(-1)!.persistent, false)
+    assert.equal(after.notices.at(-1)!.actions[0].label, "Open prediction status", "runtime failures keep the status action")
     assert.doesNotMatch(after.notices.at(-1)!.description, /PRIVATE/)
     assert.ok(after.dismissed >= 1)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
+test("Desktop status view offers Predictions Setup and stays read-only", async () => {
+  const page = await fixture()
+  try {
+    await page.addScriptTag({ content: guiSource })
+    await page.evaluate(() => {
+      const w = window as any
+      w.buttons = []; w.settings = []; w.commands = new Map(); w.statusClosed = 0
+      const data = { on: () => () => {}, session: { get: () => undefined } }
+      const session = { id: "ses_test", key: "server/ses_test", directory: "/project", location: { directory: "/project" }, server: { id: "fixture", connected: true, data, client: { rpc: () => ({ status: async () => ({ enabled: true, models: "local/a", automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], candidates: [] }) }) } } }
+      w.stopGUI = w.PredictionGUI.mount({ sessions: { current: () => session }, screen: { current: () => undefined }, add: (_registry: unknown, command: any) => w.commands.set(command.id, command), layout: { settings: (page: string) => w.settings.push(page) }, app: { version: "test" }, toast: { show() { return { dismiss() {} } } }, dialogs: { open: (render: any) => render({ close() { w.statusClosed++ } }) }, ui: { Dialog: (props: any) => { w.footer = props.footer; return props.children }, Button: (props: any) => { w.buttons.push(props); return document.createElement("button") } } })
+    })
+    await page.evaluate(async () => { await (window as any).commands.get("status").run() })
+    const result = await page.evaluate(() => {
+      const w = window as any
+      const setup = w.buttons.find((button: any) => button.children === "Predictions Setup")
+      setup.onClick()
+      return { labels: w.buttons.map((button: any) => String(button.children)), settings: w.settings, closed: w.statusClosed, hasInput: false }
+    })
+    assert.ok(result.labels.includes("Predictions Setup"))
+    assert.deepEqual(result.settings, ["predictions"])
+    assert.equal(result.closed, 1, "opening setup closes the status dialog")
     await page.evaluate(() => (window as any).stopGUI())
   } finally { await page.close() }
 })

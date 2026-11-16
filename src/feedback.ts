@@ -3,6 +3,8 @@ import type { Status } from "./service.ts"
 
 export const pluginVersion = metadata.version
 export const feedbackRevision = 1
+// Configuration problems that Predictions Setup can fix; runtime failures keep the status action.
+export const configurationNotice = (notice: { code: string }) => ["models_required", "invalid_options"].includes(notice.code)
 export type Notice = { code: string; severity: "info" | "warning" | "error"; title: string; message: string; persistent?: boolean }
 export type StatusView = { summary: string; details: string }
 
@@ -17,7 +19,7 @@ export function reasonNotice(reason: string | undefined): Notice | undefined {
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."],
   }
   if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] }
-  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true }
+  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model, or set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true }
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true }
   if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in the global plugin options and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." }
   if (reason === "context_file_too_large") return { code: reason, severity: "error", title: "Prediction context file is too large", message: "Reduce the contextFile contents to at most 8192 UTF-8 bytes, then request a prediction again. No model was called." }
@@ -41,7 +43,7 @@ export function statusNotice(status: Status): Notice | undefined {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason)
     // Validation messages describe field types, never the supplied option values.
     const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
-    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true }
+    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct this plugin's options in your OpenCode configuration.`, persistent: true }
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` }
 }

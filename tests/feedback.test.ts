@@ -32,8 +32,8 @@ test("global context path and fixed file errors stay readable without disclosing
 
 test("configuration blockers explain the cause and recovery without debug", () => {
   for (const [reason, title, recovery] of [
-    ["models must be selector text or a nonempty array of selector groups", "Prediction settings are invalid", /models.*Correct.*configuration/s],
-    ["models_required", "Predictions need a model", /Set.*models.*provider\/model/s],
+    ["models must be selector text or a nonempty array of selector groups", "Prediction settings are invalid", /models.*Predictions Setup.*configuration/s],
+    ["models_required", "Predictions need a model", /Predictions Setup.*models.*provider\/model/s],
     ["model_unavailable", "No prediction models match", /provider.*pattern.*variant/s],
   ] as const) {
     const notice = statusNotice({ ...ready, enabled: reason === "model_unavailable", reason })
@@ -83,7 +83,7 @@ test("status keeps last failure, ordered model groups, retry times and preview r
 test("status does not repeat an identical current failure's full recovery paragraph", () => {
   const status = { ...ready, enabled: false, reason: "models_required" }
   const view = formatStatus(status, { lastNotice: statusNotice(status) })
-  assert.equal(view.summary.split("Set models").length - 1, 1)
+  assert.equal(view.summary.split("Open Predictions Setup to choose a model").length - 1, 1)
   assert.match(view.summary, /Last failure:/)
 })
 
