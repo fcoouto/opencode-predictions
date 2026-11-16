@@ -41,9 +41,14 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
   try {
     await show()
     // A zero-match selector is warned about but kept.
-    await page.getByText("0 models match now").waitFor({ state: "visible", timeout: 15000 })
+    await page.getByText("0 models match now", { exact: true }).waitFor({ state: "visible", timeout: 15000 })
     await page.getByText("No current models match this selector.").waitFor({ state: "visible" })
-    await page.getByRole("button", { name: "Move group down" }).first().click()
+    assert.equal(await page.getByRole("button", { name: "Group 2 actions" }).count(), 1)
+    await page.getByRole("button", { name: "Group 1 actions" }).click()
+    await page.getByRole("menuitem", { name: "Move group down" }).click()
+    // The host returns focus to the menu trigger when it closes; the page then moves it to the moved group's own menu.
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Group 2 actions", undefined, { timeout: 5000 })
+    assert.equal(await page.getByRole("button", { name: "Add to Group 2" }).count(), 1, "menu labels follow the new order")
     await flip(page, "Enable Predictions")
     await flip(page, "Predict After Replies")
     await choose(page, "Escalation Mode", "Automatically once after no suggestion")
@@ -87,7 +92,7 @@ test("setup ui: an inline configuration override keeps Desktop setup inspectable
   try {
     await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
     await page.evaluate(() => (window as any).__predictionFixture.openSetup())
-    await page.getByText("Group 1 — Try first").waitFor({ state: "visible", timeout: 20000 })
+    await page.getByText("Group 1 — Tried first").waitFor({ state: "visible", timeout: 20000 })
     await page.getByText("Read-only", { exact: true }).waitFor({ state: "visible", timeout: 15000 })
     assert.equal(await page.getByRole("button", { name: "Save changes" }).isDisabled(), true)
     assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isDisabled(), true)

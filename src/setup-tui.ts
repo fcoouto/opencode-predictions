@@ -235,7 +235,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       if (choice === "new-model") await addTo(editor, "new", pickModel)
       else if (choice === "new-pattern") await addTo(editor, "new", pickPattern)
       else if (choice === "preview") await editor.preview()
-      else if (choice === "about") await alert(setupText.cost)
+      else if (choice === "about") await alert(setupText.order + " " + setupText.cost)
       else await group(editor, Number(choice.slice("group:".length)))
     }
   }

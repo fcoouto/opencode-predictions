@@ -39,7 +39,7 @@ async function mount(options: Options = {}): Promise<Page> {
     const clients: any = {}
     const client = (id: string) => clients[id] ??= { rpc: () => ({
       settings: async () => ({ ...view(), writable: false }),
-      previewSettings: async ({ fields }: any) => { log.previews++; return { groups: (fields.models ?? []).map((group: string[]) => ({ selectors: group, candidates: group.map((_, index) => ({ providerID: "local", id: "m" + index, name: "m" })) })), issues: group0Issues(fields) } },
+      previewSettings: async ({ fields }: any) => { log.previews++; return { groups: (fields.models ?? []).map((group: string[]) => ({ selectors: group, candidates: group.filter(entry => !entry.includes("missing")).map((_, index) => ({ providerID: "local", id: "m" + index, name: "m" })) })), issues: group0Issues(fields) } },
       predict: async () => { log.predictions++; return {} },
     }) }
     const group0Issues = (fields: any) => (fields.models ?? []).flatMap((group: string[], g: number) => group.flatMap((entry, e) => entry.includes("missing") ? [{ field: "models", group: g, entry: e, severity: "warning", code: "no_match", message: "No current models match this selector." }] : []))
@@ -90,6 +90,24 @@ async function mount(options: Options = {}): Promise<Page> {
       TextInput: (p: any) => { const i = el("input", { type: p.type ?? "text", "aria-label": p.label }) as HTMLInputElement; S.createRenderEffect(() => { i.value = p.value; i.disabled = !!p.disabled; i.setAttribute("aria-invalid", String(!!p.invalid)) }); i.oninput = () => p.onInput(i.value); i.onkeydown = (e: KeyboardEvent) => { if (e.key === "Enter") p.onSubmit?.(i.value) }; return i },
       Button: (p: any) => { const b = el("button", { type: "button" }) as HTMLButtonElement; slot(b, () => p.children); S.createRenderEffect(() => { b.disabled = !!p.disabled; b.dataset.variant = p.variant ?? "neutral" }); b.onclick = () => { if (!b.disabled) p.onClick?.() }; return b },
       Loader: () => el("span", { role: "progressbar" }),
+      Icon: (p: any) => el("span", { "data-icon": p.name, "aria-hidden": "true" }),
+      Tooltip: (p: any) => { const w = el("span", { "data-tooltip": "" }); slot(w, () => p.children); return w },
+      IconButton: (p: any) => { const b = el("button", { type: "button", "aria-label": p.label, "data-icon-button": p.icon }) as HTMLButtonElement; S.createRenderEffect(() => { b.disabled = !!p.disabled }); b.onclick = () => { if (!b.disabled) p.onClick?.() }; return b },
+      // A menu opens a list of items read at open time; choosing an item closes it and returns focus to the trigger, like the host.
+      Menu: (p: any) => {
+        const wrap = el("span", {}); const trigger = el("button", { type: "button", "aria-haspopup": "menu" }) as HTMLButtonElement
+        S.createRenderEffect(() => { wrap.setAttribute("data-menu", p.label); trigger.setAttribute("aria-label", p.label); if (p.trigger !== "icon") trigger.textContent = p.label })
+        trigger.dataset.menuIcon = p.icon ?? ""; S.createRenderEffect(() => { trigger.disabled = !!p.disabled })
+        let list: HTMLElement | undefined
+        const close = () => { list?.remove(); list = undefined }
+        trigger.onclick = () => {
+          if (list) return close()
+          list = el("div", { role: "menu", "aria-label": p.label })
+          for (const item of p.items) { if (item.type === "separator") { list.append(el("hr")); continue } const b = el("button", { role: "menuitem", type: "button" }) as HTMLButtonElement; b.textContent = item.label; b.disabled = !!item.disabled; b.onclick = () => { close(); item.onSelect(); setTimeout(() => trigger.focus(), 0) }; list.append(b) }
+          wrap.append(list)
+        }
+        wrap.append(trigger); return wrap
+      },
       Dialog: (p: any) => { const d = el("div", { role: "dialog", "aria-label": p.title }); const h = el("h2"); h.textContent = p.title; const dd = el("p"); dd.textContent = p.description ?? ""; d.append(h, dd); slot(d, () => p.children); slot(d, () => p.footer); return d },
     }
     w.status = async () => { log.status++ }
@@ -111,7 +129,7 @@ test("page orders Behavior, Models, Advanced with exact labels and Advanced coll
   const page = await mount()
   try {
     await idle(page)
-    assert.deepEqual(await titles(page), ["Behavior", "Models", "Advanced"])
+    assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"], "each fallback group is its own section under Models, in the order it is tried")
     const labels = await page.evaluate(() => [...document.querySelectorAll('[data-section="Behavior"] [data-title]')].map(node => node.textContent))
     assert.deepEqual(labels, ["Enable Predictions", "Predict After Replies", "Escalation Mode"])
     assert.equal(await row(page, "predictions-advanced-github").count(), 0, "GitHub PR context lives only in the collapsed Advanced section")
@@ -217,40 +235,125 @@ test("timeout accepts only whole numbers and the draft blocks Save until valid",
   } finally { await page.close() }
 })
 
-test("model groups move, remove and keep focus on the moved row with named actions", async () => {
+const entryTitles = (page: Page) => page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-entry-"] [data-title]')].map(node => node.textContent))
+const menu = (page: Page, name: string) => page.locator(`[data-menu="${name}"]`)
+const choose = async (page: Page, name: string, item: string) => { await menu(page, name).getByRole("button").first().click(); await page.getByRole("menuitem", { name: item, exact: true }).click() }
+const focused = (page: Page) => page.evaluate(() => ({ row: document.activeElement?.closest("[data-action]")?.getAttribute("data-action"), name: document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim() }))
+
+test("Models opens with a Fallback order row that explains the order and the cost, and offers Add group; the old footer row is gone", async () => {
   const page = await mount()
   try {
     await idle(page)
-    const entryTitles = () => page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-entry-"] [data-title]')].map(node => node.textContent))
-    assert.deepEqual(await entryTitles(), ["Family A", "Model B"])
-    assert.equal(await page.getByRole("button", { name: "Move group up" }).first().isDisabled(), true, "the first group cannot move up")
-    await page.getByRole("button", { name: "Move group down" }).first().click()
-    assert.deepEqual(await entryTitles(), ["Model B", "Family A"])
-    const focused = await page.evaluate(() => ({ row: document.activeElement?.closest("[data-action]")?.getAttribute("data-action"), text: document.activeElement?.textContent }))
-    assert.deepEqual(focused, { row: "predictions-group-1", text: "Move group up" }, "focus follows the moved group to the opposite action when the same one is now disabled")
-    await page.getByRole("button", { name: "Remove group" }).first().click()
-    assert.deepEqual(await entryTitles(), ["Family A"])
-    await save(page).click()
-    await page.waitForFunction(() => (window as any).log.saves.length === 1)
-    assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input.fields), { models: [["local/family/a#low"]] })
+    const intro = (await row(page, "predictions-models").textContent())!
+    assert.match(intro, /Fallback order/)
+    assert.match(intro, /top to bottom/)
+    assert.match(intro, /later group is tried only when/i)
+    assert.match(intro, /may incur charges/)
+    assert.match(intro, /does not mean it is free/)
+    assert.match(intro, /send(s)? no conversation/)
+    assert.equal(await page.getByText("Add fallback pattern").count(), 0)
+    assert.equal(await page.getByText("Fallback groups", { exact: true }).count(), 0)
+    await menu(page, "Add group").getByRole("button").click()
+    assert.deepEqual(await page.getByRole("menuitem").allTextContents(), ["Model…", "Pattern… (for example provider/family-*)"])
+    assert.equal(await page.getByRole("button", { name: "Refresh matches" }).count(), 1)
   } finally { await page.close() }
 })
 
-test("model entries reorder within a group, and removing the last model removes the models setting explicitly", async () => {
+test("each group is a section with a match summary, an Add menu and a group-actions menu; every entry has one labelled actions menu", async () => {
+  const page = await mount()
+  try {
+    await idle(page)
+    assert.deepEqual(await entryTitles(page), ["1. Family A", "1. Model B"])
+    for (const name of ["Move up", "Move down", "Remove", "Move group up", "Remove group"]) assert.equal(await page.getByRole("button", { name, exact: true }).count(), 0, `no repeated text button "${name}"`)
+    // Accessible names say which entry they act on, so a screen reader never hears "Actions, Actions, Actions".
+    for (const name of ["Actions for Family A", "Actions for Model B", "Add to Group 1", "Add to Group 2", "Group 1 actions", "Group 2 actions"]) assert.equal(await menu(page, name).count(), 1, name)
+    assert.match((await row(page, "predictions-group-0").textContent())!, /1 model matches now/)
+    const controls = await page.locator('[data-section^="Group "] button').count()
+    assert.equal(controls, 6, "2 groups with 1 entry each expose 6 controls (was 19)")
+    await menu(page, "Actions for Family A").getByRole("button").click()
+    assert.deepEqual(await page.getByRole("menuitem").allTextContents(), ["Move up", "Move down", "Remove"])
+    assert.equal(await page.getByRole("menuitem", { name: "Move up" }).isDisabled(), true)
+  } finally { await page.close() }
+})
+
+test("group actions menu moves and removes groups; focus follows the moved group's menu and removing asks before dropping several models", async () => {
+  const page = await mount({ fields: { models: [["local/family/a#low", "local/b"], ["local/b"]] } })
+  try {
+    await idle(page)
+    await menu(page, "Group 1 actions").getByRole("button").click()
+    assert.equal(await page.getByRole("menuitem", { name: "Move group up" }).isDisabled(), true, "the first group cannot move up; the item stays so positions are stable")
+    await page.getByRole("menuitem", { name: "Move group down" }).click()
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "1. Family A", "2. Model B"])
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Group 2 actions")
+    assert.deepEqual(await focused(page), { row: "predictions-group-1", name: "Group 2 actions" })
+    // Removing a group that holds more than one model asks first; declining keeps it.
+    await page.evaluate(() => { (window as any).confirmAnswer = false })
+    await choose(page, "Group 2 actions", "Remove group")
+    assert.equal(await page.evaluate(() => (window as any).log.confirms.length), 1)
+    assert.match(await page.evaluate(() => (window as any).log.confirms[0].description), /2 models/)
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "1. Family A", "2. Model B"])
+    await page.evaluate(() => { (window as any).confirmAnswer = true })
+    await choose(page, "Group 2 actions", "Remove group")
+    await page.waitForFunction(() => document.querySelectorAll('[data-action^="predictions-entry-"]').length === 1)
+    assert.deepEqual(await entryTitles(page), ["1. Model B"])
+    assert.deepEqual(await focused(page), { row: "predictions-group-0", name: "Group 1 actions" }, "focus lands on a control that still exists")
+    // A single-model group is removed without a prompt.
+    const before = await page.evaluate(() => (window as any).log.confirms.length)
+    await choose(page, "Group 1 actions", "Remove group")
+    assert.equal(await page.evaluate(() => (window as any).log.confirms.length), before)
+    await page.getByText("No models configured").waitFor()
+    assert.deepEqual(await focused(page), { row: "predictions-models", name: "Add a model" })
+  } finally { await page.close() }
+})
+
+test("an entry's actions menu reorders within a group and keeps focus on the moved entry; removing the last model removes the setting explicitly", async () => {
   const page = await mount({ fields: { models: [["local/family/a#low", "local/b"]] } })
   try {
     await idle(page)
-    const order = () => page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-entry-"] [data-title]')].map(node => node.textContent))
-    await row(page, "predictions-entry-0-1").getByRole("button", { name: "Move up" }).click()
-    assert.deepEqual(await order(), ["Model B", "Family A"])
-    assert.equal(await page.evaluate(() => document.activeElement?.closest("[data-action]")?.getAttribute("data-action")), "predictions-entry-0-0", "focus follows the moved entry")
-    await row(page, "predictions-entry-0-0").getByRole("button", { name: "Remove" }).click()
-    await row(page, "predictions-entry-0-0").getByRole("button", { name: "Remove" }).click()
-    assert.equal(await page.getByText("No models configured").count(), 1)
+    await choose(page, "Actions for Model B", "Move up")
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "2. Family A"])
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Model B")
+    assert.deepEqual(await focused(page), { row: "predictions-entry-0-0", name: "Actions for Model B" })
+    await choose(page, "Actions for Model B", "Remove")
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Family A")
+    assert.deepEqual(await focused(page), { row: "predictions-entry-0-0", name: "Actions for Family A" }, "focus moves to the entry that took the removed one's place")
+    await choose(page, "Actions for Family A", "Remove")
+    await page.getByText("No models configured").waitFor()
+    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Add a model")
+    assert.deepEqual(await focused(page), { row: "predictions-models", name: "Add a model" })
     await save(page).click()
     await page.waitForFunction(() => (window as any).log.saves.length === 1)
-    const input = await page.evaluate(() => (window as any).log.saves[0].input)
-    assert.deepEqual(input, { revision: "r1", fields: {}, removeModels: true })
+    assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input), { revision: "r1", fields: {}, removeModels: true })
+  } finally { await page.close() }
+})
+
+test("Add group and the per-group Add menu open the model and pattern dialogs and add to the right place", async () => {
+  const page = await mount({ fields: { models: [["local/b"]] } })
+  try {
+    await idle(page)
+    await choose(page, "Add to Group 1", "Pattern… (for example provider/family-*)")
+    const dialog = page.getByRole("dialog", { name: "Add a model pattern" })
+    await dialog.getByLabel("Model pattern").fill("local/family-*")
+    await dialog.getByRole("button", { name: "Add pattern" }).click()
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "2. local/family-*"])
+    await choose(page, "Add group", "Model…")
+    const add = page.getByRole("dialog", { name: "Add a model" })
+    assert.match(await add.textContent() ?? "", /may incur charges/, "the cost note is repeated where a model is added")
+    await add.getByLabel("Search models").fill("family a")
+    await add.getByRole("button", { name: /Family A/ }).click()
+    await add.getByRole("button", { name: "Add model" }).click()
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "2. local/family-*", "1. Family A"])
+    assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"])
+  } finally { await page.close() }
+})
+
+test("zero-match and overlap warnings carry an icon and text beside the entry, not colour alone", async () => {
+  const page = await mount({ fields: { models: [["local/b"], ["local/missing-*"]] } })
+  try {
+    await idle(page)
+    await page.waitForFunction(() => /No current models match/.test(document.querySelector('[data-action="predictions-entry-1-0"]')?.textContent ?? ""))
+    assert.equal(await row(page, "predictions-entry-1-0").locator('[data-icon="outline-hexagonal-warning"]').count(), 1)
+    assert.match((await row(page, "predictions-group-1").textContent())!, /0 models match now/)
   } finally { await page.close() }
 })
 
@@ -293,16 +396,16 @@ test("patterns stay patterns, invalid ones are blocked and zero-match warnings s
   } finally { await page.close() }
 })
 
-test("long Unicode model names stay complete and the cost disclosure sits beside the models", async () => {
+test("long Unicode model names stay complete and the cost disclosure opens the models section", async () => {
   const page = await mount({ fields: { models: [["paid/long"]] } })
   try {
     await idle(page)
     const title = (await row(page, "predictions-entry-0-0").locator("[data-title]").textContent())!
-    assert.match(title, /非常に長いモデル名/)
+    assert.match(title, /^1\. 非常に長いモデル名/)
     assert.match(title, /Ünïcødé$/)
-    const footer = await page.locator('[data-section="Models"] [data-footer]').textContent()
-    assert.match(footer!, /may incur charges/)
-    assert.match(footer!, /does not mean it is free/)
+    const intro = await row(page, "predictions-models").textContent()
+    assert.match(intro!, /may incur charges/)
+    assert.match(intro!, /does not mean it is free/)
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     assert.equal(overflow, true, "long names must not widen the page")
   } finally { await page.close() }

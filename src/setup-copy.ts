@@ -1,7 +1,8 @@
 export const setupText = {
   warning: "Avoid editing this configuration file elsewhere while saving. Changes made in another editor during a save can be overwritten, including unrelated settings. Recovery copies may not contain those changes.",
   github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
-  cost: "Models are tried group by group. Entry order sets initial preference; runtime ranking can reorder candidates within a group. Previewing checks model names only and sends no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
+  order: "Groups run top to bottom. A later group is tried only when every model above it fails or gives no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
+  cost: "Match counts check model names only and send no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
   escalation: "Errors always fall back to the next model automatically. Escalation only controls what happens when a model gives no suggestion.",
   disabled: "Controls stay editable while predictions are off; changes apply when you turn them on.",
 }

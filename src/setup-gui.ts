@@ -7,6 +7,7 @@ import { setupText } from "./setup-copy.ts"
 import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 
 type GUIContext = Parameters<GUIPlugin.Setup>[0]
+type UiMenuEntry = Parameters<GUIContext["ui"]["Menu"]>[0]["items"][number]
 type Target = { serverID: string; label: string; location: { directory: string } }
 type CatalogModel = SetupSnapshot["catalog"][number]
 
@@ -94,13 +95,17 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     previewTimer = setTimeout(() => { if (!disposed) void pinned?.editor.preview() }, 300)
   }
   const setGroups = (value: string[][]) => { current()?.setGroups(value.filter(group => group.length)); schedulePreview() }
-  // Focus follows the moved row: the same action if still enabled, else the opposite one, else the first enabled control.
-  const focusRow = (id: string, ...labels: string[]) => queueMicrotask(() => {
-    const row = document.querySelector(`[data-action="${id}"]`)
-    const buttons = [...(row?.querySelectorAll("button") ?? [])] as HTMLButtonElement[]
-    const usable = (label: string) => buttons.find(button => button.textContent?.trim() === label && !button.disabled)
-    ;(labels.map(usable).find(Boolean) ?? buttons.find(button => !button.disabled))?.focus()
-  })
+  // Focus follows the moved row: the first named control that still exists and is enabled, else the first enabled control in the row.
+  // A host menu returns focus to its trigger when it closes, so the move is asserted once more after that.
+  const focusControl = (id: string, ...names: string[]) => {
+    const find = () => {
+      const controls = [...(document.querySelector(`[data-action="${id}"]`)?.querySelectorAll("button") ?? [])] as HTMLButtonElement[]
+      const named = (name: string) => controls.find(control => !control.disabled && (control.getAttribute("aria-label") === name || control.textContent?.trim() === name))
+      return names.map(named).find(Boolean) ?? controls.find(control => !control.disabled)
+    }
+    queueMicrotask(() => find()?.focus())
+    setTimeout(() => { const active = document.activeElement; if (!active || active === document.body || active.getAttribute("aria-haspopup") === "menu") find()?.focus() }, 60)
+  }
   const issuesFor = (group: number, entry?: number) => (state()?.issues ?? []).filter(issue => issue.field === "models" && issue.group === group && (entry === undefined ? issue.entry === undefined : issue.entry === entry))
   const modelName = (selector: string) => {
     const [base] = selector.split("#")
@@ -140,7 +145,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
       setGroups(next); dialog.close()
     }
     return createComponent(ui.Dialog, {
-      title: "Add a model", description: "Search by provider or model name. Choosing a model does not change your session model.", size: "large",
+      title: "Add a model", description: "Search by provider or model name. Choosing a model does not change your session model. " + setupText.cost, size: "large",
       get children() {
         return stack(
           createComponent(ui.TextInput, { get value() { return query() }, onInput: setQuery, label: "Search models", type: "search", autofocus: true }),
@@ -169,44 +174,109 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   })
 
   const swap = <T,>(items: T[], from: number, to: number) => { const copy = [...items]; [copy[from], copy[to]] = [copy[to], copy[from]]; return copy }
-  const groupRows = () => createComponent(Index as any, {
+  const display = (selector: string) => modelName(selector) ?? selector
+  // A warning is an icon plus text, never colour alone.
+  const warnings = (read: () => string[]) => {
+    const element = document.createElement("div")
+    element.style.cssText = "display:flex;flex-direction:column;gap:4px;overflow-wrap:anywhere"
+    createRenderEffect(() => {
+      element.replaceChildren(...read().map(message => {
+        const line = document.createElement("div")
+        line.style.cssText = "display:flex;gap:6px;align-items:flex-start"
+        line.append(createComponent(ui.Icon, { name: "outline-hexagonal-warning", size: "small" }) as Node, Object.assign(document.createElement("span"), { textContent: message }))
+        return line
+      }))
+    })
+    return element
+  }
+  const groupTitle = (index: number) => `Group ${index + 1} — ${index === 0 ? "Tried first" : `If Group ${index} fails`}`
+  const addMenu = (label: string, destination: () => number | "new", icon: "plus" = "plus", trigger: "button" | "icon" = "button") =>
+    createComponent(ui.Menu, {
+      label, icon, trigger, placement: "bottom-end", get disabled() { return locked() },
+      items: [
+        { label: "Model…", icon: "models", onSelect: () => addDialog(destination()) },
+        { label: "Pattern… (for example provider/family-*)", icon: "code", onSelect: () => patternDialog(destination()) },
+      ],
+    })
+  const afterRemoval = (index: number, remaining: string[][]) => {
+    if (remaining.length === 0) focusControl("predictions-models", "Add a model")
+    else { const target = remaining[index] ? index : Math.max(0, index - 1); focusControl(`predictions-group-${target}`, `Group ${target + 1} actions`) }
+  }
+  const removeGroup = async (index: number) => {
+    const group = groups()[index]
+    if (!group) return
+    if (group.length > 1 && !await ctx.dialogs.confirm({ title: `Remove Group ${index + 1}?`, description: `This removes ${group.length} models from the draft. Nothing changes until you save.`, confirm: "Remove group", danger: true })) return
+    const next = groups().filter((_, position) => position !== index)
+    setGroups(next)
+    afterRemoval(index, next)
+  }
+  const groupSections = () => createComponent(Index as any, {
     get each() { return groups() },
-    children: (group: () => string[], index: number) => [
-      createComponent(ui.SettingsRow, {
-        id: `predictions-group-${index}`,
-        get title() { return text(() => `Group ${index + 1} — ${index === 0 ? "Try first" : "Fallback"}`) },
-        // The actions sit under the description so the group title keeps the full row width.
-        get description() {
-          return column(
-            note(() => {
-              const count = state()?.preview?.groups[index]?.candidates.length
-              return [count === undefined ? "Preview to see matching models." : `${count} ${count === 1 ? "model matches" : "models match"} now.`, ...issuesFor(index).map(issue => issue.message)].join(" ")
+    children: (group: () => string[], index: number) => createComponent(ui.SettingsSection, {
+      title: groupTitle(index),
+      get children() {
+        return [
+          createComponent(ui.SettingsRow, {
+            id: `predictions-group-${index}`,
+            get title() {
+              return text(() => {
+                const count = state()?.preview?.groups[index]?.candidates.length
+                return count === undefined ? (state()?.previewError ? "Match count unavailable" : "Counting matches…") : `${count} ${count === 1 ? "model matches" : "models match"} now`
+              })
+            },
+            get description() { return warnings(() => issuesFor(index).map(issue => issue.message)) },
+            get children() {
+              return box(
+                addMenu(`Add to Group ${index + 1}`, () => index),
+                createComponent(ui.Menu, {
+                  label: `Group ${index + 1} actions`, trigger: "icon", icon: "outline-dots", placement: "bottom-end", get disabled() { return locked() },
+                  get items() {
+                    return [
+                      { label: "Move group up", disabled: index === 0, onSelect: () => { setGroups(swap(groups(), index, index - 1)); focusControl(`predictions-group-${index - 1}`, `Group ${index} actions`) } },
+                      { label: "Move group down", disabled: index === groups().length - 1, onSelect: () => { setGroups(swap(groups(), index, index + 1)); focusControl(`predictions-group-${index + 1}`, `Group ${index + 2} actions`) } },
+                      { type: "separator" as const },
+                      { label: "Remove group", icon: "outline-trash" as const, onSelect: () => void removeGroup(index) },
+                    ] as UiMenuEntry[]
+                  },
+                }))
+            },
+          }),
+          createComponent(Index as any, {
+            get each() { return group() },
+            children: (selector: () => string, entry: number) => createComponent(ui.SettingsRow, {
+              id: `predictions-entry-${index}-${entry}`,
+              get title() { return text(() => `${entry + 1}. ${display(selector())}`) },
+              get description() {
+                return column(note(() => modelName(selector()) ? selector() : undefined), warnings(() => issuesFor(index, entry).map(issue => issue.message)))
+              },
+              get children() {
+                const move = (to: number) => () => {
+                  const next = groups().map(items => [...items]); next[index] = swap(next[index], entry, to); setGroups(next)
+                  focusControl(`predictions-entry-${index}-${to}`, `Actions for ${display(next[index][to])}`)
+                }
+                return createComponent(ui.Menu, {
+                  get label() { return `Actions for ${display(selector())}` }, trigger: "icon", icon: "outline-dots", placement: "bottom-end", get disabled() { return locked() },
+                  get items() {
+                    return [
+                      { label: "Move up", disabled: entry === 0, onSelect: move(entry - 1) },
+                      { label: "Move down", disabled: entry === group().length - 1, onSelect: move(entry + 1) },
+                      { type: "separator" as const },
+                      { label: "Remove", icon: "outline-trash" as const, onSelect: () => {
+                        const next = groups().map(items => [...items]); next[index].splice(entry, 1)
+                        const kept = next.filter(items => items.length)
+                        setGroups(kept)
+                        if (next[index].length) focusControl(`predictions-entry-${index}-${Math.min(entry, next[index].length - 1)}`, `Actions for ${display(next[index][Math.min(entry, next[index].length - 1)])}`)
+                        else afterRemoval(index, kept)
+                      } },
+                    ] as UiMenuEntry[]
+                  },
+                })
+              },
             }),
-            actions(
-              button(() => "Add model", () => addDialog(index), { disabled: locked }), button(() => "Add pattern", () => patternDialog(index), { disabled: locked }),
-              button(() => "Move group up", () => { setGroups(swap(groups(), index, index - 1)); focusRow(`predictions-group-${index - 1}`, "Move group up", "Move group down") }, { disabled: () => locked() || index === 0 }),
-              button(() => "Move group down", () => { setGroups(swap(groups(), index, index + 1)); focusRow(`predictions-group-${index + 1}`, "Move group down", "Move group up") }, { disabled: () => locked() || index === groups().length - 1 }),
-              button(() => "Remove group", () => { setGroups(groups().filter((_, position) => position !== index)); focusRow(`predictions-group-${Math.max(0, index - 1)}`, "Add model") }, { variant: "danger", disabled: locked })))
-        },
-      }),
-      createComponent(Index as any, {
-        get each() { return group() },
-        children: (selector: () => string, entry: number) => createComponent(ui.SettingsRow, {
-          id: `predictions-entry-${index}-${entry}`,
-          get title() { return text(() => modelName(selector()) ?? selector()) },
-          get description() {
-            return note(() => [modelName(selector()) ? selector() : undefined, ...issuesFor(index, entry).map(issue => issue.message)].filter(Boolean).join(" — ") || undefined)
-          },
-          get children() {
-            const move = (to: number, label: string, other: string) => () => { const next = groups().map(items => [...items]); next[index] = swap(next[index], entry, to); setGroups(next); focusRow(`predictions-entry-${index}-${to}`, label, other) }
-            return box(
-              button(() => "Move up", move(entry - 1, "Move up", "Move down"), { variant: "ghost", disabled: () => locked() || entry === 0 }),
-              button(() => "Move down", move(entry + 1, "Move down", "Move up"), { variant: "ghost", disabled: () => locked() || entry === group().length - 1 }),
-              button(() => "Remove", () => { const next = groups().map(items => [...items]); next[index].splice(entry, 1); setGroups(next); focusRow(`predictions-entry-${index}-${Math.max(0, entry - 1)}`, "Remove") }, { variant: "danger", disabled: locked }))
-          },
-        }),
-      }),
-    ],
+          }),
+        ]
+      },
+    }),
   })
 
   const saveMessage = () => {
@@ -265,21 +335,26 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
           }),
           createComponent(ui.SettingsSection, {
             title: "Models",
-            get footer() { return column(note(() => setupText.cost), when(() => !!state()?.previewError, () => note(() => state()?.previewError, "status"))) },
             get children() {
-              return [
-                when(() => groups().length === 0, () => createComponent(ui.SettingsRow, {
-                  id: "predictions-models", title: "No models configured", description: "Add a model or a model pattern to start predicting.",
+              const explanation = () => column(note(() => setupText.order), note(() => setupText.cost), when(() => !!state()?.previewError, () => note(() => state()?.previewError, "status")))
+              return when(() => groups().length === 0,
+                () => createComponent(ui.SettingsRow, {
+                  id: "predictions-models", title: "No models configured",
+                  get description() { return column(note(() => "Add a model or a model pattern to start predicting."), explanation()) },
                   get children() { return box(button(() => "Add a model", () => addDialog("new"), { variant: "contrast", disabled: locked }), button(() => "Add model pattern", () => patternDialog("new"), { disabled: locked })) },
-                })),
-                groupRows(),
-                when(() => groups().length > 0, () => createComponent(ui.SettingsRow, {
-                  id: "predictions-models", title: "Fallback groups", description: "Later groups are tried when earlier ones fail.",
-                  get children() { return box(button(() => "Add fallback group", () => addDialog("new"), { disabled: locked }), button(() => "Add fallback pattern", () => patternDialog("new"), { disabled: locked }), button(() => (state()?.previewing ? "Checking…" : "Preview matches"), () => void pinned?.editor.preview(), { disabled: () => locked() || !!state()?.previewing })) },
-                })),
-              ]
+                }),
+                () => createComponent(ui.SettingsRow, {
+                  id: "predictions-models", title: "Fallback order",
+                  get description() { return explanation() },
+                  get children() {
+                    return box(
+                      addMenu("Add group", () => "new"),
+                      createComponent(ui.Tooltip, { value: "Refresh matches", get children() { return createComponent(ui.IconButton, { icon: "refresh", label: "Refresh matches", size: "small", variant: "ghost-muted", get busy() { return !!state()?.previewing }, get disabled() { return locked() }, onClick: () => void pinned?.editor.preview() }) } }))
+                  },
+                }))
             },
           }),
+          groupSections(),
           createComponent(ui.SettingsSection, {
             title: "Advanced",
             get children() {
@@ -314,7 +389,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   })
 
   ctx.add(SettingsPage, {
-    id: "predictions", title: "Predictions", icon: "sliders", entries: [{ id: "predictions", title: "Predictions Setup", description: "Configure prediction models and behavior", keywords: "predictions setup settings" }, ...setupEntries],
+    id: "predictions", title: "Predictions", icon: "prompt", entries: [{ id: "predictions", title: "Predictions Setup", description: "Configure prediction models and behavior", keywords: "predictions setup settings" }, ...setupEntries],
     render: input => {
       if (input.target?.startsWith("predictions-advanced")) setAdvanced(true)
       // Re-run when the host's server or location becomes available later.

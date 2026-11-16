@@ -120,7 +120,7 @@ test("setup page renders in real Desktop with ordered sections, a working comman
     await page.evaluate(() => (window as any).__predictionFixture.openSetup())
     const heading = page.getByRole("heading", { name: "Predictions", exact: true })
     await heading.first().waitFor({ state: "visible", timeout: 15000 })
-    await page.getByText("Group 1 — Try first").waitFor({ state: "visible", timeout: 15000 })
+    await page.getByText("Group 1 — Tried first").waitFor({ state: "visible", timeout: 15000 })
     // The main bridge may still be starting on first paint; the page must become editable on its own.
     await page.waitForFunction(() => !document.body.innerText.includes("Read-only"), undefined, { timeout: 10000 })
     await page.getByRole("button", { name: "Save changes" }).waitFor({ state: "visible" })
@@ -139,6 +139,8 @@ test("setup page renders in real Desktop with ordered sections, a working comman
     assert.deepEqual([...positions].sort((a, b) => a - b), positions, JSON.stringify(positions) + "Behavior, Models, Advanced render top to bottom")
     assert.equal(await page.getByRole("button", { name: "Show advanced settings" }).count(), 1)
     assert.equal(await page.getByText("Include GitHub PR context").count(), 0, "collapsed Advanced hides the GitHub row")
+    // Match counts come from the metadata-only preview; capture the settled page, not the "Counting matches…" placeholder.
+    await page.getByText(/models? match(es)? now/).first().waitFor({ state: "visible", timeout: 15000 })
     for (const [width, height] of [[1280, 900], [520, 900]]) {
       await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(size[0], size[1]), [width, height])
       await page.waitForTimeout(300)

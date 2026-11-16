@@ -1088,7 +1088,7 @@ function resolve2(fields, catalog) {
         if (available.length < possible.length) add("disabled_model", "Some matching models are currently disabled.");
       }
       const previous = [...new Set(available.flatMap((model) => owners.has(key(model)) ? [owners.get(key(model))] : []))].sort((a, b) => a - b);
-      if (previous.length) add("overlap", `Matches already belong to ${previous.length === 1 ? "Group" : "Groups"} ${previous.map((index) => index + 1).join(", ")}.`);
+      if (previous.length) add("overlap", `Models matched here are already tried in ${previous.length === 1 ? "Group" : "Groups"} ${previous.map((index) => index + 1).join(", ")}, so they are not repeated.`);
     }
     for (const model of candidates[group]) owners.set(key(model), group);
   }
