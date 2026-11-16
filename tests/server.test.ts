@@ -20,6 +20,27 @@ function fixture() {
   return { api, calls, advance: () => { completion++ } }
 }
 
+test("service disposal aborts owned generation and refuses old offers or late results", async () => {
+  const f = escalationFixture()
+  const first = await f.run()
+  let generationSignal: AbortSignal | undefined, notices = 0
+  let start!: () => void, finish!: (value: string) => void
+  const started = new Promise<void>(resolve => { start = resolve })
+  const output = new Promise<string>(resolve => { finish = resolve })
+  f.api.generate = async (_model, _prompt, signal) => { generationSignal = signal; start(); return output }
+  f.api.notice = () => { notices++ }
+  const pending = f.run({ manual: true, escalation: first.escalation!.token })
+  await started
+  f.service.dispose()
+  assert.equal(generationSignal?.aborted, true)
+  assert.deepEqual(await pending, { reason: "cancelled" })
+  finish('{"prompt":"Late result"}')
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(notices, 0)
+  assert.deepEqual(await f.run({ manual: true, escalation: first.escalation!.token }), { reason: "cancelled" })
+  assert.deepEqual(f.attempted, ["a"])
+})
+
 function escalationFixture(escalation = "manual") {
   const { api, advance } = fixture()
   const attempted: string[] = []

@@ -12,7 +12,7 @@
 
 **Approved amendment:** `docs/superpowers/specs/2026-11-15-predictions-setup-local-save-design.md`
 
-> **Current resume point: Task 4.** Tasks 1–3 are committed and complete in the execution ledger. Native-origin qualification and the subsequently authorized production guard/enforcement slice are verified. The user requested a separate guard checkpoint commit; earlier lifecycle/editor work remains uncommitted. Private transport, production setup adapters, and actual Save qualification remain pending. Save stays disabled. Preserve the selected native execution method and do not repeat completed tasks.
+> **Current resume point: Task 4.** Tasks 1–3 and the guard checkpoint (`83e3de2`) are committed. Private transport, initial production adapters, and server authority lifecycle exist but remain uncommitted and incompletely qualified. After explicit user approval, Desktop's bundled 2.3.0 server passed isolated persistence and native main-IPC Save/readback qualification. The macOS writer now accepts exact versions 2.2.6 and 2.3.0; CLI standalone origin remains restricted to 2.2.6. The RPC startup race is fixed with bounded metadata-only waiting. Full Task 4 native lifecycle, GitHub-setting, boundary, and installed gates remain open.
 
 ## Global Constraints
 
@@ -230,6 +230,8 @@
 
 - [ ] **Step 2: Add RED tests for local transport, native adapters, and remaining Save lifecycle behavior.**
   Guard-only slice implemented in `src/setup-origin.ts` with 15 denial, pinning, revocation, cancellation, and deadline tests in `tests/setup-origin.test.ts`. Actual native observers execute these production guards and assert positive dispatches and zero denied dispatches, including after private-child failure. Network settings are read-only, and both write/proof methods are absent. Fresh checks passed 292/292 project and 17/17 sequential host tests, typecheck, bundle, and whitespace. These are pre-transport dispatch counts, not socket/Save tests; the rest of this step remains open.
+  Subsequent transport/adapter checkpoint: 11 transport and 11 adapter/window tests pass within a 314/314 project run. Typecheck and bundle pass. The 19-test native run passes 18 and fails the Desktop Save version precondition (`2.3.0 !== 2.2.6`). Actual server-owned JSONC Save, watcher activation, old-authority refusal, and stale-revision conflict pass on CLI/server 2.2.6. Full native adapter/lifecycle and GitHub-setting gates remain open; this is not Task 4 completion.
+  Authorized 2.3.0 qualification supersedes that version blocker: isolated candidate production-store, bundled-server persistence/activation, and native Desktop Save/readback gates passed before changing the working-tree allowlist. Fresh checks pass 318/318 project, 26/26 store safeguards at 2.3.0, 17/17 bundled-server persistence/activation, and 19/19 sequential native tests, no skips. Initial `saved_not_active` remains valid; the native gate independently requires watcher activation and a new service version.
   Name the native-boundary regressions `Desktop main denies non-sameMachine setup before socket access`, `CLI setup denies unqualified launch origins before socket access`, and `relayed local metadata cannot authorize a selected remote server`. Their observable assertions include:
   ```ts
   assert.equal(remoteSnapshot.writable, false)

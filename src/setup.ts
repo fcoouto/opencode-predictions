@@ -1,13 +1,158 @@
 import { parseOptions, type Options } from "./options.ts"
 import type { Candidate, CatalogModel } from "./models.ts"
+import { abortable } from "./service.ts"
 
 export const settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] as const
 export type SettingKey = typeof settingKeys[number]
 export type SettingsInput = Partial<Record<SettingKey, unknown>>
 export type ConfigSnapshot = { revision: string; source?: string; scope: "global"; writable: boolean; reason?: string; fields: SettingsInput }
+export type SetupLocation = { directory: string; workspaceID?: string }
 export type SetupIssue = { field: SettingKey; group?: number; entry?: number; severity: "error" | "warning"; code: string; message: string }
-export type SetupSnapshot = ConfigSnapshot & { effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string }
+export type SetupSnapshot = ConfigSnapshot & { effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string; localAuthority?: { id: string } }
 export type SetupPreview = { groups: { selectors: string[]; candidates: Candidate[] }[]; issues: SetupIssue[] }
+export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true }
+export type SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }
+export type SetupAPI = {
+  read(signal: AbortSignal): Promise<SetupSnapshot>
+  preview(fields: SettingsInput, signal: AbortSignal): Promise<SetupPreview>
+  save(input: SaveInput, signal: AbortSignal): Promise<SaveResult>
+  dispose?(): void
+}
+export type SetupState = { snapshot?: SetupSnapshot; fields: SettingsInput; groups?: string[][]; issues: SetupIssue[]; preview?: SetupPreview; dirty: boolean; loading: boolean; previewing: boolean; saving: boolean; lastSave?: SaveResult; error?: string }
+export type SetupEditor = ReturnType<typeof createSetupEditor>
+
+export async function waitForSetupSnapshot(read: SetupAPI["read"], signal: AbortSignal): Promise<SetupSnapshot> {
+  const waiting = AbortSignal.any([signal, AbortSignal.timeout(2000)])
+  for (;;) {
+    try { return await abortable(() => read(waiting), waiting) }
+    catch (error) {
+      waiting.throwIfAborted()
+      if (!error || typeof error !== "object" || !("type" in error) || error.type !== "rpc.unavailable") throw error
+      await abortable(() => new Promise<void>(resolve => setTimeout(resolve, 100)), waiting)
+    }
+  }
+}
+
+export function validateSettings(fields: SettingsInput): SetupIssue[] {
+  if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.")
+  if (Object.keys(fields).some(key => !(settingKeys as readonly string[]).includes(key))) throw new Error("Unknown setting.")
+  for (const field of ["timeoutMs", "contextTurns"] as const) {
+    if (fields[field] === null) return [{ field, severity: "error", code: "invalid_value", message: "Enter a whole number." }]
+  }
+  const parsed = parseOptions(fields)
+  return parsed.ok ? [] : [{ field: settingKeys.find(key => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }]
+}
+
+export function createSetupEditor(api: SetupAPI, changed: () => void) {
+  const state: SetupState = { fields: {}, issues: [], dirty: false, loading: false, previewing: false, saving: false }
+  const lifetime = new AbortController()
+  let generation = 0, previewAbort: AbortController | undefined, blocked = false
+  const notify = () => { if (!lifetime.signal.aborted) changed() }
+  const resetPreview = () => { generation++; previewAbort?.abort(); state.preview = undefined; state.previewing = false }
+  const groups = () => { try { state.groups = readGroups(state.fields) } catch { state.groups = undefined } }
+  const update = () => {
+    state.issues = validateSettings(state.fields)
+    state.dirty = !!state.snapshot && Object.keys(changedFields(state.snapshot.fields, state.fields)).length > 0
+    groups(); notify()
+  }
+  const adopt = (snapshot: SetupSnapshot) => {
+    state.snapshot = structuredClone(snapshot); state.fields = structuredClone(snapshot.fields)
+    state.issues = [...snapshot.issues]; state.dirty = false; groups()
+  }
+  const readback = async () => {
+    const signal = AbortSignal.any([lifetime.signal, AbortSignal.timeout(3000)])
+    for (;;) {
+      try { return await abortable(() => api.read(signal), signal) }
+      catch {
+        signal.throwIfAborted()
+        await abortable(() => new Promise<void>(resolve => setTimeout(resolve, 100)), signal)
+      }
+    }
+  }
+  return {
+    state: (): Readonly<SetupState> => state,
+    async load() {
+      if (lifetime.signal.aborted || state.saving) return
+      resetPreview()
+      const revision = generation
+      state.loading = true; state.error = undefined; notify()
+      try {
+        const snapshot = await abortable(() => api.read(lifetime.signal), lifetime.signal)
+        if (revision !== generation || lifetime.signal.aborted) return
+        adopt(snapshot); blocked = false; state.lastSave = undefined
+      } catch { if (revision === generation && !lifetime.signal.aborted) state.error = "Settings are unavailable. Reopen settings to try again." }
+      finally { if (revision === generation) { state.loading = false; notify() } }
+    },
+    change(fields: SettingsInput) {
+      if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot) return
+      validateSettings(fields)
+      resetPreview(); state.fields = { ...state.fields, ...structuredClone(fields) }; state.lastSave = undefined; update()
+    },
+    setGroups(value: string[][] | undefined) { this.change(patchGroups(value)) },
+    async preview() {
+      if (lifetime.signal.aborted || state.saving || !state.snapshot) return
+      resetPreview()
+      const revision = generation
+      const abort = new AbortController()
+      previewAbort = abort
+      const signal = AbortSignal.any([abort.signal, lifetime.signal])
+      state.previewing = true; state.error = undefined; notify()
+      try {
+        const result = await abortable(() => api.preview(structuredClone(state.fields), signal), signal)
+        if (revision !== generation || signal.aborted) return
+        state.preview = result; state.issues = result.issues
+      } catch { if (revision === generation && !signal.aborted) state.error = "Model preview is unavailable." }
+      finally { if (revision === generation) { state.previewing = false; notify() } }
+    },
+    async save(): Promise<SaveResult> {
+      const failed = (message: string): SaveResult => ({ kind: "failed", message })
+      if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot) return failed("Settings are unavailable.")
+      if (blocked) return state.lastSave ?? failed("Reload settings before trying again.")
+      const issues = validateSettings(state.fields)
+      if (issues.length) { state.issues = issues; notify(); return { kind: "invalid", issues } }
+      if (!state.dirty) return failed("No changes to save.")
+      if (!state.snapshot.writable) return { kind: "read_only", message: state.snapshot.reason ?? "This configuration is read-only." }
+      resetPreview()
+      const before = state.snapshot
+      const expected = structuredClone(state.fields)
+      const patch = changedFields(before.fields, expected)
+      const removeModels = Object.hasOwn(patch, "models") && patch.models === undefined
+      if (removeModels) delete patch.models
+      state.saving = true; state.error = undefined; notify()
+      let result: SaveResult | undefined
+      try {
+        try {
+          result = await abortable(() => api.save({ revision: before.revision, fields: patch, ...(removeModels ? { removeModels: true } : {}) }, lifetime.signal), lifetime.signal)
+        } catch { /* A lost reply is not proof that the write failed. Read back; never repeat it. */ }
+        if (lifetime.signal.aborted) return failed("Settings editor closed.")
+        if (!result || result.kind === "saved" || result.kind === "saved_not_active" || result.kind === "failed") {
+          try {
+            const fresh = await readback()
+            lifetime.signal.throwIfAborted()
+            const fieldsMatch = settingKeys.every(key => JSON.stringify(fresh.fields[key]) === JSON.stringify(expected[key]))
+            if (fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch) {
+              const parsed = parseOptions(expected)
+              const active = parsed.ok && !!fresh.effective && settingKeys.every(key => JSON.stringify(fresh.effective![key]) === JSON.stringify(parsed.value[key])) && fresh.serviceVersion !== before.serviceVersion
+              result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion }
+                : { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." }
+              adopt(fresh)
+            }
+          } catch { /* Retain the draft and any durable acknowledgement when readback is unavailable. */ }
+        }
+        if (lifetime.signal.aborted) return failed("Settings editor closed.")
+        result ??= failed("Changes may have been saved. Reopen settings before trying again.")
+        if (result.kind === "saved" || result.kind === "saved_not_active") {
+          if (state.dirty) { state.snapshot = { ...before, fields: expected, revision: result.revision }; state.dirty = false }
+        } else if (result.kind !== "invalid") blocked = true
+        state.lastSave = result
+        if (result.kind === "invalid") state.issues = result.issues
+        return result
+      } finally { if (!lifetime.signal.aborted) { state.saving = false; notify() } }
+    },
+    discard() { if (!lifetime.signal.aborted && !state.saving && state.snapshot) { resetPreview(); adopt(state.snapshot); notify() } },
+    dispose() { lifetime.abort(); previewAbort?.abort(); generation++; api.dispose?.() },
+  }
+}
 
 export function readGroups(fields: SettingsInput): string[][] | undefined {
   if (fields.models === undefined) return undefined

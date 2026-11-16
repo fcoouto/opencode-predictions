@@ -7,6 +7,45 @@ import type { ConfigSnapshot, SettingsInput } from "../src/setup.ts"
 import { Predictions } from "../src/rpc.ts"
 import { createService, type ServiceAPI } from "../src/service.ts"
 
+test("save validates full prospective fields before writing and rejects stale revisions", async () => {
+  const f = fixture({ models: "broken" })
+  assert.equal((await f.service.save({ revision: "r1", fields: { debug: true } }, signal())).kind, "invalid")
+  assert.deepEqual(f.counts(), { metadataCalls: 0, writes: 0 })
+  f.snapshot.fields = { automatic: false }
+  assert.equal((await f.service.save({ revision: "old", fields: { debug: true } }, signal())).kind, "conflict")
+  assert.equal((await f.service.save({ revision: "r1", fields: { timeoutMs: null } }, signal())).kind, "invalid")
+  await assert.rejects(f.service.save({ revision: "r1", fields: {}, source: "/client/config" } as any, signal()), /Unknown/)
+  assert.equal(f.counts().writes, 0)
+})
+
+test("save writes changed fields only and distinguishes durable bytes from effective activation", async () => {
+  const f = fixture()
+  let patch: SettingsInput | undefined
+  f.store.write = async (revision, fields) => {
+    assert.equal(revision, "r1")
+    patch = fields
+    f.snapshot.fields = { ...f.snapshot.fields, ...fields }
+    f.snapshot.revision = "r2"
+    return { kind: "written", revision: "r2" }
+  }
+  const result = await f.service.save({ revision: "r1", fields: { automatic: false, debug: true } }, signal())
+  assert.deepEqual(patch, { debug: true })
+  assert.equal(result.kind, "saved_not_active")
+  assert.equal(f.counts().metadataCalls, 0)
+})
+
+test("save unchanged settings avoids replacement and explicit removal does not invent model defaults", async () => {
+  const f = fixture()
+  assert.equal((await f.service.save({ revision: "r1", fields: { automatic: false } }, signal())).kind, "saved")
+  assert.equal(f.counts().writes, 0)
+  f.store.write = async (_revision, fields) => {
+    assert.deepEqual(fields, { models: undefined })
+    f.snapshot.fields = { automatic: false }; f.snapshot.revision = "r2"
+    return { kind: "written", revision: "r2" }
+  }
+  assert.equal((await f.service.save({ revision: "r1", fields: {}, removeModels: true }, signal())).kind, "saved_not_active")
+})
+
 const catalog = [
   { providerID: "local", id: "family/a", name: "模型 A", enabled: true, variants: [{ id: "low", private: "PRIVATE_VARIANT" }], private: "PRIVATE_CATALOG" },
   { providerID: "local", id: "family/b", name: "Disabled", enabled: false, variants: [], private: "PRIVATE_CATALOG" },

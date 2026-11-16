@@ -3,7 +3,9 @@ import { createController, type Activity, type Communication } from "./controlle
 import { log } from "./log.ts"
 import { statusNotice, reasonNotice, formatStatus, feedbackRevision, type Notice, type StatusView } from "./feedback.ts"
 export type ClientState = { key: string; sessionID: string; completion: number; eligible: boolean; draft: string; automaticEligible?: boolean }
+export type ClientMemory = { mounted: boolean; suppressed: string[]; current?: string }
 export type ClientHost = {
+  memory?: readonly [ClientMemory, (mutation: (draft: ClientMemory) => void) => void]
   scope(): string | undefined
   state(): ClientState | undefined
   status(signal: AbortSignal): Promise<Status>
@@ -19,6 +21,22 @@ export type ClientHost = {
 }
 type Health = { health?: Notice; requestFailure?: Notice; lastNotice?: Notice; announced?: string }
 export function startClient(host: ClientHost) {
+  const suppressed = new Set(host.memory?.[0].suppressed)
+  const versions = new Map<string, string>()
+  let lastCompletion: string | undefined
+  if (host.memory?.[0].mounted && host.memory[0].current) suppressed.add(host.memory[0].current)
+  host.memory?.[1](draft => { draft.mounted = true; draft.suppressed = [...suppressed] })
+  const completionKey = () => {
+    const location = host.scope(), state = host.state()
+    return location && state ? JSON.stringify([location, state.key]) : undefined
+  }
+  const suppress = () => {
+    const key = completionKey() ?? lastCompletion
+    if (!key) return
+    suppressed.add(key)
+    if (suppressed.size > 128) suppressed.delete(suppressed.values().next().value!)
+    host.memory?.[1](draft => { draft.suppressed = [...suppressed] })
+  }
   const locations = new Map<string, Health>()
   let scope: string | undefined
   let current: ClientState | undefined
@@ -61,6 +79,7 @@ export function startClient(host: ClientHost) {
   const sync = () => {
     const next = host.scope()
     if (next !== scope) {
+      lastCompletion = undefined
       loading?.abort.abort(); loading = undefined; cache = undefined; checked = -Infinity; epoch++; manual = undefined
       host.clearNotice?.(); controller.update({ eligible: false, draft: "" })
       scope = next
@@ -70,6 +89,10 @@ export function startClient(host: ClientHost) {
       }
     }
     current = host.state()
+    if (current) {
+      lastCompletion = completionKey()
+      if (host.memory && host.memory[0].current !== lastCompletion) host.memory[1](draft => { draft.current = lastCompletion })
+    }
     if (manual && ((manual.key && manual.key !== current?.key) || manual.draft !== (current?.draft ?? "") || manual.epoch !== epoch)) manual = undefined
   }
   const controller = createController({
@@ -167,6 +190,10 @@ export function startClient(host: ClientHost) {
       try {
         const value = await abortable(() => host.status(signal), signal)
         if (live()) {
+          if (versions.has(location) && versions.get(location) !== value.version) {
+            suppress(); manual = undefined; controller.invalidate()
+          }
+          versions.set(location, value.version)
           cache = value; checked = Date.now()
           const recoveredModels = record().requestFailure === inspectedFailure && !!value.candidates?.some(model => model.state === "ready")
           health(statusNotice(value), recoveredModels)
@@ -203,7 +230,7 @@ export function startClient(host: ClientHost) {
       requestingManual = true
       void controller.request(true, action.escalation ?? null, !!cache?.escalation && cache.escalation !== "off")
       requestingManual = false
-    } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request()
+    } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic && !suppressed.has(completionKey()!)) void controller.request()
   }
   const request = (fromShortcut = false) => {
     if (disposed) return
@@ -236,7 +263,14 @@ export function startClient(host: ClientHost) {
       const value = scope ? record() : undefined
       await host.openStatus(formatStatus(cache, { currentNotice: activeNotice() ?? (!scope ? reasonNotice("location_unavailable") : undefined), lastNotice: value?.lastNotice, suggestion: controller.preview(), diagnostics: host.diagnostics?.() }))
     },
-    invalidate() { if (disposed) return; epoch++; manual = undefined; loading?.abort.abort(); loading = undefined; cache = undefined; checked = -Infinity; controller.update({ eligible: false, draft: "" }); tick() },
-    dispose() { disposed = true; clearInterval(interval); loading?.abort.abort(); controller.dispose(); host.clearNotice?.() },
+    invalidate(options?: { suppressAutomatic?: boolean }) {
+      if (disposed) return
+      if (options?.suppressAutomatic) suppress()
+      epoch++; manual = undefined; loading?.abort.abort(); loading = undefined; cache = undefined; checked = -Infinity
+      if (options?.suppressAutomatic) controller.invalidate()
+      else controller.update({ eligible: false, draft: "" })
+      tick()
+    },
+    dispose() { suppress(); disposed = true; clearInterval(interval); loading?.abort.abort(); controller.dispose(); host.clearNotice?.() },
   }
 }

@@ -29,6 +29,7 @@ export default Plugin.define({
     const session = () => { const route = ctx.ui.router.current(); return route.type === "session" ? ctx.data.session.get(route.sessionID) : undefined }
     const location = () => session()?.location ?? ctx.location ?? ctx.data.location.default()
     const client = startClient({
+      memory: ctx.storage?.memory("prediction-lifecycle", { initial: { mounted: false, suppressed: [] as string[] } }),
       scope: () => { const value = location(); return value ? JSON.stringify(value) : undefined },
       state: () => {
         const value = session()
@@ -62,8 +63,8 @@ export default Plugin.define({
       { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() },
     ] }))
-    const stopConfig = ctx.data.on("config.updated", () => client.invalidate())
-    const stopPlugin = ctx.data.on("plugin.updated", () => client.invalidate())
+    const stopConfig = ctx.data.on("config.updated", () => client.invalidate({ suppressAutomatic: true }))
+    const stopPlugin = ctx.data.on("plugin.updated", () => client.invalidate({ suppressAutomatic: true }))
     return () => { stopConfig(); stopPlugin(); client.dispose(); adapter.dispose() }
   },
 })

@@ -56,7 +56,7 @@ export function createConfigStore(host: ConfigHost) {
   const directory = resolve(host.env.XDG_CONFIG_HOME ?? join(host.home, ".config"), "opencode")
   async function inspect(signal: AbortSignal) {
     signal.throwIfAborted()
-    if (process.platform !== "darwin" || host.version !== "2.2.6") throw new Error(readOnly)
+    if (process.platform !== "darwin" || !["2.2.6", "2.3.0"].includes(host.version)) throw new Error(readOnly)
     if (host.env.XDG_CONFIG_HOME !== undefined && !isAbsolute(host.env.XDG_CONFIG_HOME)) throw new Error(readOnly)
     if (host.env.OPENCODE_CONFIG || host.env.OPENCODE_CONFIG_CONTENT || host.env.OPENCODE_CONFIG_DIR || host.env.OPENCODE_DISABLE_PROJECT_CONFIG !== "1") throw new Error(readOnly)
     if (await exists(join(directory, "plugins"))) throw new Error(readOnly)

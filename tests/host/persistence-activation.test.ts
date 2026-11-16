@@ -31,7 +31,8 @@ for (const configSource of ["global-json", "global-jsonc"] as const) {
     const probe = () => fixture.api.rpc(PersistenceProbe)
     const before = await probe().read({}, { location }) as ProbeSnapshot & { mount: string; version: string }
     assert.equal(before.writable, true)
-    assert.equal(before.version, "2.2.6", "scope this gate to the tested server version")
+    assert.equal(before.version, (await fixture.api.server.info()).version)
+    assert.ok(["2.2.6", "2.3.0"].includes(before.version), "scope this gate to the explicitly qualified server versions")
     assert.equal(before.source, fixture.configFile)
     assert.notEqual(fixture.env.HOME, process.env.HOME, "client HOME must not choose the server's target")
     const original = await readFile(fixture.configFile!, "utf8")

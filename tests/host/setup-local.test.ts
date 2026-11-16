@@ -9,6 +9,9 @@ import { _electron as electron } from "playwright"
 import { build } from "esbuild"
 import { Service } from "@opencode/client/service"
 import { createFixture } from "./fixture.mjs"
+import { Predictions } from "../../src/rpc.ts"
+import { readLocalSetup, saveLocalSetup } from "../../src/setup-local.ts"
+import type { SetupSnapshot } from "../../src/setup.ts"
 
 async function startRelay(fixture: Awaited<ReturnType<typeof createFixture>>) {
   const relay = createServer((incoming, outgoing) => {
@@ -24,6 +27,82 @@ async function startRelay(fixture: Awaited<ReturnType<typeof createFixture>>) {
   await new Promise<void>(resolve => relay.listen(0, "127.0.0.1", resolve))
   return relay
 }
+
+test("setup local Desktop saves through production main IPC and reconciles watcher activation", { timeout: 50000, skip: process.platform !== "darwin" }, async () => {
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: true }, {}, { configSource: "global-jsonc" })
+  const observer = { package: resolve("tests/host/observer"), options: { directory: fixture.directory, setupProbe: true } }
+  await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, observer] })
+  const app = await electron.launch({
+    executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode",
+    args: ["--user-data-dir=" + join(fixture.root, "save-desktop-profile")],
+    env: fixture.env as Record<string, string>, timeout: 30000,
+  })
+  try {
+    const page = await app.firstWindow()
+    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 15000 })
+    await page.waitForFunction(() => (window as any).__predictionFixture?.setupReady(), undefined, { timeout: 5000 })
+    const version = await page.evaluate(() => (window as any).__predictionFixture.setupServerVersion())
+    assert.equal(version, "2.3.0", "scope this gate to the qualified bundled Desktop server")
+    const before = await page.evaluate(() => (window as any).__predictionFixture.setupRead())
+    assert.equal(before.writable, true)
+    const result = await page.evaluate(() => (window as any).__predictionFixture.setupSave())
+    assert.ok(["saved", "saved_not_active"].includes(result.kind), "a durable acknowledgement must not overclaim activation")
+    let after = before
+    const deadline = Date.now() + 10000
+    while (Date.now() < deadline) {
+      after = await page.evaluate(() => (window as any).__predictionFixture.setupRead())
+      if (after?.effective.debug === true && after.serviceVersion !== before.serviceVersion) break
+      await page.waitForTimeout(100)
+    }
+    assert.equal(after.effective.debug, true)
+    assert.notEqual(after.serviceVersion, before.serviceVersion)
+    assert.equal(fixture.calls.length, 0)
+    assert.match(await readFile(fixture.configFile!, "utf8"), /"debug": true/)
+  } finally { await app.close() }
+})
+
+test("setup local Save writes the server-owned JSONC and rediscovers watcher activation without retry", { timeout: 30000 }, async t => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: true }, {}, { configSource: "global-jsonc" })
+  const oldTemporary = process.env.TMPDIR
+  process.env.TMPDIR = fixture.env.TMPDIR
+  t.after(() => { if (oldTemporary === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = oldTemporary })
+  const location = { directory: fixture.directory }
+  const rpc = fixture.api.rpc(Predictions)
+  const before = await rpc.settings({}, { location }) as SetupSnapshot
+  assert.equal(before.writable, false)
+  assert.ok(before.localAuthority, "qualified server must advertise its local authority")
+  const pid = (await fixture.api.server.info()).pid
+  const target = { id: before.localAuthority.id, serviceVersion: before.serviceVersion, serverPid: pid, location }
+  const local = await readLocalSetup(target, new AbortController().signal)
+  assert.equal(local.writable, true)
+  const original = await readFile(fixture.configFile!, "utf8")
+  try {
+    const result = await saveLocalSetup(target, { revision: local.revision, fields: { debug: true } }, new AbortController().signal)
+    assert.equal(result.kind, "saved_not_active")
+  } catch { /* Watcher unload may destroy the committed write's response. Do not repeat Save. */ }
+  const bytes = await readFile(fixture.configFile!, "utf8")
+  assert.notEqual(bytes, original)
+  assert.match(bytes, /Synthetic global fixture configuration/)
+  let after!: SetupSnapshot
+  const until = Date.now() + 10000
+  while (Date.now() < until) {
+    try {
+      after = await rpc.settings({}, { location }) as SetupSnapshot
+      if (after.serviceVersion !== before.serviceVersion && after.effective?.debug === true && after.localAuthority) break
+    } catch {}
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  assert.notEqual(after.serviceVersion, before.serviceVersion)
+  assert.equal(after.effective?.debug, true)
+  assert.equal(after.fields.debug, true)
+  assert.notEqual(after.localAuthority?.id, target.id)
+  await assert.rejects(readLocalSetup(target, new AbortController().signal))
+  const next = { ...target, id: after.localAuthority!.id, serviceVersion: after.serviceVersion }
+  assert.equal((await saveLocalSetup(next, { revision: local.revision, fields: { debug: false } }, new AbortController().signal)).kind, "conflict")
+  assert.equal(await readFile(fixture.configFile!, "utf8"), bytes)
+  assert.equal(fixture.calls.length, 0)
+})
 
 test("setup origin: Desktop main distinguishes its own server from another port and a metadata relay", { timeout: 90000, skip: process.platform !== "darwin" }, async () => {
   await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })

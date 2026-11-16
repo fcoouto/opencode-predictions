@@ -1,7 +1,181 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { changedFields, patchGroups, readGroups } from "../src/setup.ts"
+import { changedFields, patchGroups, readGroups, waitForSetupSnapshot } from "../src/setup.ts"
 import { parseOptions } from "../src/options.ts"
+import { createSetupEditor, type SetupAPI, type SetupSnapshot } from "../src/setup.ts"
+
+function editorFixture() {
+  const snapshot: SetupSnapshot = { revision: "r1", source: "/server/config.jsonc", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
+  let writes = 0, reads = 0
+  const api: SetupAPI = {
+    read: async () => { reads++; return structuredClone(snapshot) },
+    preview: async () => ({ groups: [], issues: [] }),
+    save: async input => {
+      writes++
+      assert.equal(input.revision, "r1")
+      snapshot.fields = { ...snapshot.fields, ...input.fields }
+      if (input.removeModels) delete snapshot.fields.models
+      snapshot.revision = "r2"; snapshot.serviceVersion = "two"
+      const parsed = parseOptions(snapshot.fields)
+      assert.equal(parsed.ok, true)
+      if (parsed.ok) snapshot.effective = parsed.value
+      return { kind: "saved", revision: "r2", serviceVersion: "two" }
+    },
+  }
+  return { api, snapshot, counts: () => ({ writes, reads }) }
+}
+
+test("setup mounting retries do not retry schema or transport failures", async () => {
+  for (const type of ["rpc.invalid_output", "rpc.invalid_input", "Transport"]) {
+    let calls = 0
+    await assert.rejects(waitForSetupSnapshot(async () => { calls++; throw { type } }, new AbortController().signal))
+    assert.equal(calls, 1, type)
+  }
+})
+
+test("setup mounting waits have a deadline even when a metadata call ignores cancellation", async () => {
+  let calls = 0
+  const pending = assert.rejects(waitForSetupSnapshot(async () => { calls++; return new Promise(() => {}) }, new AbortController().signal))
+  await Promise.all([pending, new Promise(resolve => setTimeout(resolve, 2100))])
+  assert.equal(calls, 1)
+})
+
+test("setup editor stages changed keys, discards locally, and never saves unchanged values", async () => {
+  const f = editorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  await editor.save()
+  assert.equal(f.counts().writes, 0)
+  editor.change({ debug: true })
+  assert.equal(editor.state().dirty, true)
+  assert.equal(f.snapshot.fields.debug, undefined)
+  editor.discard()
+  assert.equal(editor.state().dirty, false)
+  editor.change({ debug: true })
+  const save = f.api.save
+  f.api.save = async (input, signal) => { assert.deepEqual(input.fields, { debug: true }); return save(input, signal) }
+  assert.equal((await editor.save()).kind, "saved")
+  assert.equal(editor.state().dirty, false)
+  assert.equal(editor.state().snapshot?.revision, "r2")
+  editor.dispose()
+})
+
+test("invalid drafts cannot write and stale preview responses cannot replace later edits", async () => {
+  const f = editorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setGroups([[]])
+  assert.equal((await editor.save()).kind, "invalid")
+  assert.equal(f.counts().writes, 0)
+  editor.discard()
+  let finish!: (value: { groups: []; issues: [] }) => void
+  f.api.preview = async () => new Promise(resolve => { finish = resolve })
+  const pending = editor.preview()
+  editor.change({ debug: true })
+  finish({ groups: [], issues: [] })
+  await pending
+  assert.equal(editor.state().preview, undefined)
+  assert.equal(editor.state().fields.debug, true)
+  editor.dispose()
+})
+
+test("save conflicts preserve the draft and require reload rather than repeat", async () => {
+  const f = editorFixture()
+  let writes = 0
+  f.api.save = async () => { writes++; return { kind: "conflict", message: "Reload settings." } }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load(); editor.change({ debug: true })
+  assert.equal((await editor.save()).kind, "conflict")
+  assert.equal(editor.state().fields.debug, true)
+  assert.equal(editor.state().dirty, true)
+  await editor.save()
+  assert.equal(writes, 1)
+  editor.dispose()
+})
+
+for (const active of [false, true]) test(`lost save acknowledgement reconciles durable fields with activation ${active}`, async () => {
+  const f = editorFixture()
+  let writes = 0
+  f.api.save = async () => {
+    writes++
+    f.snapshot.revision = "r2"; f.snapshot.fields.debug = true
+    if (active) { f.snapshot.effective!.debug = true; f.snapshot.serviceVersion = "two" }
+    throw new Error("PRIVATE disconnected after commit")
+  }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load(); editor.change({ debug: true })
+  const result = await editor.save()
+  assert.equal(result.kind, active ? "saved" : "saved_not_active")
+  assert.doesNotMatch(JSON.stringify(editor.state()), /PRIVATE/)
+  assert.equal(editor.state().snapshot?.revision, "r2")
+  assert.equal(editor.state().dirty, false)
+  await editor.save()
+  assert.equal(writes, 1)
+  editor.dispose()
+})
+
+test("lost acknowledgement with unrelated newer bytes does not claim saved or rebase the draft", async () => {
+  const f = editorFixture()
+  f.api.save = async () => { f.snapshot.revision = "r2"; f.snapshot.fields.automatic = true; throw new Error("Lost") }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load(); editor.change({ debug: true })
+  assert.equal((await editor.save()).kind, "failed")
+  assert.equal(editor.state().snapshot?.revision, "r1")
+  assert.equal(editor.state().fields.debug, true)
+  assert.equal(editor.state().dirty, true)
+  editor.dispose()
+})
+
+test("disposed editor ignores late read responses and notifications", async () => {
+  const f = editorFixture()
+  let finish!: (value: SetupSnapshot) => void, notifications = 0
+  f.api.read = async () => new Promise(resolve => { finish = resolve })
+  const editor = createSetupEditor(f.api, () => { notifications++ })
+  const loading = editor.load()
+  editor.dispose()
+  const before = notifications
+  finish(f.snapshot)
+  await loading
+  assert.equal(notifications, before)
+  assert.equal(editor.state().snapshot, undefined)
+})
+
+test("lost reply retries reads across reconnect but never repeats the save", async () => {
+  const f = editorFixture()
+  const read = f.api.read
+  let disconnected = false, attempts = 0, writes = 0
+  f.api.read = async signal => {
+    if (disconnected && ++attempts === 1) throw new Error("Disconnected")
+    return read(signal)
+  }
+  f.api.save = async () => {
+    writes++; disconnected = true
+    f.snapshot.revision = "r2"; f.snapshot.fields.debug = true
+    f.snapshot.effective!.debug = true; f.snapshot.serviceVersion = "two"
+    throw new Error("Lost reply")
+  }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load(); editor.change({ debug: true })
+  assert.equal((await editor.save()).kind, "saved")
+  assert.equal(writes, 1)
+  assert.equal(attempts, 2)
+  editor.dispose()
+})
+
+test("model removal uses its explicit wire flag and keeps unrelated omitted defaults absent", async () => {
+  const f = editorFixture()
+  const save = f.api.save
+  f.api.save = async (input, signal) => {
+    assert.deepEqual(input, { revision: "r1", fields: {}, removeModels: true })
+    return save(input, signal)
+  }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load(); editor.setGroups(undefined)
+  assert.equal((await editor.save()).kind, "saved")
+  assert.equal(Object.hasOwn(f.snapshot.fields, "enabled"), false)
+  assert.equal(Object.hasOwn(f.snapshot.fields, "models"), false)
+  editor.dispose()
+})
 
 test("setup normalizes existing selector forms without flattening groups or expanding patterns", () => {
   assert.equal(readGroups({}), undefined)

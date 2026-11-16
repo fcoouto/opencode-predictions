@@ -102,6 +102,62 @@ Limits: guards establish only a pre-dispatch native-origin prerequisite. They do
 
 For the user-requested guard checkpoint commit, earlier lifecycle/editor changes were excluded from the index. An isolated export of the staged guard candidate passed 271/271 project tests, 13/13 sequential persistence/origin host tests, typecheck, and bundle. The 292/292 and 17/17 results above describe the broader working tree, not the guard-only commit. Only the server entry bundle and source map changed in the isolated build; those generated files accompany the checkpoint.
 
+## Task 4 Transport/Adapter Checkpoint: Desktop Save Blocked
+
+After guard commit `83e3de2`, the user requested proceeding with the remaining Task 4 work. Uncommitted implementation now includes private local transport, lazy server-owned authority creation/disposal, initial main/GUI/TUI adapters, the main IPC contract, and shared native read/Save binding. Network RPC still has no write/signing method and always reports read-only permission.
+
+The local envelope also carries the expected native server PID. The server checks it before dispatch, and the response repeats its actual PID. This is a binding check after native origin authorization, not independent origin proof. Unknown fields, wrong authority/version/location/PID, unsafe path ownership/modes, oversized frames, and disposed connections refuse access. Tests cover the separate request/response bounds, sixteen-client admission, and operation deadline.
+
+One platform limitation is explicit: Node closes a Unix listener by unlinking its original bind path, even if another listener replaced it. On detected path replacement, disposal revokes the authority and unreferences the old listener instead of deleting the replacement. That revoked listener remains until process exit. Normal disposal closes sockets and removes the original authority's paths. A `shortcut:` comment records this limitation; it must not be presented as complete cleanup under tampering.
+
+Fresh results: 314/314 project tests passed, including 11 local transport and 11 main/TUI/GUI-adapter tests. Typecheck, bundle, and whitespace checks passed. A complete sequential native persistence/lifecycle/origin run passed 18/19 with no skips.
+
+The failing gate is `setup local Desktop saves through production main IPC and reconciles watcher activation`. The installed Desktop UI and its bundled sidecar both report **2.3.0**. The CLI available on PATH is **2.2.6**; those versions are not interchangeable. Earlier Desktop origin classification and memory-handoff evidence did not qualify its bundled server's persistence behavior. The writer deliberately still refuses every server version except 2.2.6. The new native test records this mismatch as a failure rather than skipping it or weakening the allowlist.
+
+Before adding the explicit version precondition, native main-process calls also found `rpc.unavailable` for the requested project location. A fixture-only fetch trace showed the expected location query; the sidecar listed custom plugins at its default location but none at the requested location. Adding a plugin-list call did not resolve it and was removed. Temporary diagnostics were removed from source. This selected-location RPC difference also needs qualification before Desktop Save can pass; do not fall back to a different location.
+
+The actual 2.2.6 server-owned Save test passes: one JSONC edit, preserved comment, watcher-driven service/authority replacement, effective readback, rejection of the old authority, stale revision conflict, unchanged bytes after conflict, and zero provider calls. It does not substitute for Desktop or actual standalone TUI adapter Save/lifecycle evidence.
+
+Logs: `task-4-transport-{red,binding-red,final}.log`, `task-4-adapters-{red,final}.log`, `task-4-gui-api-red.log`, `task-4-save-host-{red,green}.log`, `task-4-desktop-save-{red,green}.log`, and `task-4-remaining-{suite,bundle,host}.log` in the execution workspace.
+
+Task 4 remains open and these changes are not committed. Remaining gates include Desktop 2.3.0 source/persistence and selected-location RPC qualification; actual standalone/native Save and composer/remount/acknowledgement tests; remaining path/collision/cancellation coverage; complete IPC validation; upstream GitHub-context runtime reconciliation and round-trip tests; installed-package flows; and final review. No native setup UI or remote write support is added.
+
+## Authorized Desktop 2.3.0 Qualification: Scoped GO
+
+The user explicitly approved extending Desktop qualification. This supersedes the version/startup blockers above, not the remaining Task 4 gates.
+
+Measured bundled server: `/Applications/OpenCode.app/Contents/Resources/opencode-cli`, version `2.3.0`, SHA-256 `a903a38bb731929e0080a0d6cd828034685a756d52977d241eb19d3a8d599830`.
+
+### RPC startup cause and fix
+
+A fresh actual 2.3.0 server returned an empty plugin registry and `rpc.unavailable`, then returned the active predictions plugin and valid snapshot for the **same requested location** after asynchronous mount. Default-location fallback is unnecessary and remains forbidden. Source discovery and scoped RPC work after mount.
+
+`waitForSetupSnapshot` waits at most 2000 ms for metadata, retries only `rpc.unavailable`, and respects caller cancellation even when a dependency ignores its signal. It never retries a Save, schema error, or transport failure. The new mount regression observed RED before this fix and GREEN afterward. The fixture separately waits for its configured plugin to become active before returning.
+
+### Qualification before allowlist expansion
+
+An isolated copy of current source changed only its candidate writer's exact version admission. Before changing the main working-tree gate, that candidate passed:
+
+- 25/25 production-store safeguards with the host version set to 2.3.0: source/override/filesystem refusal, JSONC preservation, stale edits, cooperating writers, cancellation, recovery, real permission failures, and uncertain post-commit outcomes.
+- 17/17 actual bundled-server persistence/activation checks: JSON and JSONC discovery, qualified local source, refusal of public plugin-option writes, watcher-driven remount, restart persistence, lost-acknowledgement readback without repeat, cross-process writer coordination, and sole-model removal preserving comments.
+- Actual Desktop production main-IPC Save and subsequent effective readback, with zero provider calls.
+
+The first Desktop candidate correctly returned `saved_not_active` before watcher activation. The approved result contract allows that acknowledgement. The native test now accepts either durable result, then separately requires changed effective options and a fresh service version within its deadline; it does not treat a durable write as activation proof.
+
+After that evidence, the new working-tree 2.3.0 writer test observed RED against the old gate, then the macOS writer's exact allowlist became `2.2.6` and `2.3.0`. Other versions and every existing source/filesystem refusal remain unchanged. The independent CLI standalone-origin gate remains 2.2.6 only; this work does not qualify the 2.3.0 CLI launcher or remote origins.
+
+### Fresh working-tree verification
+
+- Project: 318/318 passed.
+- Production store, explicitly running the full safeguard suite at version 2.3.0: 26/26 passed.
+- Bundled 2.3.0 persistence/activation hosts: 17/17 passed.
+- Sequential native persistence/lifecycle/origin/Save run: 19/19 passed, no skips; the formerly blocked Desktop Save now passes.
+- Typecheck and bundle passed.
+
+Logs: `task-4-mount-{red,green}.log`, `task-4-230-{source-red,source-ready,writer-red,suite,config,host,native,bundle}.log` in the execution workspace. The isolated candidate path is recorded in `task-4-230-candidate-path.txt`; its logs are `qualification-{config,host,desktop,bundle}.log`.
+
+Scope remains narrow. Existing composer/memory-handoff tests still do not prove actual standalone Save, Save-triggered prediction-module remount, or every interrupted-acknowledgement path. GitHub runtime reconciliation, remaining local-boundary/schema tests, installed-package setup proof, and final review remain pending. Task 4 is incomplete; these changes are uncommitted. No user installation/configuration, paid-provider request, upstream merge, push, or remote-write support changed.
+
 ## Amended Task 1 Verdict: Scoped GO — Review Corrections Verified
 
 The approved best-effort gate permits production implementation **only for the verified writable subset below**. Task 2 adds the store and Task 3 exposes metadata-only read/preview RPC; public save RPC, lifecycle, and UI remain unbuilt. The initial GO was suspended after checkpoint review exposed a preservation defect and missing production failure-path coverage. The correction checks below restore only this scoped GO, not feature or release approval. The original strict NO-GO remains recorded below.

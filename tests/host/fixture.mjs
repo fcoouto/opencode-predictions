@@ -3,6 +3,7 @@ import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
+import { tmpdir } from "node:os"
 import { OpenCode } from "@opencode/client"
 import { Service } from "@opencode/client/service"
 
@@ -12,6 +13,9 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
+  const temporaryRoot = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
+  await mkdir(temporaryRoot, { recursive: true })
+  const temporary = await mkdtemp(join(temporaryRoot, "h-"))
   const directory = join(root, "project")
   await mkdir(directory, { recursive: true })
   await writeFile(join(directory, "README.md"), "Synthetic prediction integration fixture.\n")
@@ -53,7 +57,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
     providers: { fixture: { name: "Fixture", env: ["FIXTURE_API_KEY"], package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${provider.address().port}/v1` }, models: Object.fromEntries([...new Set(["model", ...Object.keys(behavior.predictionOutputs ?? {})])].map(id => [id, { name: id === "model" ? "Fixture Flash" : "Fixture " + id, capabilities: { tools: false }, limit: { context: 32768, output: 2048 } }])) } },
   }
   /** @type {NodeJS.ProcessEnv} */
-  const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: process.env.TMPDIR ?? root, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
+  const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: temporary, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
   const configDirectory = join(root, "config", "opencode")
   await mkdir(configDirectory, { recursive: true })
@@ -95,6 +99,13 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
     const password = output.match(/server password (\S+)/)[1]
     headers = { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }
     api = OpenCode.make({ baseUrl: address, headers })
+    const ready = AbortSignal.timeout(10000)
+    for (;;) {
+      ready.throwIfAborted()
+      const plugins = await api.plugin.list({ location: { directory } }, { signal: ready })
+      if (plugins.data.some(plugin => plugin.id === "opencode-predictions" && plugin.state.status === "active")) break
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
   }
   const stopChild = async () => {
     if (child.exitCode !== null || child.signalCode !== null) return

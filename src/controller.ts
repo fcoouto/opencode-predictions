@@ -100,6 +100,7 @@ export function createController(io: ControllerIO) {
     stage(activity: Activity | undefined) { staged = activity; paint() },
     progress(name: string) { if (pending && !pending.signal.aborted) { modelName = name; paint() } },
     preview(): string | undefined { return current.key ? results.get(current.key)?.text : undefined },
+    invalidate() { clear(); results.clear(); attempted.clear() },
     dispose() { disposed = true; clear(); results.clear(); attempted.clear() },
   }
 }

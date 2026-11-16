@@ -75,6 +75,7 @@ export const Predictions = Rpc.define({
         properties: {
           revision: { type: "string" }, source: { type: "string" }, scope: { type: "string", enum: ["global"] },
           writable: { type: "boolean" }, reason: { type: "string" }, fields: settingsFields,
+          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel }, issues: { type: "array", items: setupIssue }, serviceVersion: { type: "string" },
         },

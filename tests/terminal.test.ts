@@ -5,6 +5,43 @@ import { createTestRenderer } from "@opentui/core/testing"
 import { createTerminalAdapter } from "../src/adapters/terminal.ts"
 import tui from "../src/tui.ts"
 
+test("terminal config events and plugin remount suppress old completion without touching composer", async () => {
+  await using screen = await createTestRenderer({ width: 60, height: 8 })
+  const editor = new TextareaRenderable(screen.renderer, { width: 60, height: 4 })
+  editor.traits = Object.assign({ capture: ["tab"] as const }, { owner: "opencode", role: "prompt" })
+  screen.renderer.root.add(editor); editor.focus()
+  const session = { id: "ses_test", time: { idle: 2 }, location: { directory: "/project" } }
+  const listeners = new Map<string, () => void>()
+  const memory = { mounted: false, suppressed: [] as string[] }
+  let calls = 0, version = "one"
+  const ctx = {
+    renderer: screen.renderer, location: session.location, app: { version: "test" },
+    storage: { memory: () => [memory, (mutation: (draft: typeof memory) => void) => mutation(memory)] },
+    data: { on: (name: string, run: () => void) => { listeners.set(name, run); return () => listeners.delete(name) }, session: { get: () => session, status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } },
+    client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version, warnings: [] }), predict: async () => { calls++; return { text: "Old prediction" } }, events: { on: () => () => {} } }) },
+    keymap: { layer() {} }, ui: { router: { current: () => ({ type: "session", sessionID: session.id }) }, toast: { show() {} } },
+  } as any
+  let stop = tui.setup!(ctx) as () => void
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    version = "two"
+    listeners.get("config.updated")!()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    assert.equal(editor.plainText, "")
+    stop()
+    stop = tui.setup!(ctx) as () => void
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    editor.setText("my existing draft")
+    listeners.get("plugin.updated")!()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(editor.plainText, "my existing draft")
+    assert.equal(calls, 1)
+  } finally { stop() }
+})
+
 test("native terminal ghost is visible but absent from the draft and inserts without submission", async () => {
   await using screen = await createTestRenderer({ width: 60, height: 8 })
   let submissions = 0

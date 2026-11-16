@@ -6,6 +6,7 @@ import { join } from "node:path"
 import { createConfigStore } from "./config.ts"
 import { createSetupService } from "./setup-service.ts"
 import type { SettingsInput } from "./setup.ts"
+import { startLocalSetup } from "./setup-local.ts"
 
 export default Plugin.define({
   id: "opencode-predictions",
@@ -35,15 +36,24 @@ export default Plugin.define({
       options: () => ctx.options,
     })
     const setup = createSetupService(store, async signal => (await ctx.model.list(undefined, { signal })).data, () => ({ options: ctx.options, version: service.status().version }))
+    let local: ReturnType<typeof startLocalSetup> | undefined, closing = false
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => service.predict(input as Request, context.signal),
       status: (_input, context) => service.inspect(context.signal),
       settings: async (_input, context) => {
         const snapshot = await setup.read(context.signal)
-        return { ...snapshot, writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." }
+        const location = { directory: ctx.location.directory, ...("workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {}) }
+        const authority = snapshot.writable && !closing ? await (local ??= startLocalSetup(location, setup)) : undefined
+        if (closing) await authority?.dispose()
+        return { ...snapshot, ...(authority && !closing ? { localAuthority: { id: authority.id } } : {}), writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." }
       },
       previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, context.signal),
     })
-    return () => registration.dispose()
+    return async () => {
+      closing = true
+      service.dispose()
+      await (await local)?.dispose()
+      await registration.dispose()
+    }
   },
 })

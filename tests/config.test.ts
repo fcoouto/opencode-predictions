@@ -27,7 +27,7 @@ async function fixture() {
   const original = `// keep this comment\r\n{\r\n\t"plugins": [{"package": ${JSON.stringify(resolve("."))}, "options": {"models": "fixture/model", "automatic": false, "unknown": "synthetic-private-option"}}],\r\n\t"username": "synthetic-private-config",\r\n}\r\n`
   await writeFile(file, original, { mode: 0o640 })
   const host: ConfigHost = {
-    version: "2.2.6", home, directory: home,
+    version: process.env.PREDICTIONS_CONFIG_TEST_VERSION ?? "2.2.6", home, directory: home,
     env: { XDG_CONFIG_HOME: join(home, "config"), OPENCODE_DISABLE_PROJECT_CONFIG: "1" },
     systemPaths: [join(home, "managed")],
     source: async () => ({ type: "local", path: resolve(".") }),
@@ -37,6 +37,16 @@ async function fixture() {
 }
 
 describe("verified macOS global config store", { skip: process.platform !== "darwin" }, () => {
+test("qualified 2.3.0 source preserves JSONC and rejects stale saves", async () => {
+  const f = await fixture()
+  f.host.version = "2.3.0"
+  const snapshot = await f.store.read(signal())
+  assert.equal(snapshot.writable, true)
+  assert.equal((await f.store.write(snapshot.revision, { debug: true }, signal())).kind, "written")
+  f.options.debug = true
+  assert.equal((await readFile(f.file, "utf8")).replace(',"debug": true', ""), f.original)
+  assert.equal((await f.store.write(snapshot.revision, { debug: false }, signal())).kind, "conflict")
+})
 test("store exposes only known fields and changes only the requested bytes", async () => {
   const f = await fixture()
   const before = await f.store.read(signal())
@@ -72,7 +82,7 @@ test("store instances serialize cooperating saves instead of rebasing the stale 
 
 test("unsupported source, version, override and filesystem cases refuse writes", async () => {
   const cases: [string, (f: Awaited<ReturnType<typeof fixture>>) => unknown][] = [
-    ["version", f => { f.host.version = "2.3.0" }],
+    ["version", f => { f.host.version = "2.4.0" }],
     ["unknown source", f => { f.host.source = async () => undefined }],
     ["wrong source", f => { f.host.source = async () => ({ type: "local", path: f.home }) }],
     ["options mismatch", f => { f.host.options = () => ({ models: "elsewhere/model" }) }],

@@ -3,6 +3,9 @@ import { Schema } from "effect"
 import { Predictions } from "../../../src/rpc.ts"
 import { createDesktopAdapter } from "../../../src/adapters/desktop.ts"
 import { createDesktopSetupOrigin } from "../../../src/setup-origin.ts"
+import { createGUISetupAPI } from "../../../src/setup-gui-api.ts"
+import { SetupLocal } from "../../../src/setup-ipc.ts"
+import { createSetupEditor } from "../../../src/setup.ts"
 const OriginProbe = Ipc.define({
   id: "prediction-test-observer.origin",
   methods: { inspect: {
@@ -31,6 +34,15 @@ export default Plugin.define({
     return () => provider.dispose()
   },
   setup(ctx) {
+    const setupProvider = ctx.options.setupProbe ? ctx.use(SetupLocal) : undefined
+    const setupEditor = setupProvider ? createSetupEditor(createGUISetupAPI({
+      servers: ctx.servers,
+      main: () => {
+        const live = setupProvider()
+        if (live.status !== "active") throw new Error("Setup main is unavailable.")
+        return live.value
+      },
+    } as unknown as Parameters<typeof createGUISetupAPI>[0], { serverID: "sidecar", location: { directory: String(ctx.options.directory) } }), () => {}) : undefined
     if (ctx.options.originProbe) {
       const targets = ctx.options.originTargets
       if (!Array.isArray(targets)) throw new Error("Origin fixture targets are missing")
@@ -42,11 +54,17 @@ export default Plugin.define({
         })),
       })
     }
+    const handoff = ctx.storage?.memory?.("lifecycle-proof", { initial: { generations: 0, token: "" } })
+    handoff?.[1](state => { state.generations++; state.token ||= crypto.randomUUID() })
     const adapter = createDesktopAdapter(document, () => ctx.screen.current()?.composer)
     let lastKey: unknown
     const onKey = (event: KeyboardEvent) => { if (event.code === "KeyP") lastKey = { key: event.key, code: event.code, eligible: adapter.eligible(), matches: ctx.keybinds.matches("opencode-predictions.request-shortcut", event) } }
     document.addEventListener("keydown", onKey, true)
     const fixture = {
+      setupReady: () => setupProvider?.().status === "active",
+      setupServerVersion: async () => (await ctx.servers.get("sidecar")!.client.server.info()).version,
+      setupRead: async () => { await setupEditor!.load(); return setupEditor!.state().snapshot },
+      setupSave: async () => { setupEditor!.change({ debug: true }); return setupEditor!.save() },
       originReady: () => ["other", "relay"].every(id => ctx.servers.get("prediction-test-observer:" + id)?.connected),
       origin: async () => {
         const ids = ["sidecar", "prediction-test-observer:other", "prediction-test-observer:relay", "missing-origin-target"]
@@ -55,6 +73,7 @@ export default Plugin.define({
         const a = await other.client.server.info(), b = await relay.client.server.info()
         return { ...result, relayMatchesOtherServer: a.pid === b.pid && a.version === b.version, windowOtherIsLocal: other.local }
       },
+      memory: () => handoff ? { available: true, generations: handoff[0].generations, token: handoff[0].token } : { available: false },
       ready: () => ctx.layout.ready() && !!ctx.servers.get("sidecar")?.connected,
       launch: () => ctx.layout.draft({ server: "sidecar", directory: String(ctx.options.directory), prompt: "Fix the assertion." }),
       status: () => ctx.commands.run("opencode-predictions.status"),
@@ -76,6 +95,6 @@ export default Plugin.define({
       },
     }
     Object.defineProperty(window, "__predictionFixture", { value: fixture, configurable: true })
-    return () => { adapter.dispose(); document.removeEventListener("keydown", onKey, true); Reflect.deleteProperty(window, "__predictionFixture") }
+    return () => { setupEditor?.dispose(); adapter.dispose(); document.removeEventListener("keydown", onKey, true); Reflect.deleteProperty(window, "__predictionFixture") }
   },
 })

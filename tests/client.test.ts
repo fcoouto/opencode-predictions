@@ -8,6 +8,132 @@ function startClient(host: Omit<ClientHost, "scope" | "openStatus" | "show"> & {
   return createClient({ ...host, scope: () => "local/project", openStatus() {}, show: notice => host.show(notice.message) })
 }
 
+test("config invalidation cancels work and suppresses this completion across versions but allows explicit and new turns", async () => {
+  const state: ClientState = { key: "session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  const status: Status = { enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }
+  let calls = 0, signal: AbortSignal | undefined, ghost: string | undefined, progress: ((text: string) => void) | undefined
+  let finish!: (value: { text: string }) => void
+  const late = new Promise<{ text: string }>(resolve => { finish = resolve })
+  const messages: string[] = []
+  const client = startClient({
+    state: () => state, status: async () => status,
+    predict: async (_state, _id, value, notice) => { calls++; signal = value; progress = notice; return calls === 1 ? late : { text: "New prediction" } },
+    paint: text => { ghost = text; return !!text }, insert: () => true, focus() {}, show: value => messages.push(value),
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    status.version = "two"
+    client.invalidate({ suppressAutomatic: true })
+    assert.equal(signal?.aborted, true)
+    finish({ text: "Late result" }); progress?.("Late progress")
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    assert.equal(ghost, undefined)
+    assert.deepEqual(messages, [])
+    state.draft = "my existing draft"
+    client.invalidate({ suppressAutomatic: true })
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(state.draft, "my existing draft")
+    state.draft = ""
+    client.request()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 2)
+    state.key = "session/3"; state.completion = 3
+    await new Promise(resolve => setTimeout(resolve, 120))
+    assert.equal(calls, 3)
+  } finally { client.dispose() }
+})
+
+test("polling a changed service version drops old offers without another automatic request", async () => {
+  const state: ClientState = { key: "session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  let version = "one", calls = 0
+  let activate: (() => void) | undefined
+  const client = startClient({
+    state: () => state,
+    status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version, warnings: [] }),
+    predict: async () => { calls++; return { reason: "no_suggestion", escalation: { token: "old", group: 2, model: { providerID: "local", id: "a" }, name: "A" } } },
+    communicate: (value, run) => { if (value?.offer) activate = run },
+    paint: () => false, insert: () => true, focus() {}, show() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    const oldOffer = activate!
+    version = "two"
+    await new Promise(resolve => setTimeout(resolve, 2150))
+    assert.equal(calls, 1)
+    oldOffer()
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+  } finally { client.dispose() }
+})
+
+test("memory handoff suppresses current completion on remount even before initial status arrives", async () => {
+  const memory = { mounted: false, suppressed: [] as string[] }
+  const state: ClientState = { key: "session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  let calls = 0
+  const host: ClientHost = {
+    memory: [memory, mutation => mutation(memory)], scope: () => "server/project", state: () => state,
+    status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: crypto.randomUUID(), warnings: [] }),
+    predict: async () => { calls++; return { text: "Suggestion" } },
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {},
+  }
+  const first = createClient(host)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls, 1)
+  first.dispose()
+  const next = createClient(host)
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    state.key = "session/3"; state.completion = 3
+    await new Promise(resolve => setTimeout(resolve, 120))
+    assert.equal(calls, 2)
+  } finally { next.dispose() }
+})
+
+test("config invalidation during a temporary missing session still suppresses the returning completion", async () => {
+  const original: ClientState = { key: "session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
+  let state: ClientState | undefined = original, calls = 0
+  const client = startClient({
+    state: () => state,
+    status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async () => { calls++; return { text: "Old prediction" } },
+    paint: text => !!text, insert: () => true, focus() {}, show() {},
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(calls, 1)
+    state = undefined
+    client.invalidate({ suppressAutomatic: true })
+    await new Promise(resolve => setImmediate(resolve))
+    state = original
+    await new Promise(resolve => setTimeout(resolve, 120))
+    assert.equal(calls, 1)
+  } finally { client.dispose() }
+})
+
+test("remount without a completed chat does not suppress the next newly completed turn", async () => {
+  const memory = { mounted: false, suppressed: [] as string[] }
+  let state: ClientState | undefined, calls = 0
+  const host: ClientHost = {
+    memory: [memory, mutation => mutation(memory)], scope: () => "server/project", state: () => state,
+    status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async () => { calls++; return { text: "New turn" } },
+    paint: text => !!text, insert: () => true, focus() {}, show() {}, openStatus() {},
+  }
+  const first = createClient(host)
+  await new Promise(resolve => setImmediate(resolve))
+  first.dispose()
+  const next = createClient(host)
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    state = { key: "session/3", sessionID: "ses_test", completion: 3, eligible: true, draft: "" }
+    await new Promise(resolve => setTimeout(resolve, 120))
+    assert.equal(calls, 1)
+  } finally { next.dispose() }
+})
+
 test("automatic client uses one prediction, rechecks input on Tab, and exposes scoped progress", async () => {
   let state: ClientState | undefined = { key: "local/session/2", sessionID: "ses_test", completion: 2, eligible: true, draft: "" }
   let ghost: string | undefined

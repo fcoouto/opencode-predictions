@@ -4,6 +4,36 @@ import { createController, communicationText } from "../src/controller.ts"
 
 const offer = { token: "offer-one", group: 2, model: { providerID: "paid", id: "model", variant: "low" }, name: "Next model" }
 
+test("invalidation aborts pending work and forgets cached text, offers and attempted keys without inserting", async () => {
+  let signal: AbortSignal | undefined, ghost: string | undefined, communication: unknown, inserts = 0
+  let finish!: (value: { text: string; escalation: typeof offer }) => void
+  const late = new Promise<{ text: string; escalation: typeof offer }>(resolve => { finish = resolve })
+  let calls = 0
+  const controller = createController({
+    predict: async value => { signal = value; return ++calls === 1 ? { text: "Old text", escalation: offer } : late },
+    paint: text => { ghost = text; return !!text },
+    insert: () => { inserts++; return true },
+    communicate: value => { communication = value },
+  })
+  controller.update({ key: "one", eligible: true, draft: "" })
+  await controller.request()
+  assert.equal(ghost, "Old text")
+  controller.invalidate()
+  assert.equal(controller.preview(), undefined)
+  assert.equal(communication, undefined)
+  assert.equal(controller.accept(), false)
+  const pending = controller.request()
+  assert.equal(calls, 2, "invalidation must forget automatic attempted keys")
+  controller.invalidate()
+  assert.equal(signal?.aborted, true)
+  finish({ text: "Late text", escalation: offer })
+  await pending
+  assert.equal(ghost, undefined)
+  assert.equal(communication, undefined)
+  assert.equal(inserts, 0)
+  controller.dispose()
+})
+
 test("activity indicators carry the requested leading character, never real prediction payloads", () => {
   const activity = { kind: "alternative" as const, name: "Next model" }
   assert.match(communicationText({ message: "", activity }), /^\uFFFB[▰▱]{3} Next model$/)

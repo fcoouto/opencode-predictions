@@ -2,17 +2,7 @@ import type { ConfigStore } from "./config.ts"
 import { resolveModels, resolveModelGroups, type CatalogModel, type Candidate } from "./models.ts"
 import { parseOptions } from "./options.ts"
 import { abortable } from "./service.ts"
-import { readGroups, settingKeys, type SettingsInput, type SetupIssue, type SetupSnapshot, type SetupPreview } from "./setup.ts"
-
-function validation(fields: SettingsInput): SetupIssue[] {
-  if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.")
-  if (Object.keys(fields).some(key => !(settingKeys as readonly string[]).includes(key))) throw new Error("Unknown setting.")
-  for (const field of ["timeoutMs", "contextTurns"] as const) {
-    if (fields[field] === null) return [{ field, severity: "error", code: "invalid_value", message: "Enter a whole number." }]
-  }
-  const parsed = parseOptions(fields)
-  return parsed.ok ? [] : [{ field: settingKeys.find(key => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }]
-}
+import { readGroups, changedFields, settingKeys, validateSettings as validation, type SaveInput, type SaveResult, type SettingsInput, type SetupIssue, type SetupSnapshot, type SetupPreview } from "./setup.ts"
 
 function resolve(fields: SettingsInput, catalog: readonly CatalogModel[]): SetupPreview {
   const issues = validation(fields)
@@ -66,6 +56,30 @@ export function createSetupService(store: ConfigStore, models: (signal: AbortSig
       const issues = validation(fields)
       if (issues.length) return { groups: [], issues }
       return resolve(fields, await catalog(signal))
+    },
+    async save(input: SaveInput, signal: AbortSignal): Promise<SaveResult> {
+      signal.throwIfAborted()
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["revision", "fields", "removeModels"].includes(key))) throw new Error("Unknown save field.")
+      if (typeof input.revision !== "string" || !input.revision || (input.removeModels !== undefined && input.removeModels !== true)) throw new Error("Invalid save input.")
+      const invalid = validation(input.fields)
+      if (invalid.length) return { kind: "invalid", issues: invalid }
+      if (input.removeModels && Object.hasOwn(input.fields, "models")) throw new Error("Conflicting model edits.")
+      const fresh = await store.read(signal)
+      if (!fresh.writable) return { kind: "read_only", message: fresh.reason ?? "This configuration is read-only." }
+      if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
+      const prospective = { ...fresh.fields, ...input.fields, ...(input.removeModels ? { models: undefined } : {}) }
+      const issues = validation(prospective)
+      if (issues.length) return { kind: "invalid", issues }
+      const patch = changedFields(fresh.fields, prospective)
+      if (!Object.keys(patch).length) return { kind: "saved", revision: fresh.revision, serviceVersion: current().version }
+      const before = current().version
+      const result = await store.write(input.revision, patch, signal)
+      if (result.kind !== "written") return result
+      const state = current(), parsed = parseOptions(state.options), expected = parseOptions(prospective)
+      if (state.version !== before && parsed.ok && expected.ok && settingKeys.every(key => JSON.stringify(parsed.value[key]) === JSON.stringify(expected.value[key]))) {
+        return { kind: "saved", revision: result.revision, serviceVersion: state.version }
+      }
+      return { kind: "saved_not_active", revision: result.revision, message: "Saved on disk. Effective activation is not verified." }
     },
   }
 }

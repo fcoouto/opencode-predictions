@@ -8,6 +8,7 @@ import type { Reply, Status } from "./service.ts"
 import { pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
 
 export default Plugin.define({
+  main: async ctx => (await import("./setup-main.ts")).registerSetupMain(ctx),
   setup(ctx) {
     const adapter = createDesktopAdapter(document, () => ctx.screen.current()?.composer)
     const session = () => ctx.sessions.current()
@@ -20,6 +21,7 @@ export default Plugin.define({
     }
     let errorToast: { dismiss(): void } | undefined
     const client = startClient({
+      memory: ctx.storage?.memory("prediction-lifecycle", { initial: { mounted: false, suppressed: [] as string[] } }),
       scope: () => { const value = connection(); return value ? JSON.stringify([value.server.id, value.location]) : undefined },
       state: () => {
         const value = session()
@@ -75,8 +77,8 @@ export default Plugin.define({
     const serverData = (): Data | undefined => connection()?.server.data
     createKeyed(serverData, data => {
       client.invalidate()
-      onCleanup(data.on("config.updated", () => client.invalidate()))
-      onCleanup(data.on("plugin.updated", () => client.invalidate()))
+      onCleanup(data.on("config.updated", () => client.invalidate({ suppressAutomatic: true })))
+      onCleanup(data.on("plugin.updated", () => client.invalidate({ suppressAutomatic: true })))
     })
     createKeyed(() => session()?.key, () => client.invalidate(), { otherwise: () => client.invalidate() })
     ctx.add(Command, { id: "accept", title: "Accept prompt prediction", bind: "tab", editable: true, hidden: true, run: () => client.accept() ? undefined : false })

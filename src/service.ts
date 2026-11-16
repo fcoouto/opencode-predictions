@@ -51,6 +51,7 @@ function failurePolicy(error: unknown): { detail: string; delayMs: number; model
 }
 
 export function createService(api: ServiceAPI, rawOptions: unknown, directory: string) {
+  const lifetime = new AbortController()
   const parsed = parseOptions(rawOptions)
   const options = parsed.ok ? parsed.value : undefined
   const version = crypto.randomUUID()
@@ -149,6 +150,8 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     }
   }
   const predict = async (request: Request, parent: AbortSignal): Promise<Reply> => {
+    if (lifetime.signal.aborted) return { reason: "cancelled" }
+    parent = AbortSignal.any([parent, lifetime.signal])
     const started = performance.now()
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) }
     const caller = parent
@@ -317,6 +320,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
         }
         return reply
       }, caller)
+      caller.throwIfAborted()
       lastOutcome = reply.text ? "suggestion" : reply.reason
       if (reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "")) {
         const escalation = nextOffer(request, progress)
@@ -332,8 +336,10 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
     }
   }
   const inspect = async (signal: AbortSignal): Promise<Status> => {
-    if (options?.enabled && options.models) refresh(await api.models(signal))
+    signal = AbortSignal.any([signal, lifetime.signal])
+    signal.throwIfAborted()
+    if (options?.enabled && options.models) refresh(await abortable(() => api.models(signal), signal))
     return status()
   }
-  return { predict, status, inspect }
+  return { predict, status, inspect, dispose() { lifetime.abort(); offers.clear(); cycles.clear() } }
 }

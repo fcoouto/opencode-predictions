@@ -1,0 +1,44 @@
+import { test } from "node:test"
+import assert from "node:assert/strict"
+import { createGUISetupAPI } from "../src/setup-gui-api.ts"
+import { createSetupEditor } from "../src/setup.ts"
+import { nativeFixture } from "./setup-native-fixture.ts"
+const signal = () => new AbortController().signal
+
+test("GUI setup missing main IPC keeps inspection read-only without local file fallback", async t => {
+  const f = await nativeFixture(t)
+  const ctx = { servers: { get: () => ({ client: f.client }) }, main() { throw new Error("PRIVATE unavailable IPC") } }
+  const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
+  const before = f.counts().socketReads
+  assert.equal((await api.read(signal())).writable, false)
+  assert.equal((await api.save({ revision: "revision-one", fields: { debug: true } }, signal())).kind, "read_only")
+  assert.equal(f.counts().socketReads, before)
+  assert.equal(f.counts().saves, 0)
+})
+test("GUI setup rejects selected-client replacement instead of retargeting Save", async t => {
+  const f = await nativeFixture(t)
+  let client = f.client, saves = 0
+  const ctx = {
+    servers: { get: () => ({ client }) },
+    main: () => ({ read: async () => f.snapshot, save: async () => { saves++; return { kind: "saved_not_active", revision: "two", message: "Saved on disk." } } }),
+  }
+  const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
+  await api.read(signal())
+  client = { ...f.client }
+  await assert.rejects(api.save({ revision: "revision-one", fields: { debug: true } }, signal()), /target changed/)
+  assert.equal(saves, 0)
+})
+test("closing a setup editor disposes its native target", async t => {
+  const f = await nativeFixture(t)
+  let disposed = 0
+  const editor = createSetupEditor({ read: async () => f.snapshot, preview: async () => ({ groups: [], issues: [] }), save: async () => ({ kind: "read_only", message: "Read-only." }), dispose() { disposed++ } }, () => {})
+  editor.dispose()
+  assert.equal(disposed, 1)
+})
+test("GUI setup bounds a main provider that never starts", { timeout: 4000 }, async t => {
+  const f = await nativeFixture(t)
+  const ctx = { servers: { get: () => ({ client: f.client }) }, main: () => ({ read: () => new Promise(() => {}) }) }
+  const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
+  const result = await Promise.race([api.read(signal()), new Promise<undefined>(resolve => setTimeout(resolve, 2300))])
+  assert.equal(result?.writable, false, "unavailable main must fall back to read-only inspection")
+})

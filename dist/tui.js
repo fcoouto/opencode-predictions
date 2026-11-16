@@ -136,6 +136,11 @@ function createController(io) {
     preview() {
       return current.key ? results.get(current.key)?.text : void 0;
     },
+    invalidate() {
+      clear();
+      results.clear();
+      attempted.clear();
+    },
     dispose() {
       disposed = true;
       clear();
@@ -346,6 +351,27 @@ function log(show, message) {
 
 // src/client.ts
 function startClient(host) {
+  const suppressed = new Set(host.memory?.[0].suppressed);
+  const versions = /* @__PURE__ */ new Map();
+  let lastCompletion;
+  if (host.memory?.[0].mounted && host.memory[0].current) suppressed.add(host.memory[0].current);
+  host.memory?.[1]((draft) => {
+    draft.mounted = true;
+    draft.suppressed = [...suppressed];
+  });
+  const completionKey = () => {
+    const location = host.scope(), state = host.state();
+    return location && state ? JSON.stringify([location, state.key]) : void 0;
+  };
+  const suppress = () => {
+    const key = completionKey() ?? lastCompletion;
+    if (!key) return;
+    suppressed.add(key);
+    if (suppressed.size > 128) suppressed.delete(suppressed.values().next().value);
+    host.memory?.[1]((draft) => {
+      draft.suppressed = [...suppressed];
+    });
+  };
   const locations = /* @__PURE__ */ new Map();
   let scope;
   let current;
@@ -393,6 +419,7 @@ function startClient(host) {
   const sync = () => {
     const next = host.scope();
     if (next !== scope) {
+      lastCompletion = void 0;
       loading?.abort.abort();
       loading = void 0;
       cache = void 0;
@@ -408,6 +435,12 @@ function startClient(host) {
       }
     }
     current = host.state();
+    if (current) {
+      lastCompletion = completionKey();
+      if (host.memory && host.memory[0].current !== lastCompletion) host.memory[1]((draft) => {
+        draft.current = lastCompletion;
+      });
+    }
     if (manual && (manual.key && manual.key !== current?.key || manual.draft !== (current?.draft ?? "") || manual.epoch !== epoch)) manual = void 0;
   };
   const controller = createController({
@@ -521,6 +554,12 @@ ${reply.reason === "generation_failed" ? notice2.message : "Open Prediction stat
       try {
         const value = await abortable(() => host.status(signal), signal);
         if (live()) {
+          if (versions.has(location) && versions.get(location) !== value.version) {
+            suppress();
+            manual = void 0;
+            controller.invalidate();
+          }
+          versions.set(location, value.version);
           cache = value;
           checked = Date.now();
           const recoveredModels = record().requestFailure === inspectedFailure && !!value.candidates?.some((model) => model.state === "ready");
@@ -574,7 +613,7 @@ ${reply.reason === "generation_failed" ? notice2.message : "Open Prediction stat
       requestingManual = true;
       void controller.request(true, action.escalation ?? null, !!cache?.escalation && cache.escalation !== "off");
       requestingManual = false;
-    } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic) void controller.request();
+    } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic && !suppressed.has(completionKey())) void controller.request();
   };
   const request = (fromShortcut = false) => {
     if (disposed) return;
@@ -613,18 +652,21 @@ ${reply.reason === "generation_failed" ? notice2.message : "Open Prediction stat
       const value = scope ? record() : void 0;
       await host.openStatus(formatStatus(cache, { currentNotice: activeNotice() ?? (!scope ? reasonNotice("location_unavailable") : void 0), lastNotice: value?.lastNotice, suggestion: controller.preview(), diagnostics: host.diagnostics?.() }));
     },
-    invalidate() {
+    invalidate(options) {
       if (disposed) return;
+      if (options?.suppressAutomatic) suppress();
       epoch++;
       manual = void 0;
       loading?.abort.abort();
       loading = void 0;
       cache = void 0;
       checked = -Infinity;
-      controller.update({ eligible: false, draft: "" });
+      if (options?.suppressAutomatic) controller.invalidate();
+      else controller.update({ eligible: false, draft: "" });
       tick();
     },
     dispose() {
+      suppress();
       disposed = true;
       clearInterval(interval);
       loading?.abort.abort();
@@ -730,6 +772,7 @@ var Predictions = Rpc.define({
           writable: { type: "boolean" },
           reason: { type: "string" },
           fields: settingsFields,
+          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
@@ -793,6 +836,7 @@ var tui_default = Plugin.define({
     };
     const location = () => session()?.location ?? ctx.location ?? ctx.data.location.default();
     const client = startClient({
+      memory: ctx.storage?.memory("prediction-lifecycle", { initial: { mounted: false, suppressed: [] } }),
       scope: () => {
         const value = location();
         return value ? JSON.stringify(value) : void 0;
@@ -837,8 +881,8 @@ var tui_default = Plugin.define({
       { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() }
     ] }));
-    const stopConfig = ctx.data.on("config.updated", () => client.invalidate());
-    const stopPlugin = ctx.data.on("plugin.updated", () => client.invalidate());
+    const stopConfig = ctx.data.on("config.updated", () => client.invalidate({ suppressAutomatic: true }));
+    const stopPlugin = ctx.data.on("plugin.updated", () => client.invalidate({ suppressAutomatic: true }));
     return () => {
       stopConfig();
       stopPlugin();

@@ -8,7 +8,7 @@ let source: string
 let guiSource: string
 before(async () => {
   source = (await build({ entryPoints: ["src/adapters/desktop.ts"], bundle: true, write: false, format: "iife", globalName: "PredictionAdapter", platform: "browser" })).outputFiles[0].text
-  guiSource = (await build({ stdin: { contents: 'import gui from "./src/gui.ts"; import { createRoot } from "solid-js"; export { createSignal } from "solid-js"; export const mount = ctx => createRoot(dispose => { const stop = gui.setup(ctx); return () => { stop(); dispose() } })', resolveDir: process.cwd() }, bundle: true, write: false, format: "iife", globalName: "PredictionGUI", platform: "browser" })).outputFiles[0].text
+  guiSource = (await build({ stdin: { contents: 'import gui from "./src/gui.ts"; import { createRoot } from "solid-js"; export { createSignal } from "solid-js"; export const mount = ctx => createRoot(dispose => { const stop = gui.setup(ctx); return () => { stop(); dispose() } })', resolveDir: process.cwd() }, bundle: true, write: false, format: "iife", globalName: "PredictionGUI", platform: "browser", external: ["node:*"] })).outputFiles[0].text
   browser = await chromium.launch()
 })
 after(async () => { await browser?.close() })
@@ -152,6 +152,46 @@ test("Desktop owning-server config and plugin events invalidate suggestions befo
       assert.deepEqual(result, { claimedTab: false, draft: "", listeners: 0 })
     } finally { await page.close() }
   }
+})
+
+test("Desktop config events and plugin remount suppress the completed chat and preserve typed input", async () => {
+  const page = await fixture()
+  try {
+    await page.addScriptTag({ content: guiSource })
+    await page.evaluate(() => {
+      const w = window as any
+      w.predictionCalls = 0
+      const listeners = new Map<string, () => void>()
+      const memory = { mounted: false, suppressed: [] as string[] }
+      let version = "one"
+      const data = { on: (name: string, run: () => void) => { listeners.set(name, run); return () => listeners.delete(name) }, session: { get: () => ({ time: { idle: 2 } }), status: () => "idle", pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] } } }
+      const server = { id: "fixture", connected: true, data, client: { rpc: () => ({ status: async () => ({ enabled: true, automatic: true, debug: false, timeoutMs: 8000, contextTurns: 3, version, warnings: [] }), predict: async () => { w.predictionCalls++; return { text: "Old prediction" } }, events: { on: () => () => {} } }) } }
+      const session = { id: "ses_test", key: "fixture/ses_test", directory: "/project", location: { directory: "/project" }, server }
+      const ctx = {
+        storage: { memory: () => [memory, (mutation: (draft: typeof memory) => void) => mutation(memory)] },
+        sessions: { current: () => session },
+        screen: { current: () => ({ composer: { text: () => w.editor.textContent, focused: () => true, quotable: () => true, setText: (text: string) => { w.editor.textContent = text }, focus: () => w.editor.focus() } }) },
+        add() {}, app: { version: "test" }, toast: { show() {} },
+      }
+      w.reloadPredictionGUI = () => { w.stopGUI(); w.stopGUI = w.PredictionGUI.mount(ctx) }
+      w.configChanged = () => { version = "two"; listeners.get("config.updated")!() }
+      w.pluginChanged = () => listeners.get("plugin.updated")!()
+      w.stopGUI = w.PredictionGUI.mount(ctx)
+    })
+    await page.locator("[data-opencode-prediction]").filter({ hasText: "Old prediction" }).waitFor({ state: "visible" })
+    await page.evaluate(() => (window as any).configChanged())
+    await page.waitForTimeout(150)
+    assert.equal(await page.evaluate(() => (window as any).predictionCalls), 1)
+    await page.evaluate(() => (window as any).reloadPredictionGUI())
+    await page.waitForTimeout(150)
+    assert.equal(await page.evaluate(() => (window as any).predictionCalls), 1)
+    const editor = page.locator('[contenteditable="true"]')
+    await editor.fill("my existing draft")
+    await page.evaluate(() => (window as any).pluginChanged())
+    assert.equal(await editor.innerText(), "my existing draft")
+    assert.equal(await page.evaluate(() => (window as any).submissions), 0)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
 })
 
 test("Desktop navigation and clearing accepted edits restore the original ghost without generating again", async () => {
