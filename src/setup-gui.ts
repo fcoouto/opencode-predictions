@@ -3,19 +3,14 @@ import type { Plugin as GUIPlugin } from "@opencode/plugin/gui"
 import { Index, Show, createComponent, createRenderEffect, createSignal } from "solid-js"
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
+import { setupText } from "./setup-copy.ts"
 import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 
 type GUIContext = Parameters<GUIPlugin.Setup>[0]
 type Target = { serverID: string; label: string; location: { directory: string } }
 type CatalogModel = SetupSnapshot["catalog"][number]
 
-export const setupText = {
-  warning: "Avoid editing this configuration file elsewhere while saving. Changes made in another editor during a save can be overwritten, including unrelated settings. Recovery copies may not contain those changes.",
-  github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
-  cost: "Models are tried group by group. Entry order sets initial preference; runtime ranking can reorder candidates within a group. Previewing checks model names only and sends no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
-  escalation: "Errors always fall back to the next model automatically. Escalation only controls what happens when a model gives no suggestion.",
-  disabled: "Controls stay editable while predictions are off; changes apply when you turn them on.",
-}
+export { setupText }
 export const setupEntries = [
   { id: "predictions-enabled", title: "Enable Predictions", description: "Turn next-prompt predictions on or off", keywords: "enabled switch" },
   { id: "predictions-automatic", title: "Predict After Replies", description: "Predict automatically after each reply", keywords: "automatic after replies" },

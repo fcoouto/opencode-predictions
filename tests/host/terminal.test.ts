@@ -2,6 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
+import { readFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
 import { createFixture, isPredictionCall } from "./fixture.mjs"
 
@@ -65,4 +66,19 @@ for (const outcome of ["success", "abstention", "error", "timeout", "typing", "f
     if (outcome !== "error") assert.equal(generated.length, 2)
   }
   assert.equal(fixture.calls.filter(call => !isPredictionCall(call)).length, initial)
+})
+
+for (const columns of [100, 56]) test(`real CLI PTY Predictions Setup edits and saves through real dialogs at ${columns} columns without generating`, { timeout: 90000 }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] }, {}, { configSource: "global-jsonc" })
+  const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
+  const observation = join(fixture.root, "setup.json")
+  const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer") }] }
+  await fixture.writeConfig(config)
+  const { stdout } = await promisify(execFile)("python3", [resolve("tests/host/terminal.py"), process.env.OPENCODE_BIN ?? "opencode", session.id, fixture.directory, observation], {
+    env: { ...fixture.env, PREDICTIONS_OBSERVER: observation, PREDICTIONS_SETUP_TEST: "1", PREDICTIONS_PTY_COLS: String(columns), PREDICTIONS_CAPTURE_DIR: resolve(".test-artifacts/setup-cli", String(columns)) },
+    timeout: 80000, maxBuffer: 1024 * 1024,
+  })
+  assert.equal(JSON.parse(stdout).setupSaved, true)
+  assert.match(await readFile(fixture.configFile!, "utf8"), /"enabled": false/)
+  assert.equal(fixture.calls.filter(isPredictionCall).length, 0, "setup and Save never generate")
 })

@@ -3,7 +3,8 @@ import { createTerminalAdapter } from "./adapters/terminal.ts"
 import { startClient } from "./client.ts"
 import { Predictions } from "./rpc.ts"
 import type { Reply, Status } from "./service.ts"
-import { pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
+import { pluginVersion, feedbackRevision, configurationNotice, type Notice } from "./feedback.ts"
+import { registerSetupTUI } from "./setup-tui.ts"
 import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
@@ -51,9 +52,9 @@ export default Plugin.define({
       insert: adapter.insert,
       communicate: adapter.communicate,
       focus: () => ctx.renderer.currentFocusedEditor?.focus(),
-      show: notice => { ctx.ui.toast.show({ title: notice.title, message: notice.message + (notice.severity !== "info" ? "\nOpen Prediction status and preview from the command palette for details." : ""), variant: notice.severity, duration: 8000 }) },
+      show: notice => { ctx.ui.toast.show({ title: notice.title, message: notice.message + (notice.severity !== "info" ? (configurationNotice(notice) ? "\nOpen Predictions Setup from the command palette to fix this." : "\nOpen Prediction status and preview from the command palette for details.") : ""), variant: notice.severity, duration: 8000 }) },
       openStatus: async view => {
-        if (await ctx.ui.dialog.confirm({ title: "Prediction status and preview", message: view.summary, label: { confirm: "Technical details", cancel: "Close" } })) await ctx.ui.dialog.alert({ title: "Prediction technical details", message: view.details })
+        if (await ctx.ui.dialog.confirm({ title: "Prediction status and preview", message: view.summary + "\n\nTo change settings, run Predictions Setup from the command palette.", label: { confirm: "Technical details", cancel: "Close" } })) await ctx.ui.dialog.alert({ title: "Prediction technical details", message: view.details })
       },
       diagnostics: () => ({ host: "CLI", hostVersion: ctx.app.version, clientVersion: pluginVersion, feedbackRevision, composerEligible: adapter.eligible() }),
     })
@@ -63,8 +64,9 @@ export default Plugin.define({
       { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
       { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() },
     ] }))
+    const stopSetup = registerSetupTUI(ctx, () => client.status())
     const stopConfig = ctx.data.on("config.updated", () => client.invalidate({ suppressAutomatic: true }))
     const stopPlugin = ctx.data.on("plugin.updated", () => client.invalidate({ suppressAutomatic: true }))
-    return () => { stopConfig(); stopPlugin(); client.dispose(); adapter.dispose() }
+    return () => { stopSetup(); stopConfig(); stopPlugin(); client.dispose(); adapter.dispose() }
   },
 })

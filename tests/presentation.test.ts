@@ -19,7 +19,7 @@ test("CLI shows actionable error variants and reopens native status before a com
     assert.equal([...commands.values()].some(command => command.bind === "escape"), false, "predictions must not intercept Escape")
     assert.equal(toasts.length, 1)
     assert.equal(toasts[0].variant, "error")
-    assert.match(toasts[0].message, /Prediction status and preview/)
+    assert.match(toasts[0].message, /Open Predictions Setup from the command palette/, "configuration blockers point at setup")
     await commands.get("predictions.status").run()
     assert.match(dialogs[0].message, /snapshot.*Predictions need a model/s)
     assert.equal(dialogs[0].label.confirm, "Technical details")

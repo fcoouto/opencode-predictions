@@ -24,10 +24,17 @@ export async function nativeFixture(t: TestContext) {
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, socketReads = 0, metadataReads = 0, unavailable = 0
-  const hooks: { afterWrite?: () => void } = {}
+  const hooks: { afterWrite?: () => void; settingsFails?: boolean } = {}
   const authority = await startLocalSetup(location, {
     async read() { socketReads++; return structuredClone(snapshot) },
-    async save(input) { saves++; await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.(); return { kind: "saved_not_active", revision: "revision-two", message: "Saved on disk." } },
+    async save(input) {
+      saves++
+      if (input.revision !== snapshot.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
+      await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.()
+      snapshot.fields = { ...snapshot.fields, ...input.fields }; if (input.removeModels) delete snapshot.fields.models
+      snapshot.revision = "revision-two"
+      return { kind: "saved_not_active", revision: "revision-two", message: "Saved on disk." }
+    },
   })
   assert.ok(authority)
   t.after(() => authority.dispose())
@@ -37,6 +44,7 @@ export async function nativeFixture(t: TestContext) {
     if (request.url?.startsWith("/api/info")) response.end(JSON.stringify({ pid: process.pid, version: "2.2.6" }))
     else if (request.url?.includes("/settings")) {
       metadataReads++
+      if (hooks.settingsFails) { response.statusCode = 404; response.end(JSON.stringify({ type: "rpc.method_not_found", message: "PRIVATE missing method" })); return }
       if (unavailable-- > 0) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "RPC is starting." })); return }
       response.end(JSON.stringify({ output: { ...snapshot, writable: false, localAuthority: { id: authority.id } } }))
     }

@@ -72,7 +72,7 @@ export default Plugin.define({
         }
         await writeFile(process.env.PREDICTIONS_OBSERVER + ".save", JSON.stringify({ ...result, active: editor.state().snapshot?.effective?.debug === true }))
       } finally { editor.dispose() }
-    } }, { bind: "f12", run: () => ctx.keymap.dispatch("predictions.request") }] }))
+    } }, { bind: "f6", run: () => ctx.keymap.dispatch("predictions.setup") }, { bind: "f12", run: () => ctx.keymap.dispatch("predictions.request") }] }))
     if (process.env.PREDICTIONS_OBSERVER) {
       const observation = process.env.PREDICTIONS_OBSERVER
       void writeFile(observation + ".memory", JSON.stringify(handoff ? { available: true, generations: handoff[0].generations, token: handoff[0].token } : { available: false }))

@@ -13,7 +13,7 @@ import time
 
 binary, session_id, directory, observation = sys.argv[1:]
 master, slave = pty.openpty()
-fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, 100, 0, 0))
+fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, int(os.environ.get("PREDICTIONS_PTY_COLS", "100")), 0, 0))
 child = subprocess.Popen([binary, "--standalone", "--session", session_id, directory], stdin=slave, stdout=slave, stderr=slave, env=os.environ, cwd=directory, start_new_session=True)
 os.close(slave)
 output = bytearray()
@@ -64,8 +64,47 @@ def wait_placeholder(expected, contains=False):
 
     pump_until(ready)
 
+import re
+
+def screen_text():
+    return re.sub(r"\x1b\[[0-9;?<>=]*[ -/]*[@-~]|\x1b[()][A-Z0-9]|\x1b[=>]", "", output.decode(errors="replace"))
+
+def capture(name):
+    directory_ = os.environ.get("PREDICTIONS_CAPTURE_DIR")
+    if directory_:
+        pathlib.Path(directory_).mkdir(parents=True, exist_ok=True)
+        pathlib.Path(directory_, name + ".txt").write_text(screen_text()[-4000:])
+
+def send_and_wait(keys, expected, seconds=15):
+    """Send keys, then wait until the real dialog paints the expected text."""
+    output.clear()
+    os.write(master, keys)
+    pump_until(lambda: expected in screen_text(), seconds)
+
 try:
-    if os.environ.get("PREDICTIONS_SAVE_TEST") == "1":
+    if os.environ.get("PREDICTIONS_SETUP_TEST") == "1":
+        pump_until(lambda: pathlib.Path(observation + ".ready").exists())
+        send_and_wait(b"\x1b[17~", "Predictions Setup")
+        pump_until(lambda: "Behavior" in screen_text() and "Advanced" in screen_text())
+        capture("root")
+        assert "unsaved" not in screen_text()
+        # Behavior is the first selectable row: open it and toggle Enable Predictions.
+        send_and_wait(b"\r", "Enable Predictions")
+        capture("behavior")
+        os.write(master, b"\r")
+        pump_until(lambda: "Off" in screen_text())
+        output.clear()
+        os.write(master, b"\x1b")
+        pump_until(lambda: "unsaved changes" in screen_text())
+        capture("root-dirty")
+        # Type to filter, then choose Save changes.
+        send_and_wait(b"Save", "Save changes")
+        os.write(master, b"\r")
+        pump_until(lambda: "Saved" in screen_text(), 20)
+        capture("saved")
+        os.write(master, b"\r")
+        print(json.dumps({"setupSaved": True}))
+    elif os.environ.get("PREDICTIONS_SAVE_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
         automatic = os.environ.get("PREDICTIONS_SAVE_AUTOMATIC") == "true"
         model_calls = pathlib.Path(directory).parent.joinpath("prediction-models.json")
