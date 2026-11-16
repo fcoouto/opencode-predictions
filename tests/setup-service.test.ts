@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { createSetupService } from "../src/setup-service.ts"
 import type { ConfigStore } from "../src/config.ts"
 import type { CatalogModel } from "../src/models.ts"
-import type { ConfigSnapshot, SettingsInput } from "../src/setup.ts"
+import { changedFields, type ConfigSnapshot, type SettingsInput } from "../src/setup.ts"
 import { Predictions } from "../src/rpc.ts"
 import { createService, type ServiceAPI } from "../src/service.ts"
 
@@ -68,7 +68,7 @@ test("setup reads stored and effective fields separately and returns only safe m
   assert.equal(snapshot.revision, "r1")
   assert.deepEqual(snapshot.fields, { models: "local/family/a#low", automatic: false })
   assert.equal(snapshot.serviceVersion, "mount-one")
-  assert.deepEqual(snapshot.effective, { enabled: true, models: ["local/family/a#low"], automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false })
+  assert.deepEqual(snapshot.effective, { enabled: true, models: ["local/family/a#low"], automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false })
   assert.deepEqual(snapshot.catalog, catalog.map(({ providerID, id, name, enabled, variants }) => ({ providerID, id, name, enabled, variants: variants.map(({ id }) => ({ id })) })))
   assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE/)
   assert.deepEqual(f.counts(), { metadataCalls: 1, writes: 0 })
@@ -169,4 +169,33 @@ test("public RPC declares read and preview without a write or client-supplied ta
   assert.ok("settings" in Predictions.methods)
   assert.ok("previewSettings" in Predictions.methods)
   assert.equal("saveSettings" in Predictions.methods, false)
+})
+
+test("setup rejects nonboolean GitHub PR context before writing and never retrieves PR data", async () => {
+  const realFetch = globalThis.fetch
+  let fetches = 0
+  globalThis.fetch = (async () => { fetches++; throw new Error("PRIVATE network") }) as typeof fetch
+  try {
+    const f = fixture()
+    for (const value of [null, 1, "true", [], {}]) {
+      const input = { includeGithubPRContext: value } as SettingsInput
+      assert.equal((await f.service.preview(input, signal())).issues.some(issue => issue.field === "includeGithubPRContext" && issue.severity === "error"), true, String(value))
+      const result = await f.service.save({ revision: "r1", fields: input }, signal())
+      assert.equal(result.kind, "invalid", String(value))
+    }
+    assert.equal((await f.service.preview({ includeGithubPRContext: true }, signal())).issues.length, 0)
+    await f.service.read(signal())
+    assert.deepEqual(f.counts().writes, 0)
+    assert.equal(fetches, 0, "setup must not retrieve PR metadata")
+  } finally { globalThis.fetch = realFetch }
+})
+
+test("GitHub PR context participates in changed-field detection and saved-not-active comparison", async () => {
+  assert.deepEqual(changedFields({}, { debug: true }), { debug: true })
+  assert.deepEqual(changedFields({ includeGithubPRContext: true }, { includeGithubPRContext: false }), { includeGithubPRContext: false })
+  assert.deepEqual(changedFields({}, { includeGithubPRContext: false }), { includeGithubPRContext: false })
+  const f = fixture()
+  f.store.write = async (_revision, fields) => { f.snapshot.fields = { ...f.snapshot.fields, ...fields }; f.snapshot.revision = "r2"; return { kind: "written", revision: "r2" } }
+  const result = await f.service.save({ revision: "r1", fields: { includeGithubPRContext: true } }, signal())
+  assert.equal(result.kind, "saved_not_active", "unchanged effective value means activation is unverified")
 })

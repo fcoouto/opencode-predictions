@@ -17,13 +17,13 @@ const escalation = {
 
 const settingsFields = {
   type: "object",
-  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {} },
+  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {}, includeGithubPRContext: {} },
   additionalProperties: false,
 } as const
 const setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
     group: { type: "integer", minimum: 0 }, entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] }, code: { type: "string" }, message: { type: "string" },
   },
@@ -45,12 +45,13 @@ const catalogModel = {
 const effectiveOptions = {
   type: "object",
   properties: {
-    enabled: { type: "boolean" }, automatic: { type: "boolean" }, debug: { type: "boolean" },
+    enabled: { type: "boolean" }, automatic: { type: "boolean" }, debug: { type: "boolean" }, includeGithubPRContext: { type: "boolean" },
+    contextFile: { type: "string" },
     escalation: { type: "string", enum: ["off", "manual", "automatic"] },
     timeoutMs: { type: "integer", minimum: 1, maximum: 2147483647 }, contextTurns: { type: "integer", minimum: 1, maximum: 5 },
     models: { type: "array", items: { type: "string" } },
   },
-  required: ["enabled", "automatic", "debug", "escalation", "timeoutMs", "contextTurns"], additionalProperties: false,
+  required: ["enabled", "automatic", "debug", "includeGithubPRContext", "escalation", "timeoutMs", "contextTurns"], additionalProperties: false,
 } as const
 
 export const Predictions = Rpc.define({

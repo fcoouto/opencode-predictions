@@ -22,7 +22,7 @@ export type ConfigHost = {
 }
 export type ConfigWriteResult = { kind: "written"; revision: string } | { kind: "conflict" | "read_only" | "failed"; message: string }
 
-const keys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] as const
+const keys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] as const
 const run = promisify(execFile)
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
 const readOnly = "This configuration source or filesystem is not verified for setup writes."

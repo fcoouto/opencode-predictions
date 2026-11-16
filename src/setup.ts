@@ -2,7 +2,7 @@ import { parseOptions, type Options } from "./options.ts"
 import type { Candidate, CatalogModel } from "./models.ts"
 import { abortable } from "./service.ts"
 
-export const settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] as const
+export const settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] as const
 export type SettingKey = typeof settingKeys[number]
 export type SettingsInput = Partial<Record<SettingKey, unknown>>
 export type ConfigSnapshot = { revision: string; source?: string; scope: "global"; writable: boolean; reason?: string; fields: SettingsInput }

@@ -6,7 +6,7 @@ const open = <Fields extends Schema.Struct.Fields>(fields: Fields) => Schema.Str
 const location = open({ directory: Schema.String, workspaceID: Schema.optionalKey(Schema.String) })
 const fields = Schema.Record(Schema.String, Schema.Unknown)
 const issue = Schema.Struct({
-  field: Schema.Literals(["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"]),
+  field: Schema.Literals(["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"]),
   group: Schema.optionalKey(Schema.Number), entry: Schema.optionalKey(Schema.Number),
   severity: Schema.Literals(["error", "warning"]), code: Schema.String, message: Schema.String,
 })

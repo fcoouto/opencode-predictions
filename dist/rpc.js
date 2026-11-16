@@ -19,13 +19,13 @@ var escalation = {
 };
 var settingsFields = {
   type: "object",
-  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {} },
+  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {}, includeGithubPRContext: {} },
   additionalProperties: false
 };
 var setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
     group: { type: "integer", minimum: 0 },
     entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] },
@@ -59,12 +59,14 @@ var effectiveOptions = {
     enabled: { type: "boolean" },
     automatic: { type: "boolean" },
     debug: { type: "boolean" },
+    includeGithubPRContext: { type: "boolean" },
+    contextFile: { type: "string" },
     escalation: { type: "string", enum: ["off", "manual", "automatic"] },
     timeoutMs: { type: "integer", minimum: 1, maximum: 2147483647 },
     contextTurns: { type: "integer", minimum: 1, maximum: 5 },
     models: { type: "array", items: { type: "string" } }
   },
-  required: ["enabled", "automatic", "debug", "escalation", "timeoutMs", "contextTurns"],
+  required: ["enabled", "automatic", "debug", "includeGithubPRContext", "escalation", "timeoutMs", "contextTurns"],
   additionalProperties: false
 };
 var Predictions = Rpc.define({

@@ -1,7 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { startClient as createClient, type ClientState, type ClientHost } from "../src/client.ts"
-import type { Status } from "../src/service.ts"
+import { createService, type ServiceAPI, type Status } from "../src/service.ts"
 import { communicationText, type Communication } from "../src/controller.ts"
 
 function startClient(host: Omit<ClientHost, "scope" | "openStatus" | "show"> & { show(message: string): void }) {
@@ -132,6 +132,78 @@ test("remount without a completed chat does not suppress the next newly complete
     await new Promise(resolve => setTimeout(resolve, 120))
     assert.equal(calls, 1)
   } finally { next.dispose() }
+})
+
+test("duplicate settings invalidation permits one explicit fresh prediction without automatic retry or losing exhausted-cycle safeguards", async t => {
+  t.mock.timers.enable({ apis: ["setInterval", "setTimeout"] })
+  const settle = () => new Promise(resolve => setImmediate(resolve))
+  const generated: string[] = []
+  const calls: { manual?: boolean; escalation?: string }[] = []
+  const reasons: (string | undefined)[] = []
+  const notices: string[] = []
+  const paintedAfterReload: string[] = []
+  let reloaded = false
+  let ghost: string | undefined
+  let message: Communication | undefined
+  const state: ClientState = { key: "session/2", sessionID: "ses_local", completion: 2, eligible: true, draft: "" }
+  const api: ServiceAPI = {
+    session: async () => ({ id: "ses_local", time: { idle: 2, busy: 1 }, location: { directory: "/local" } }),
+    context: async () => [{ type: "user", text: "Check this." }, { type: "assistant", time: { completed: 2 }, content: [{ type: "text", text: "Checked." }] }, { type: "idle", outcome: "succeeded" }],
+    models: async () => ["a", "b"].map(id => ({ providerID: "local", id, enabled: true, variants: [] })),
+    generate: async model => { generated.push(model.id); return JSON.stringify({ prompt: model.id === "a" ? "Original A." : "Fresh B." }) },
+  }
+  let service = createService(api, { models: "local/a", escalation: "manual" }, "/local")
+  const client = createClient({
+    scope: () => "/local", state: () => state,
+    status: signal => service.inspect(signal),
+    predict: async (current, requestID, signal, _notice, manual, escalation) => {
+      calls.push({ manual, escalation })
+      const reply = await service.predict({ sessionID: current.sessionID, completion: current.completion, requestID, manual, escalation }, signal)
+      reasons.push(reply.reason)
+      return reply
+    },
+    paint: text => { ghost = text; if (reloaded && text) paintedAfterReload.push(text); return !!text },
+    insert: text => { state.draft = text; return true }, focus() {}, openStatus() {},
+    show: notice => notices.push(notice.code), communicate: value => { message = value },
+  })
+  try {
+    await settle(); await settle()
+    assert.equal(ghost, "Original A.")
+    service = createService(api, { models: "local/b", escalation: "manual" }, "/local")
+    reloaded = true
+    client.invalidate()
+    await settle(); await settle()
+    assert.equal(calls.length, 1, "a detected service-version change suppresses automatic prediction for this completion")
+    assert.equal(ghost, undefined)
+    client.invalidate()
+    await settle(); await settle()
+    t.mock.timers.tick(500)
+    await settle()
+    assert.equal(calls.length, 1, "duplicate invalidation must not automatically retry")
+    assert.deepEqual(generated, ["a"])
+    client.requestFromShortcut()
+    await settle(); await settle()
+    assert.deepEqual(calls.at(-1), { manual: true, escalation: undefined })
+    assert.deepEqual(generated, ["a", "b"])
+    assert.equal(ghost, "Fresh B.")
+    assert.equal(notices.includes("escalation_unavailable"), false)
+    t.mock.timers.tick(500)
+    await settle()
+    assert.equal(calls.length, 2)
+    for (let i = 0; i < 2; i++) {
+      client.requestFromShortcut()
+      await settle(); await settle()
+      assert.equal(calls.at(-1)?.escalation, "refresh")
+      assert.equal(reasons.at(-1), "escalation_refreshed")
+      assert.equal(message?.message, "No alternatives available.")
+      assert.deepEqual(generated, ["a", "b"])
+      t.mock.timers.tick(1500)
+      assert.equal(ghost, "Fresh B.")
+    }
+    assert.equal(paintedAfterReload.includes("Original A."), false)
+    assert.equal(client.accept(), true)
+    assert.equal(state.draft, "Fresh B.")
+  } finally { client.dispose() }
 })
 
 test("automatic client uses one prediction, rechecks input on Tab, and exposes scoped progress", async () => {
@@ -640,6 +712,22 @@ test("failure communication shows cause and recovery but never a next-model hint
       }
     } finally { client.dispose() }
   }
+})
+
+test("missing context shows usable recovery instead of denying an existing completed reply", async () => {
+  let message: Communication | undefined
+  const client = createClient({
+    scope: () => "/project", state: () => ({ key: "one", sessionID: "ses_one", completion: 2, eligible: true, draft: "" }),
+    status: async () => ({ enabled: true, automatic: true, escalation: "manual", debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+    predict: async () => ({ reason: "context_unavailable", escalation: { token: "next", group: 1, model: { providerID: "local", id: "b" }, name: "Second Model" } }),
+    paint: () => false, insert: () => { assert.fail("communication is not draft text") }, focus() {}, show() {}, openStatus() {}, communicate: value => { message = value },
+  })
+  try {
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(communicationText(message!), "Prediction unavailable for this response.\nContinue typing your next prompt.")
+    assert.equal(client.accept(), false)
+    assert.equal(message?.offer, undefined)
+  } finally { client.dispose() }
 })
 
 test("live fallback progress names actual model, preserves prefix, and ignores stale events", async () => {

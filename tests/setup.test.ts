@@ -5,7 +5,7 @@ import { parseOptions } from "../src/options.ts"
 import { createSetupEditor, type SetupAPI, type SetupSnapshot } from "../src/setup.ts"
 
 function editorFixture() {
-  const snapshot: SetupSnapshot = { revision: "r1", source: "/server/config.jsonc", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
+  const snapshot: SetupSnapshot = { revision: "r1", source: "/server/config.jsonc", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
   let writes = 0, reads = 0
   const api: SetupAPI = {
     read: async () => { reads++; return structuredClone(snapshot) },

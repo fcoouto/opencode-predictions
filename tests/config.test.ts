@@ -47,6 +47,32 @@ test("qualified 2.3.0 source preserves JSONC and rejects stale saves", async () 
   assert.equal((await readFile(f.file, "utf8")).replace(',"debug": true', ""), f.original)
   assert.equal((await f.store.write(snapshot.revision, { debug: false }, signal())).kind, "conflict")
 })
+test("setup preserves omitted GitHub PR context during unrelated edits", async () => {
+  const f = await fixture()
+  const before = await f.store.read(signal())
+  assert.equal(Object.hasOwn(before.fields, "includeGithubPRContext"), false)
+  assert.equal((await f.store.write(before.revision, { debug: true }, signal())).kind, "written")
+  assert.doesNotMatch(await readFile(f.file, "utf8"), /includeGithubPRContext/)
+})
+
+test("setup round-trips explicit GitHub PR context false and rejects nonboolean values before writing", async () => {
+  const f = await fixture()
+  const before = await f.store.read(signal())
+  for (const value of [null, 1, "true"]) {
+    assert.equal((await f.store.write(before.revision, { includeGithubPRContext: value }, signal())).kind, "failed", String(value))
+    assert.equal(await readFile(f.file, "utf8"), f.original)
+  }
+  assert.equal((await f.store.write(before.revision, { includeGithubPRContext: false }, signal())).kind, "written")
+  f.options.includeGithubPRContext = false
+  const after = await f.store.read(signal())
+  assert.equal(after.fields.includeGithubPRContext, false, "an explicit false is a persisted boolean, not an omission")
+  assert.match(await readFile(f.file, "utf8"), /"includeGithubPRContext": false/)
+  assert.equal((await f.store.write(after.revision, { includeGithubPRContext: true }, signal())).kind, "written")
+  f.options.includeGithubPRContext = true
+  assert.equal((await f.store.read(signal())).fields.includeGithubPRContext, true)
+  assert.match(await readFile(f.file, "utf8"), /synthetic-private-option/)
+})
+
 test("store exposes only known fields and changes only the requested bytes", async () => {
   const f = await fixture()
   const before = await f.store.read(signal())

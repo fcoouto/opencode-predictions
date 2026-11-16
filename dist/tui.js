@@ -68,7 +68,7 @@ function createController(io) {
       if (snapshot.key && snapshot.draft) {
         remember(snapshot.key);
         const result = results.get(snapshot.key);
-        if (result?.text) result.communication = void 0;
+        if (result?.text || result?.authority) result.communication = void 0;
         else results.delete(snapshot.key);
       }
       paint();
@@ -83,7 +83,7 @@ function createController(io) {
         exhausted();
         return;
       }
-      const escalation2 = manual ? communication?.offer?.token ?? (continuation && attempted.has(key) ? "refresh" : void 0) : void 0;
+      const escalation2 = manual ? communication?.offer?.token ?? (continuation && results.get(key)?.authority ? "refresh" : void 0) : void 0;
       const refreshing = manual && !!communication && !communication.offer;
       let noAlternatives = false;
       remember(key);
@@ -96,7 +96,8 @@ function createController(io) {
         if (!disposed && !request.signal.aborted && current.key === key && !current.draft) {
           const text = reply.text || results.get(key)?.text;
           const next = reply.communication ?? (reply.escalation ? { message: "", offer: reply.escalation } : !reply.text && communication ? { message: text ? "" : "No suggestion." } : void 0);
-          results.set(key, { text, communication: next });
+          const authority = !!reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "") || results.get(key)?.authority;
+          results.set(key, { text, communication: next, authority });
           noAlternatives = refreshing && reply.reason === "escalation_refreshed" && !next?.offer;
         }
       } catch {
@@ -218,13 +219,13 @@ var encoder = new TextEncoder();
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.1.0",
+  version: "0.2.0",
   description: "Next-prompt predictions for OpenCode Desktop and CLI",
   type: "module",
   license: "MIT",
   repository: { type: "git", url: "https://github.com/fcoouto/opencode-predictions.git" },
   engines: { node: ">=26.4.0" },
-  files: ["dist", "README.md", "LICENSE"],
+  files: ["dist", "README.md", "readme-demo.svg", "LICENSE"],
   exports: {
     ".": "./dist/index.js",
     "./tui": "./dist/tui.js",
@@ -267,13 +268,16 @@ function reasonNotice(reason) {
     disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
-    context_unavailable: ["No completed response to predict from.", "Finish an assistant response with usable conversation text, then request a prediction."],
+    context_unavailable: ["Prediction unavailable for this response.", "Continue typing your next prompt."],
     composer_unavailable: ["The prompt is not ready for a prediction", "Clear the prompt and close menus or pending input, then request a prediction."],
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
   };
   if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] };
   if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true };
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true };
+  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in the global plugin options and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." };
+  if (reason === "context_file_too_large") return { code: reason, severity: "error", title: "Prediction context file is too large", message: "Reduce the contextFile contents to at most 8192 UTF-8 bytes, then request a prediction again. No model was called." };
+  if (reason === "context_file_invalid") return { code: reason, severity: "error", title: "Prediction context file is not valid text", message: "Save contextFile as UTF-8 text without binary control characters, then request a prediction again. No model was called." };
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." };
   if (reason === "timeout") return { code: reason, severity: "error", title: "Prediction timed out", message: "The prediction did not finish within the configured timeout. Check model availability in Prediction status and preview before requesting again." };
   return { code: "service_unavailable", severity: "error", title: "Prediction service unavailable", message: "Predictions could not complete. Check the OpenCode service connection, then request a prediction again. Open Prediction status and preview for details." };
@@ -288,7 +292,7 @@ function statusNotice(status) {
   }
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
-    const validation = /^(Plugin options|enabled|automatic|debug|escalation|timeoutMs|contextTurns|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
+    const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
     return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Correct this plugin's options in your OpenCode configuration.`, persistent: true };
   }
   if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
@@ -299,6 +303,7 @@ function formatStatus(status, details) {
   if (notice2) lines.push(notice2.message);
   if (status) {
     lines.push("", `Mode: ${status.automatic ? "Automatic" : "Manual only"}`, `Models: ${status.models ?? "Not configured"}`);
+    if (status.contextFile) lines.push(`Context file: ${status.contextFile}`);
     lines.push(`Prediction escalation: ${status.escalation === "automatic" ? "Automatic \u2014 at most one abstention-triggered transition; errors continue through untried models and may consume paid provider quota." : status.escalation === "manual" ? "Manual \u2014 Alt+Shift+P tries an untried model using its provider's quota; errors fall back automatically." : "Off"}`);
     const groups = status.groups ?? (status.candidates ? [{ selectors: status.models ?? "", candidates: status.candidates }] : []);
     for (const [index, group] of groups.entries()) {
@@ -320,12 +325,16 @@ function formatStatus(status, details) {
     `Last latency: ${status?.lastLatencyMs === void 0 ? "Unknown" : status.lastLatencyMs + " ms"}`,
     `Timeout: ${status?.timeoutMs ?? "Unknown"} ms`,
     `Context turns: ${status?.contextTurns ?? "Unknown"}`,
+    `GitHub PR context: ${status?.includeGithubPRContext ?? false}`,
     `Debug: ${status?.debug ?? "Unknown"}`,
     ...Object.entries(details.diagnostics ?? {}).map(([key, value]) => `${key}: ${String(value)}`)
   ];
   if (status && status.feedbackRevision !== feedbackRevision) technical.push("Feedback capabilities differ or are unknown. Check the installed client and server plugin versions to confirm compatibility.");
   return { summary: lines.join("\n"), details: technical.join("\n") };
 }
+
+// src/github-prompt.ts
+var encoder2 = new TextEncoder();
 
 // src/service.ts
 async function abortable(work, signal) {
@@ -528,7 +537,7 @@ function startClient(host) {
           const refreshed = reply.reason === "escalation_refreshed" || escalation2 === "refresh";
           const abstained = reply.reason === "no_suggestion" && !refreshed;
           const message = reply.text || controller.preview() || refreshed || ["stale", "cancelled"].includes(reply.reason ?? "") ? "" : abstained ? reply.modelName ? `[${reply.modelName}] provided no prediction.` : "No prediction." : notice2 ? `${notice2.title}
-${reply.reason === "generation_failed" ? notice2.message : "Open Prediction status and preview for recovery."}` : "";
+${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? notice2.message : "Open Prediction status and preview for recovery."}` : "";
           return { ...reply, communication: { message, offer: reply.text || abstained || refreshed ? reply.escalation : void 0 } };
         }
         return reply;
@@ -697,13 +706,13 @@ var escalation = {
 };
 var settingsFields = {
   type: "object",
-  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {} },
+  properties: { models: {}, enabled: {}, automatic: {}, escalation: {}, timeoutMs: {}, contextTurns: {}, debug: {}, includeGithubPRContext: {} },
   additionalProperties: false
 };
 var setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
     group: { type: "integer", minimum: 0 },
     entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] },
@@ -737,12 +746,14 @@ var effectiveOptions = {
     enabled: { type: "boolean" },
     automatic: { type: "boolean" },
     debug: { type: "boolean" },
+    includeGithubPRContext: { type: "boolean" },
+    contextFile: { type: "string" },
     escalation: { type: "string", enum: ["off", "manual", "automatic"] },
     timeoutMs: { type: "integer", minimum: 1, maximum: 2147483647 },
     contextTurns: { type: "integer", minimum: 1, maximum: 5 },
     models: { type: "array", items: { type: "string" } }
   },
-  required: ["enabled", "automatic", "debug", "escalation", "timeoutMs", "contextTurns"],
+  required: ["enabled", "automatic", "debug", "includeGithubPRContext", "escalation", "timeoutMs", "contextTurns"],
   additionalProperties: false
 };
 var Predictions = Rpc.define({
