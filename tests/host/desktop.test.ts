@@ -144,7 +144,7 @@ for (const kind of ["invalid", "temporary"] as const) test(`real isolated Deskto
     await page.evaluate(() => (window as any).__predictionFixture.status())
     await page.getByRole("dialog").getByText(/Prediction status snapshot/).waitFor({ state: "visible" })
     await page.getByRole("dialog").getByRole("button", { name: "Technical details", exact: true }).click()
-    await page.getByRole("dialog").getByText(/Service plugin: 0\.2\.0/).waitFor({ state: "visible" })
+    await page.getByRole("dialog").getByText(/Service plugin: 0\.3\.0/).waitFor({ state: "visible" })
   } finally { await app.close() }
 })
 

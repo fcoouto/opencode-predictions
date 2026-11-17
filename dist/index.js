@@ -282,7 +282,7 @@ function resolveModels(selectors, catalog) {
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.2.0",
+  version: "0.3.0",
   description: "Next-prompt predictions for OpenCode Desktop and CLI",
   type: "module",
   license: "MIT",
