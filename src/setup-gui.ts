@@ -389,7 +389,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   })
 
   ctx.add(SettingsPage, {
-    id: "predictions", title: "Predictions", icon: "bubble-5", entries: [{ id: "predictions", title: "Predictions Setup", description: "Configure prediction models and behavior", keywords: "predictions setup settings" }, ...setupEntries],
+    id: "predictions", title: "Predictions", icon: "comment", entries: [{ id: "predictions", title: "Predictions Setup", description: "Configure prediction models and behavior", keywords: "predictions setup settings" }, ...setupEntries],
     render: input => {
       if (input.target?.startsWith("predictions-advanced")) setAdvanced(true)
       // Re-run when the host's server or location becomes available later.
