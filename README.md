@@ -12,10 +12,11 @@
 </p>
 
 <p align="center">
-  <a href="#how-to-install">Install</a> &middot;
+  <a href="#get-started">Get started</a> &middot;
   <a href="#controls">Controls</a> &middot;
-  <a href="#settings">Settings</a> &middot;
+  <a href="#predictions-setup">Predictions Setup</a> &middot;
   <a href="#cost-and-privacy">Cost &amp; privacy</a> &middot;
+  <a href="#settings">Settings</a> &middot;
   <a href="#compatibility">Compatibility</a>
 </p>
 
@@ -28,30 +29,27 @@
 ## Keep the next step in sight
 
 OpenCode Predictions is an [OpenCode](https://opencode.ai) plugin for **prompt
-autocomplete**. When the assistant finishes, a useful next user prompt appears
-as ghost text. Take it, edit it, or keep typing your own.
+autocomplete**. When the assistant finishes, a useful next prompt appears as
+ghost text. Take it, edit it, or keep typing your own.
 
 **Tab accepts a suggestion for editing. It never submits it.**
 
 - **Stay on task.** Suggestions draw on recent conversation, not your unsent draft.
-- **Keep your main model.** Choose prediction models separately, with ordered
-  groups and automatic error fallback.
-- **Use either interface.** One global plugin entry loads Desktop and CLI support.
-- **Ask when you want.** Predict automatically after a response, or switch to
-  manual requests only.
+- **Keep your main model.** Choose prediction models separately, in ordered
+  fallback groups that take over when a model fails.
+- **Desktop and CLI.** One global plugin entry loads both.
+- **Ask when you want.** Predict after every reply, or only on request.
+- **See every setting.** [Predictions Setup](#predictions-setup) shows each option
+  and saves your changes where supported.
 
-The default directive asks for one concise next step toward your current goal,
-rather than guessing your exact next words. It prioritizes explicitly unfinished
-work or delivery gaps without inventing facts or bundling optional tasks.
-When a recommendation or single scoped approval request clearly continues your
-task, it favors a short contextual reply instead of repeating the proposal.
+<a id="how-to-install"></a>
 
-## How to install
+## Get started
 
-**Requires OpenCode V2.** See [tested versions and limitations](#compatibility).
-Prebuilt bundles are included; no local build is needed.
+**Requires OpenCode V2** ([tested versions](#compatibility)). Prebuilt bundles are
+included; there is nothing to build.
 
-### Add the plugin
+### 1. Add the plugin
 
 Open your existing global `~/.config/opencode/opencode.json` or
 `~/.config/opencode/opencode.jsonc`. Use whichever file you already have; do not
@@ -105,16 +103,28 @@ OpenCode installs the package from GitHub.
 Configuration changes reload automatically; use `/reload` if needed.
 The global entry loads both Desktop and CLI support. Do not put it only in `cli.json`.
 
-### Check your prediction model
+### 2. Choose a prediction model
 
-Connect your chosen provider through OpenCode. No API keys belong in plugin options.
-The example selects available `opencode` models whose ID or display name contains
-`free` and which support the `low` variant. Use **Prediction status and preview**
-to inspect matches. If none match, choose another selector or omit `#low`.
+Connect your provider through OpenCode. No API keys belong in plugin options.
+A selector is `provider/model`, optionally with a reasoning variant
+(`provider/model#low`), or a wildcard such as `provider/family-*`. The example
+above selects available `opencode` models whose ID or display name contains
+`free` and which support the `low` variant.
 
-> **Before your first prediction:** model calls can consume paid quota, and the
-> selected provider receives recent conversation text. “Free” model names do not
-> guarantee unlimited usage. Read [cost and privacy](#cost-and-privacy).
+Check what matched: open **Prediction status and preview**, or look at the match
+counts in [Predictions Setup](#predictions-setup). If nothing matches, choose
+another selector or omit `#variant`.
+
+> [!IMPORTANT]
+> Model calls can consume paid quota, and the selected provider receives recent
+> conversation text. “Free” model names do not guarantee unlimited usage. Read
+> [cost and privacy](#cost-and-privacy) before your first prediction.
+
+### 3. Try it
+
+Send a prompt. When the reply finishes, a suggestion appears as ghost text in the
+composer. Press <kbd>Tab</kbd> to take it for editing, or keep typing. If no
+suggestion appears, open **Prediction status and preview** to see why.
 
 ## Controls
 
@@ -123,6 +133,7 @@ to inspect matches. If none match, choose another selector or omit `#low`.
 | Accept and edit | <kbd>Tab</kbd> | Insert the visible prediction into the draft. **Never submits.** |
 | Request or try another | <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> | Request a prediction, or try another eligible model after a prediction or abstention. |
 | Request from the palette | **Predict next prompt** | Use the command-palette equivalent of the shortcut. |
+| Review or change settings | **Predictions Setup** | Open the settings page (Desktop) or menus (CLI). See [Predictions Setup](#predictions-setup). |
 | Inspect settings and errors | **Prediction status and preview** | Open a readable status snapshot with resolved models, safe errors, and the current suggestion. |
 
 On macOS, use <kbd>Option</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd>.
@@ -177,31 +188,48 @@ if the shortcut is not delivered, use **Predict next prompt** from the command p
 
 ## Predictions Setup
 
-Change every setting below without editing JSON. Open **Predictions Setup** from
-the command palette in the CLI or Desktop, or use **Predictions** in Desktop's
-settings. Desktop shows one page. The CLI shows menus in the same order:
+<p align="center">
+  <img src="docs/images/predictions-setup.png" width="900" alt="The Predictions page in OpenCode Desktop settings: Behavior switches, an explanation of the fallback order, and the first fallback group." />
+</p>
+
+<p align="center"><sub>OpenCode Desktop → Settings → Predictions. Example models are fictional.</sub></p>
+
+See and change every prediction setting in one place, without hunting for a JSON file.
+
+|  | Desktop | CLI |
+| --- | --- | --- |
+| **Open it** | Settings → **Predictions**, or the command palette → **Predictions Setup** | Command palette → **Predictions Setup** |
+| **Layout** | One page | Menus in the same order |
+| **Save** | Verified setups only ([details](#is-save-available-for-you)) | Verified `--standalone` sessions only ([details](#is-save-available-for-you)) |
+
+### What you can change
 
 1. **Behavior**: **Enable Predictions**, **Predict After Replies** and **Escalation Mode**.
-2. **Models**: ordered groups of models. Add a model by searching its name, or add a wildcard pattern such as `provider/family-*`. Choose a reasoning variant, move entries and groups, or remove them. Patterns stay patterns and are matched against current models.
+2. **Models**: ordered fallback groups. Groups run top to bottom, and a later group is tried when every model above it fails. Add a model by searching its name, or add a wildcard pattern such as `provider/family-*`; choose a reasoning variant; move or remove entries and groups. Patterns stay patterns and are matched against current models. See [model groups](#model-groups) for how ranking works.
+
 3. **Advanced** (collapsed in Desktop): **Timeout per model**, **Recent interactions**, **Include GitHub PR context** and **Debug notices**. GitHub PR context is off by default; turning it on may send descriptions and metadata of linked public and accessible private PRs to every attempted provider, including fallback and paid models.
 
-Changes stay in a draft until you choose **Save changes**. **Discard changes** restores
-the saved values. Leaving the CLI menu with unsaved edits asks first. Opening setup,
-previewing matches and saving never generate a prediction, fetch a PR or look up
-GitHub credentials. Previewing checks model names only and sends no conversation.
-A model group with no current match is kept and marked, so you can fix the pattern
-or connect the provider later.
+### Review, then save
 
-Settings apply to the plugin's entry in the global OpenCode configuration on the server
-you are using. Save edits that existing JSON or JSONC file in place and keeps its comments,
-other plugins and any option setup does not manage. Omitted options keep their defaults
-and are not written unless you change them. Setup cannot edit inline, project or
-otherwise overridden configuration; it then shows the current values read-only.
-Edit that source by hand.
+Changes stay in a draft until you choose **Save changes**; **Discard changes** restores the saved values. Leaving the CLI menu with unsaved edits asks first. Opening setup, previewing matches and saving never generate a prediction, fetch a PR or look up GitHub credentials. A model group with no current match is kept and marked, so you can fix the pattern or connect the provider later.
 
-Predictions use provider quota and may incur charges. A model's name does not mean it is free.
+Settings apply to the plugin's entry in the global OpenCode configuration on the server you are using. Save edits that existing JSON or JSONC file in place and keeps its comments, other plugins and any option setup does not manage. Omitted options keep their defaults and are not written unless you change them.
 
-### Where Save works
+> [!NOTE]
+> Predictions use provider quota and may incur charges. A model's name does not mean it is free.
+
+### Is Save available for you?
+
+Setup shows your current settings everywhere. **Save works on macOS in a verified setup:**
+Desktop **2.3.0** using its own bundled server, or CLI **2.2.6** started as
+`opencode --standalone`; the plugin installed from an absolute local path; and the
+server started with `OPENCODE_DISABLE_PROJECT_CONFIG=1`. In any other setup the page
+stays **read-only** and still shows what predictions actually use. Edit the
+configuration by hand instead ([Settings](#settings)), and do not change how you
+launch OpenCode only to enable setup.
+
+<details>
+<summary><strong>Every condition for Save</strong></summary>
 
 Setup shows your current settings everywhere. **Save is available only in a narrow, verified
 setup** and otherwise the page stays read-only (Desktop: "Read-only"; CLI: "Read-only" row).
@@ -234,6 +262,8 @@ This list is not exhaustive: any condition that cannot be verified keeps setup r
 If setup is read-only for you, edit the configuration by hand (see [Settings](#settings)). Do not
 change how you launch OpenCode only to enable setup.
 
+</details>
+
 ### Limits and recovery
 
 Save is best effort, not conflict-proof. It detects a change made since you opened setup and
@@ -253,6 +283,39 @@ OpenCode reloads the plugin after a save. If the message says the settings were 
 activation is not verified, reopen setup or check **Prediction status and preview**. If a
 connection was lost during Save, reopen setup before trying again: the change may already
 be saved, and setup never repeats a save by itself.
+
+## Cost and privacy
+
+Predictions and fallback attempts consume provider quota or paid tokens. Free-model
+names do not guarantee unlimited usage. Broad wildcards can select paid models;
+check resolved candidates before use. Timeouts and cancellation do not guarantee
+the provider stops generating or billing. Two clients viewing the same session
+can independently incur prediction costs.
+
+The selected provider receives recent user and assistant text and, when needed,
+the latest eligible human request from before that window, within the same
+compaction boundary, plus the optional explicitly configured global
+`contextFile` snapshot. This text may contain sensitive information.
+Every fallback provider also receives that snapshot.
+With `includeGithubPRContext: true`, attempted providers may also receive descriptions
+and metadata of linked public or authenticated private PRs. Keep it disabled if
+that disclosure is not acceptable; the default is `false`.
+Tool output, reasoning, attachments, conversation instruction payloads, synthetic
+messages, other sessions, and unsent drafts are excluded. Oversized conversation
+context uses marked excerpts that may omit details; the context file is never
+silently truncated.
+
+The plugin keeps context and suggestions in memory. It adds no conversation
+archive or telemetry. OpenCode and provider retention policies still apply.
+Automatic project instruction processing and learned preference memory are not
+supported. Only the explicitly configured global context file is read.
+
+Git installation stores plugin code in OpenCode's managed package cache
+(`~/.cache/opencode/npm/` by default, or under `XDG_CACHE_HOME`). Settings remain
+in `opencode.jsonc`. The plugin does not collect or copy project files into that
+cache. Normal predictions write no plugin-owned context or suggestion files.
+The optional model-pilot tool writes a JSON report only when invoked, under
+`.test-artifacts/` or an explicit `--output` path.
 
 ## Settings
 
@@ -617,42 +680,22 @@ and stale requests do not change rankings.
 
 </details>
 
-## Cost and privacy
+## How suggestions are chosen
 
-Predictions and fallback attempts consume provider quota or paid tokens. Free-model
-names do not guarantee unlimited usage. Broad wildcards can select paid models;
-check resolved candidates before use. Timeouts and cancellation do not guarantee
-the provider stops generating or billing. Two clients viewing the same session
-can independently incur prediction costs.
+<details>
+<summary><strong>The default directive</strong></summary>
 
-The selected provider receives recent user and assistant text and, when needed,
-the latest eligible human request from before that window, within the same
-compaction boundary, plus the optional explicitly configured global
-`contextFile` snapshot. This text may contain sensitive information.
-Every fallback provider also receives that snapshot.
-With `includeGithubPRContext: true`, attempted providers may also receive descriptions
-and metadata of linked public or authenticated private PRs. Keep it disabled if
-that disclosure is not acceptable; the default is `false`.
-Tool output, reasoning, attachments, conversation instruction payloads, synthetic
-messages, other sessions, and unsent drafts are excluded. Oversized conversation
-context uses marked excerpts that may omit details; the context file is never
-silently truncated.
+The default directive asks for one concise next step toward your current goal,
+rather than guessing your exact next words. It prioritizes explicitly unfinished
+work or delivery gaps without inventing facts or bundling optional tasks.
+When a recommendation or single scoped approval request clearly continues your
+task, it favors a short contextual reply instead of repeating the proposal.
 
-The plugin keeps context and suggestions in memory. It adds no conversation
-archive or telemetry. OpenCode and provider retention policies still apply.
-Automatic project instruction processing and learned preference memory are not
-supported. Only the explicitly configured global context file is read.
-
-Git installation stores plugin code in OpenCode's managed package cache
-(`~/.cache/opencode/npm/` by default, or under `XDG_CACHE_HOME`). Settings remain
-in `opencode.jsonc`. The plugin does not collect or copy project files into that
-cache. Normal predictions write no plugin-owned context or suggestion files.
-The optional model-pilot tool writes a JSON report only when invoked, under
-`.test-artifacts/` or an explicit `--output` path.
+</details>
 
 ## Compatibility
 
-Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`. Saving from Predictions Setup is verified only for the exact combinations in [Where Save works](#where-save-works), including Desktop `2.3.0`.
+Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`. Saving from Predictions Setup is verified only for the exact combinations in [Is Save available for you?](#is-save-available-for-you), including Desktop `2.3.0`.
 These are tested versions, not an allowlist. Private editor integration and the
 experimental Desktop API may need updates after OpenCode changes.
 
@@ -664,6 +707,6 @@ OpenCode V1, Mini, browser-only clients, and noninteractive predictions are not 
 
 ---
 
-[Install the plugin](#how-to-install) &middot;
+[Get started](#get-started) &middot;
 [Report a bug](https://github.com/fcoouto/opencode-predictions/issues) &middot;
 [OpenCode documentation](https://opencode.ai/docs/)
