@@ -25,7 +25,7 @@ export type ConfigWriteResult = { kind: "written"; revision: string } | { kind: 
 const keys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] as const
 const run = promisify(execFile)
 const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT"
-const readOnly = "This configuration source or filesystem is not verified for setup writes. See \"Where Save works\" in the README."
+const readOnly = "This configuration source or filesystem is not verified for setup writes. Save needs the global opencode.json or opencode.jsonc, a plugin installed by absolute local path and a server started with OPENCODE_DISABLE_PROJECT_CONFIG=1. See \"Where Save works\" in the README."
 const uncertain = "Changes may have been saved. Reopen settings before trying again."
 
 async function exists(path: string) {

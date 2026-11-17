@@ -298,3 +298,11 @@ test("a failed model preview is explained in the Models menu instead of silently
   const h = await harness(t, { fields: { models: [["local/b"]] }, previewFails: true })
   await h.run(pick("Models"), call => { const row = option(call, "Preview unavailable"); assert.ok(row, JSON.stringify(titles(call))); assert.ok(row.title.length + row.description.length <= 44); assert.doesNotMatch(JSON.stringify(call.options), /PRIVATE/); return undefined }, cancel)
 })
+
+test("the order explanation does not promise that no suggestion triggers the next group unless escalation says so", async t => {
+  const { setupText } = await import("../src/setup-copy.ts")
+  assert.doesNotMatch(setupText.order, /gives no suggestion/i, "Off and Manual escalation do not move to the next group on abstention")
+  assert.match(setupText.order, /fails/)
+  assert.match(setupText.order, /Escalation/)
+  void t
+})

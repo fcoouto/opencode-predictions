@@ -1,6 +1,6 @@
 import { Command, SettingsPage } from "@opencode/plugin/gui"
 import type { Plugin as GUIPlugin } from "@opencode/plugin/gui"
-import { Index, Show, createComponent, createRenderEffect, createSignal } from "solid-js"
+import { Index, Show, createComponent, createRenderEffect, createSignal, untrack } from "solid-js"
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
 import { setupText } from "./setup-copy.ts"
@@ -48,6 +48,8 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   const [timeoutText, setTimeoutText] = createSignal<string | undefined>()
   let pinned: { key: string; target: Target; editor: SetupEditor } | undefined
   let previewTimer: ReturnType<typeof setTimeout> | undefined
+  const timers = new Set<ReturnType<typeof setTimeout>>()
+  const later = (run: () => void, delay: number) => { const timer = setTimeout(() => { timers.delete(timer); if (!disposed) run() }, delay); timers.add(timer) }
   let disposed = false
 
   const target = (): Target | undefined => {
@@ -67,9 +69,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     // The Desktop main bridge can still be starting on first open; one quiet retry avoids a stuck read-only view.
     void editor.load().then(() => {
       const snapshot = editor.state().snapshot
-      // Preview is metadata-only, so match counts can show without any user action.
-      if (snapshot && groups().length) void editor.preview()
-      if (snapshot && !snapshot.writable) setTimeout(() => { if (!disposed && pinned?.editor === editor && !editor.state().dirty) void editor.load() }, 2500)
+      if (snapshot && !snapshot.writable) later(() => { if (pinned?.editor === editor && !editor.state().dirty) void editor.load() }, 2500)
     })
   }
   const current = () => { version(); return pinned?.editor }
@@ -95,6 +95,11 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     previewTimer = setTimeout(() => { if (!disposed) void pinned?.editor.preview() }, 300)
   }
   const setGroups = (value: string[][]) => { current()?.setGroups(value.filter(group => group.length)); schedulePreview() }
+  // Preview is metadata-only. Any edit, discard, save or reload clears it, so ask again whenever groups exist and nothing is pending.
+  createRenderEffect(() => {
+    const value = state()
+    if (value?.snapshot && groups().length && !value.preview && !value.previewing && !value.previewError && !value.loading && !value.saving) schedulePreview()
+  })
   // Focus follows the moved row: the first named control that still exists and is enabled, else the first enabled control in the row.
   // A host menu returns focus to its trigger when it closes, so the move is asserted once more after that.
   const focusControl = (id: string, ...names: string[]) => {
@@ -104,7 +109,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
       return names.map(named).find(Boolean) ?? controls.find(control => !control.disabled)
     }
     queueMicrotask(() => find()?.focus())
-    setTimeout(() => { const active = document.activeElement; if (!active || active === document.body || active.getAttribute("aria-haspopup") === "menu") find()?.focus() }, 60)
+    later(() => { const active = document.activeElement; if (!active || active === document.body || active.getAttribute("aria-haspopup") === "menu") find()?.focus() }, 60)
   }
   const issuesFor = (group: number, entry?: number) => (state()?.issues ?? []).filter(issue => issue.field === "models" && issue.group === group && (entry === undefined ? issue.entry === undefined : issue.entry === entry))
   const modelName = (selector: string) => {
@@ -141,7 +146,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
       const model = picked()
       if (!model) return
       const next = groups().map(group => [...group])
-      if (destination === "new") next.push([selectorFor(model, variant() || undefined)]); else next[destination].push(selectorFor(model, variant() || undefined))
+      if (destination === "new" || !next[destination]) next.push([selectorFor(model, variant() || undefined)]); else next[destination].push(selectorFor(model, variant() || undefined))
       setGroups(next); dialog.close()
     }
     return createComponent(ui.Dialog, {
@@ -163,7 +168,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     const add = () => {
       if (!value().trim() || problem()) return
       const next = groups().map(group => [...group])
-      if (destination === "new") next.push([value().trim()]); else next[destination].push(value().trim())
+      if (destination === "new" || !next[destination]) next.push([value().trim()]); else next[destination].push(value().trim())
       setGroups(next); dialog.close()
     }
     return createComponent(ui.Dialog, {
@@ -190,22 +195,28 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     return element
   }
   const groupTitle = (index: number) => `Group ${index + 1} — ${index === 0 ? "Tried first" : `If Group ${index} fails`}`
+  // A host may read a menu's label, items and disabled state once. Rebuild the menu whenever any of them changes instead of relying on reactivity.
+  const keyed = (key: () => string, build: () => any) => createComponent(Show as any, { get when() { return "k:" + key() }, keyed: true, // Show only calls `children` as a render function, and so re-runs it when the key changes, if it declares a parameter.
+    children: (_key: string) => untrack(build) })
   const addMenu = (label: string, destination: () => number | "new", icon: "plus" = "plus", trigger: "button" | "icon" = "button") =>
-    createComponent(ui.Menu, {
-      label, icon, trigger, placement: "bottom-end", get disabled() { return locked() },
+    keyed(() => String(locked()), () => createComponent(ui.Menu, {
+      label, icon, trigger, placement: "bottom-end", disabled: locked(),
       items: [
         { label: "Model…", icon: "models", onSelect: () => addDialog(destination()) },
         { label: "Pattern… (for example provider/family-*)", icon: "code", onSelect: () => patternDialog(destination()) },
       ],
-    })
+    }))
   const afterRemoval = (index: number, remaining: string[][]) => {
     if (remaining.length === 0) focusControl("predictions-models", "Add a model")
     else { const target = remaining[index] ? index : Math.max(0, index - 1); focusControl(`predictions-group-${target}`, `Group ${target + 1} actions`) }
   }
   const removeGroup = async (index: number) => {
     const group = groups()[index]
-    if (!group) return
+    if (!group || locked()) return
+    const text = group.join("\u0000")
     if (group.length > 1 && !await ctx.dialogs.confirm({ title: `Remove Group ${index + 1}?`, description: `This removes ${group.length} models from the draft. Nothing changes until you save.`, confirm: "Remove group", danger: true })) return
+    // The draft can change while the question is open; only remove the group that was asked about.
+    if (locked() || groups()[index]?.join("\u0000") !== text) return
     const next = groups().filter((_, position) => position !== index)
     setGroups(next)
     afterRemoval(index, next)
@@ -228,17 +239,15 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
             get children() {
               return box(
                 addMenu(`Add to Group ${index + 1}`, () => index),
-                createComponent(ui.Menu, {
-                  label: `Group ${index + 1} actions`, trigger: "icon", icon: "outline-dots", placement: "bottom-end", get disabled() { return locked() },
-                  get items() {
-                    return [
-                      { label: "Move group up", disabled: index === 0, onSelect: () => { setGroups(swap(groups(), index, index - 1)); focusControl(`predictions-group-${index - 1}`, `Group ${index} actions`) } },
-                      { label: "Move group down", disabled: index === groups().length - 1, onSelect: () => { setGroups(swap(groups(), index, index + 1)); focusControl(`predictions-group-${index + 1}`, `Group ${index + 2} actions`) } },
-                      { type: "separator" as const },
-                      { label: "Remove group", icon: "outline-trash" as const, onSelect: () => void removeGroup(index) },
-                    ] as UiMenuEntry[]
-                  },
-                }))
+                keyed(() => `${index}:${groups().length}:${locked()}`, () => createComponent(ui.Menu, {
+                  label: `Group ${index + 1} actions`, trigger: "icon", icon: "outline-dots", placement: "bottom-end", disabled: locked(),
+                  items: [
+                    { label: "Move group up", disabled: index === 0, onSelect: () => { setGroups(swap(groups(), index, index - 1)); focusControl(`predictions-group-${index - 1}`, `Group ${index} actions`) } },
+                    { label: "Move group down", disabled: index === groups().length - 1, onSelect: () => { setGroups(swap(groups(), index, index + 1)); focusControl(`predictions-group-${index + 1}`, `Group ${index + 2} actions`) } },
+                    { type: "separator" as const },
+                    { label: "Remove group", icon: "outline-trash" as const, onSelect: () => void removeGroup(index) },
+                  ] as UiMenuEntry[],
+                })))
             },
           }),
           createComponent(Index as any, {
@@ -250,27 +259,26 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                 return column(note(() => modelName(selector()) ? selector() : undefined), warnings(() => issuesFor(index, entry).map(issue => issue.message)))
               },
               get children() {
-                const move = (to: number) => () => {
+                const name = (position: number, selectorText: string) => `Actions for ${display(selectorText)}, group ${index + 1}, entry ${position + 1}`
+                const moveTo = (to: number) => () => {
                   const next = groups().map(items => [...items]); next[index] = swap(next[index], entry, to); setGroups(next)
-                  focusControl(`predictions-entry-${index}-${to}`, `Actions for ${display(next[index][to])}`)
+                  focusControl(`predictions-entry-${index}-${to}`, name(to, next[index][to]))
                 }
-                return createComponent(ui.Menu, {
-                  get label() { return `Actions for ${display(selector())}` }, trigger: "icon", icon: "outline-dots", placement: "bottom-end", get disabled() { return locked() },
-                  get items() {
-                    return [
-                      { label: "Move up", disabled: entry === 0, onSelect: move(entry - 1) },
-                      { label: "Move down", disabled: entry === group().length - 1, onSelect: move(entry + 1) },
-                      { type: "separator" as const },
-                      { label: "Remove", icon: "outline-trash" as const, onSelect: () => {
-                        const next = groups().map(items => [...items]); next[index].splice(entry, 1)
-                        const kept = next.filter(items => items.length)
-                        setGroups(kept)
-                        if (next[index].length) focusControl(`predictions-entry-${index}-${Math.min(entry, next[index].length - 1)}`, `Actions for ${display(next[index][Math.min(entry, next[index].length - 1)])}`)
-                        else afterRemoval(index, kept)
-                      } },
-                    ] as UiMenuEntry[]
-                  },
-                })
+                return keyed(() => `${index}:${entry}:${selector()}:${group().length}:${locked()}`, () => createComponent(ui.Menu, {
+                  label: name(entry, selector()), trigger: "icon", icon: "outline-dots", placement: "bottom-end", disabled: locked(),
+                  items: [
+                    { label: "Move up", disabled: entry === 0, onSelect: moveTo(entry - 1) },
+                    { label: "Move down", disabled: entry === group().length - 1, onSelect: moveTo(entry + 1) },
+                    { type: "separator" as const },
+                    { label: "Remove", icon: "outline-trash" as const, onSelect: () => {
+                      const next = groups().map(items => [...items]); next[index].splice(entry, 1)
+                      const kept = next.filter(items => items.length)
+                      setGroups(kept)
+                      if (next[index].length) { const target = Math.min(entry, next[index].length - 1); focusControl(`predictions-entry-${index}-${target}`, name(target, next[index][target])) }
+                      else afterRemoval(index, kept)
+                    } },
+                  ] as UiMenuEntry[],
+                }))
               },
             }),
           }),
@@ -284,7 +292,8 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     if (!value) return undefined
     if (value.error) return `${value.error} If this persists, update the Predictions plugin on this server.`
     const result = value.lastSave
-    if (!result) return undefined
+    // Say why Save is off, next to Save, whichever section the problem is in.
+    if (!result) return value.issues.find(issue => issue.severity === "error")?.message
     if (result.kind === "saved") return "Saved. The new settings are active."
     if (result.kind === "saved_not_active") return "Saved on disk, but activation is not verified. Reopen settings to check the active values."
     if (result.kind === "invalid") return "Fix the highlighted settings before saving."
@@ -376,7 +385,10 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                 id: "predictions-save", title: "Save changes", get description() { return note(() => setupText.warning) },
                 get children() {
                   return box(
-                    when(() => !!state()?.blocked, () => button(() => "Reload settings", () => { setTimeoutText(undefined); void pinned?.editor.load() }, { disabled: () => !!state()?.saving })),
+                    when(() => !!state()?.blocked, () => button(() => "Reload settings", async () => {
+                      if (state()?.dirty && !await ctx.dialogs.confirm({ title: "Discard unsaved prediction settings?", description: "Reloading shows the saved settings and discards your unsaved changes.", confirm: "Reload and discard", danger: true })) return
+                      setTimeoutText(undefined); void pinned?.editor.load()
+                    }, { disabled: () => !!state()?.saving })),
                     button(() => "Discard changes", () => { current()?.discard(); setTimeoutText(undefined) }, { disabled: () => !state()?.dirty || !!state()?.saving }),
                     button(() => (state()?.saving ? "Saving…" : "Save changes"), () => void current()?.save(), { variant: "contrast", disabled: () => readOnly() || !state()?.dirty || !!state()?.saving || !!state()?.issues.some(issue => issue.severity === "error") }))
                 },
@@ -400,5 +412,5 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     },
   })
   ctx.add(Command, { id: "setup", title: "Predictions Setup", group: "Predictions", keywords: "settings configure models", run: () => ctx.layout.settings("predictions") })
-  return () => { disposed = true; clearTimeout(previewTimer); pinned?.editor.dispose(); pinned = undefined }
+  return () => { disposed = true; clearTimeout(previewTimer); for (const timer of timers) clearTimeout(timer); timers.clear(); pinned?.editor.dispose(); pinned = undefined }
 }

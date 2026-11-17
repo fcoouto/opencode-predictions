@@ -130,3 +130,30 @@ test("setup ui: an edit made elsewhere while the page is open is never overwritt
     assert.equal(fixture.calls.filter(isPredictionCall).length, 0)
   } finally { await app.close() }
 })
+
+test("setup ui: after moving an entry the real host's menu names the entry that is now in each position", { timeout: 120000, skip }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model", "fixture/second"]] }, {}, { configSource: "global-jsonc" })
+  const { app, page, show } = await open(fixture, "entry-menu-profile")
+  try {
+    await show()
+    const labels = () => page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-entry-"] button[aria-label^="Actions for "]')].map(node => node.getAttribute("aria-label")!))
+    await page.waitForFunction(() => document.querySelectorAll('[data-action^="predictions-entry-"] button[aria-label^="Actions for "]').length === 2, undefined, { timeout: 20000 })
+    const before = await labels()
+    assert.match(before[0], /, group 1, entry 1$/)
+    assert.match(before[1], /, group 1, entry 2$/)
+    const name = (label: string) => label.replace(/^Actions for /, "").replace(/, group \d+, entry \d+$/, "")
+    assert.notEqual(name(before[0]), name(before[1]), "the two fixture models have different names")
+    await page.getByRole("button", { name: before[1], exact: true }).click()
+    await page.getByRole("menuitem", { name: "Move up", exact: true }).click()
+    await page.waitForFunction(first => document.querySelector('[data-action="predictions-entry-0-0"] button[aria-label^="Actions for "]')?.getAttribute("aria-label")?.startsWith("Actions for " + first), name(before[1]), { timeout: 10000 })
+    const after = await labels()
+    assert.equal(name(after[0]), name(before[1]), "position 1 now holds the entry that moved up")
+    assert.equal(name(after[1]), name(before[0]))
+    assert.match(after[0], /, group 1, entry 1$/)
+    // The moved entry's own menu now has Move up disabled, which follows its position, not the one the slot was created for.
+    await page.getByRole("button", { name: after[0], exact: true }).click()
+    assert.equal(await page.getByRole("menuitem", { name: "Move up", exact: true }).getAttribute("aria-disabled"), "true")
+    await page.keyboard.press("Escape")
+    assert.equal(fixture.calls.length, 0)
+  } finally { await app.close() }
+})

@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 import { readFile } from "node:fs/promises"
 import { pathToFileURL } from "node:url"
 import { resolve } from "node:path"
+import { builtinModules } from "node:module"
 
 test("packed contents include working entries and exclude local data and install-time builds", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8"))
@@ -42,14 +43,17 @@ test("packed setup surface: inspection-only RPC, no network Save or proof signin
   // Walk the window's static import graph from the GUI entry. The Desktop main bridge is loaded with a dynamic import,
   // so it is deliberately outside this graph.
   const seen = new Set(), pending = ["src/gui.ts"]
-  const nodeUse = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']node:/
+  // Every import specifier counts: static, side-effect, dynamic and require, across lines, with single or double quotes.
+  const builtin = new Set([...builtinModules, ...builtinModules.map(name => "node:" + name)])
+  const specifiers = source => [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g)].map(match => match[1])
+  const staticLocal = source => [...source.matchAll(/(?:\bfrom\s*|\bimport\s+)["'](\.\/[^"']+)["']/g)].map(match => match[1])
   while (pending.length) {
     const file = pending.pop()
     if (seen.has(file)) continue
     seen.add(file)
     const source = await readFile(file, "utf8")
-    assert.equal(nodeUse.test(source), false, `${file} runs in the window and must not use Node modules`)
-    for (const match of source.matchAll(/(?:^|\n)\s*(?:import|export)\s[^\n]*?from\s*["'](\.\/[^"']+)["']|(?:^|\n)\s*import\s*["'](\.\/[^"']+)["']/g)) pending.push("src/" + (match[1] ?? match[2]).replace(/^\.\//, ""))
+    for (const specifier of specifiers(source)) assert.equal(builtin.has(specifier) || specifier.startsWith("node:"), false, `${file} runs in the window and must not import ${specifier}`)
+    for (const local of staticLocal(source)) pending.push("src/" + local.replace(/^\.\//, ""))
   }
   for (const file of ["src/gui.ts", "src/setup-gui.ts", "src/setup-gui-api.ts", "src/setup.ts"]) assert.ok(seen.has(file), `${file} is part of the window graph`)
   assert.equal(seen.has("src/setup-main.ts"), false, "the main-process bridge is not part of the window graph")

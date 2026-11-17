@@ -871,7 +871,7 @@ function editSetting(text, index, key, value) {
 var keys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"];
 var run = promisify(execFile);
 var missing = (error) => error.code === "ENOENT";
-var readOnly = 'This configuration source or filesystem is not verified for setup writes. See "Where Save works" in the README.';
+var readOnly = 'This configuration source or filesystem is not verified for setup writes. Save needs the global opencode.json or opencode.jsonc, a plugin installed by absolute local path and a server started with OPENCODE_DISABLE_PROJECT_CONFIG=1. See "Where Save works" in the README.';
 var uncertain = "Changes may have been saved. Reopen settings before trying again.";
 async function exists(path) {
   try {

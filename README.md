@@ -210,19 +210,26 @@ Save needs all of the following, because anything else cannot be checked safely:
 - **macOS**, with the OpenCode server running on this computer.
 - **Desktop:** app version `2.3.0`, using the app's own bundled server. A server Desktop only
   connects to stays read-only. Desktop `2.2.7` is read-only.
-- **CLI:** version `2.2.6`, started as `opencode --standalone` (optionally with `--continue`,
-  `--auto`, `--print-logs`, `--session`, `--prompt`, `--log-level` and one project directory).
+- **CLI:** version `2.2.6`, started as `opencode --standalone` (optionally with `--continue`/`-c`,
+  `--auto`, `--print-logs`, `--session`/`-s`, `--prompt`, `--log-level` and one project directory given
+  as an absolute path or starting with `./` or `../`). The executable must be named `opencode`.
   Any other flag, a shared service, `--server`, a remote server, or `OPENCODE_SERVER`,
-  `OPENCODE_SERVER_URL`, a proxy variable, `NODE_OPTIONS` or `BUN_OPTIONS` in the environment
-  makes it read-only and says: "Local setup writes currently require a verified
-  opencode --standalone session."
+  `OPENCODE_SERVER_URL`, a proxy variable, `NODE_OPTIONS`, `BUN_OPTIONS`, `BUN_BE_BUN` or
+  `OPENCODE_DRIVE` in the environment makes it read-only and says: "Local setup writes currently
+  require a verified opencode --standalone session."
 - **The server's environment:** `OPENCODE_DISABLE_PROJECT_CONFIG=1`, and none of
-  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT` or `OPENCODE_CONFIG_DIR`. Project, inline or
-  explicitly selected configuration cannot be edited here.
+  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT` or `OPENCODE_CONFIG_DIR`. `XDG_CONFIG_HOME`, if
+  set, must be an absolute path. Project, inline or explicitly selected configuration cannot be
+  edited here, and neither can a setup with a system or managed configuration file present.
 - **The configuration:** exactly one of `~/.config/opencode/opencode.json` or `opencode.jsonc`,
-  owned by you and not writable by others, with no `plugins` folder beside it. The plugin must
-  be listed there once, as an object with an `options` object, by the **absolute local path it
-  is installed from**. A Git-installed plugin cannot be verified and stays read-only.
+  a regular file owned by you with one hard link, no ACLs and not writable by others, in a private
+  folder that is not a symlink, with no `plugins` folder beside it. The plugin must be listed there
+  once, as an object (not a plain string or a list) with an `options` object, by the **absolute local
+  path it is installed from**, and those `options` must match what the running plugin loaded, so a
+  change that has not reloaded yet keeps setup read-only. A plugin entry written as a list anywhere in the file, or a Git-installed plugin, cannot be
+  verified and stays read-only.
+
+This list is not exhaustive: any condition that cannot be verified keeps setup read-only.
 
 If setup is read-only for you, edit the configuration by hand (see [Settings](#settings)). Do not
 change how you launch OpenCode only to enable setup.

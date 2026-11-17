@@ -48,7 +48,8 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
   const lifetime = new AbortController()
   let generation = 0, previewAbort: AbortController | undefined
   const notify = () => { if (!lifetime.signal.aborted) changed() }
-  const resetPreview = () => { generation++; previewAbort?.abort(); state.preview = undefined; state.previewing = false }
+  // A new draft state invites a fresh preview, so a failure from an earlier one must not stay on screen.
+  const resetPreview = () => { generation++; previewAbort?.abort(); state.preview = undefined; state.previewing = false; state.previewError = undefined }
   const groups = () => { try { state.groups = readGroups(state.fields) } catch { state.groups = undefined } }
   const update = () => {
     state.issues = validateSettings(state.fields)

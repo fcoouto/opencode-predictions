@@ -1014,6 +1014,7 @@ function createSetupEditor(api, changed) {
     previewAbort?.abort();
     state.preview = void 0;
     state.previewing = false;
+    state.previewError = void 0;
   };
   const groups = () => {
     try {
@@ -1362,7 +1363,7 @@ function createTUISetupAPI(ctx, location, runtime) {
 var setupText = {
   warning: "Avoid editing this configuration file elsewhere while saving. Changes made in another editor during a save can be overwritten, including unrelated settings. Recovery copies may not contain those changes.",
   github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
-  order: "Groups run top to bottom. A later group is tried only when every model above it fails or gives no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
+  order: "Groups run top to bottom. A later group is tried when every model above it fails. With Escalation set to Automatically, another model is also tried once after no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
   cost: "Match counts check model names only and send no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
   escalation: "Errors always fall back to the next model automatically. Escalation only controls what happens when a model gives no suggestion.",
   disabled: "Controls stay editable while predictions are off; changes apply when you turn them on."
@@ -1602,7 +1603,7 @@ ${setupTUIText.fuller}`);
     const selector = await pick(editor);
     if (!selector) return;
     const next = groups(editor).map((group2) => [...group2]);
-    if (destination === "new") next.push([selector]);
+    if (destination === "new" || !next[destination]) next.push([selector]);
     else next[destination].push(selector);
     setGroups(editor, next);
     await editor.preview();
@@ -1619,7 +1620,7 @@ ${setupTUIText.fuller}`);
         }),
         { title: all.length ? "Add fallback group (model)" : "Add a model", value: "new-model", category: "Add" },
         { title: all.length ? "Add fallback group (pattern)" : "Add model pattern", value: "new-pattern", category: "Add" },
-        ...editor.state().previewError ? [{ title: "Preview unavailable", description: "Match counts hidden.", value: "preview", category: "More" }] : [],
+        ...editor.state().previewError ? [{ title: "Preview unavailable", description: "Match counts hidden.", value: "preview-retry", category: "More" }] : [],
         { title: "Preview matches", description: "Names only; sends nothing.", value: "preview", category: "More" },
         { title: "About models", description: "Cost, order, fallback.", value: "about", category: "More" }
       ];
@@ -1627,7 +1628,7 @@ ${setupTUIText.fuller}`);
       if (choice === void 0) return;
       if (choice === "new-model") await addTo(editor, "new", pickModel);
       else if (choice === "new-pattern") await addTo(editor, "new", pickPattern);
-      else if (choice === "preview") await editor.preview();
+      else if (choice === "preview" || choice === "preview-retry") await editor.preview();
       else if (choice === "about") await alert(setupText.order + " " + setupText.cost);
       else await group(editor, Number(choice.slice("group:".length)));
     }

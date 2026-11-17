@@ -209,7 +209,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     const selector = await pick(editor)
     if (!selector) return
     const next = groups(editor).map(group => [...group])
-    if (destination === "new") next.push([selector]); else next[destination].push(selector)
+    if (destination === "new" || !next[destination]) next.push([selector]); else next[destination].push(selector)
     setGroups(editor, next)
     await editor.preview()
   }
@@ -226,7 +226,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
         }),
         { title: all.length ? "Add fallback group (model)" : "Add a model", value: "new-model", category: "Add" },
         { title: all.length ? "Add fallback group (pattern)" : "Add model pattern", value: "new-pattern", category: "Add" },
-        ...(editor.state().previewError ? [{ title: "Preview unavailable", description: "Match counts hidden.", value: "preview", category: "More" }] : []),
+        ...(editor.state().previewError ? [{ title: "Preview unavailable", description: "Match counts hidden.", value: "preview-retry", category: "More" }] : []),
         { title: "Preview matches", description: "Names only; sends nothing.", value: "preview", category: "More" },
         { title: "About models", description: "Cost, order, fallback.", value: "about", category: "More" },
       ]
@@ -234,7 +234,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       if (choice === undefined) return
       if (choice === "new-model") await addTo(editor, "new", pickModel)
       else if (choice === "new-pattern") await addTo(editor, "new", pickPattern)
-      else if (choice === "preview") await editor.preview()
+      else if (choice === "preview" || choice === "preview-retry") await editor.preview()
       else if (choice === "about") await alert(setupText.order + " " + setupText.cost)
       else await group(editor, Number(choice.slice("group:".length)))
     }

@@ -96,13 +96,14 @@ async function mount(options: Options = {}): Promise<Page> {
       // A menu opens a list of items read at open time; choosing an item closes it and returns focus to the trigger, like the host.
       Menu: (p: any) => {
         const wrap = el("span", {}); const trigger = el("button", { type: "button", "aria-haspopup": "menu" }) as HTMLButtonElement
-        S.createRenderEffect(() => { wrap.setAttribute("data-menu", p.label); trigger.setAttribute("aria-label", p.label); if (p.trigger !== "icon") trigger.textContent = p.label })
-        trigger.dataset.menuIcon = p.icon ?? ""; S.createRenderEffect(() => { trigger.disabled = !!p.disabled })
+        // Worst case for a host: the label is read once when the menu is created, so a page that relies on reactive labels fails.
+        const label = p.label; wrap.setAttribute("data-menu", label); trigger.setAttribute("aria-label", label); if (p.trigger !== "icon") trigger.textContent = label
+        trigger.dataset.menuIcon = p.icon ?? ""; trigger.disabled = !!p.disabled
         let list: HTMLElement | undefined
         const close = () => { list?.remove(); list = undefined }
         trigger.onclick = () => {
           if (list) return close()
-          list = el("div", { role: "menu", "aria-label": p.label })
+          list = el("div", { role: "menu", "aria-label": label })
           for (const item of p.items) { if (item.type === "separator") { list.append(el("hr")); continue } const b = el("button", { role: "menuitem", type: "button" }) as HTMLButtonElement; b.textContent = item.label; b.disabled = !!item.disabled; b.onclick = () => { close(); item.onSelect(); setTimeout(() => trigger.focus(), 0) }; list.append(b) }
           wrap.append(list)
         }
@@ -247,7 +248,7 @@ test("Models opens with a Fallback order row that explains the order and the cos
     const intro = (await row(page, "predictions-models").textContent())!
     assert.match(intro, /Fallback order/)
     assert.match(intro, /top to bottom/)
-    assert.match(intro, /later group is tried only when/i)
+    assert.match(intro, /later group is tried when every model above it fails/i)
     assert.match(intro, /may incur charges/)
     assert.match(intro, /does not mean it is free/)
     assert.match(intro, /send(s)? no conversation/)
@@ -266,11 +267,11 @@ test("each group is a section with a match summary, an Add menu and a group-acti
     assert.deepEqual(await entryTitles(page), ["1. Family A", "1. Model B"])
     for (const name of ["Move up", "Move down", "Remove", "Move group up", "Remove group"]) assert.equal(await page.getByRole("button", { name, exact: true }).count(), 0, `no repeated text button "${name}"`)
     // Accessible names say which entry they act on, so a screen reader never hears "Actions, Actions, Actions".
-    for (const name of ["Actions for Family A", "Actions for Model B", "Add to Group 1", "Add to Group 2", "Group 1 actions", "Group 2 actions"]) assert.equal(await menu(page, name).count(), 1, name)
-    assert.match((await row(page, "predictions-group-0").textContent())!, /1 model matches now/)
+    for (const name of ["Actions for Family A, group 1, entry 1", "Actions for Model B, group 2, entry 1", "Add to Group 1", "Add to Group 2", "Group 1 actions", "Group 2 actions"]) assert.equal(await menu(page, name).count(), 1, name)
+    await page.waitForFunction(() => /1 model matches now/.test(document.querySelector('[data-action="predictions-group-0"]')?.textContent ?? ""))
     const controls = await page.locator('[data-section^="Group "] button').count()
     assert.equal(controls, 6, "2 groups with 1 entry each expose 6 controls (was 19)")
-    await menu(page, "Actions for Family A").getByRole("button").click()
+    await menu(page, "Actions for Family A, group 1, entry 1").getByRole("button").click()
     assert.deepEqual(await page.getByRole("menuitem").allTextContents(), ["Move up", "Move down", "Remove"])
     assert.equal(await page.getByRole("menuitem", { name: "Move up" }).isDisabled(), true)
   } finally { await page.close() }
@@ -310,14 +311,14 @@ test("an entry's actions menu reorders within a group and keeps focus on the mov
   const page = await mount({ fields: { models: [["local/family/a#low", "local/b"]] } })
   try {
     await idle(page)
-    await choose(page, "Actions for Model B", "Move up")
+    await choose(page, "Actions for Model B, group 1, entry 2", "Move up")
     assert.deepEqual(await entryTitles(page), ["1. Model B", "2. Family A"])
-    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Model B")
-    assert.deepEqual(await focused(page), { row: "predictions-entry-0-0", name: "Actions for Model B" })
-    await choose(page, "Actions for Model B", "Remove")
-    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Family A")
-    assert.deepEqual(await focused(page), { row: "predictions-entry-0-0", name: "Actions for Family A" }, "focus moves to the entry that took the removed one's place")
-    await choose(page, "Actions for Family A", "Remove")
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Model B, group 1, entry 1")
+    assert.deepEqual(await focused(page), { row: "predictions-entry-0-0", name: "Actions for Model B, group 1, entry 1" })
+    await choose(page, "Actions for Model B, group 1, entry 1", "Remove")
+    await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Family A, group 1, entry 1")
+    assert.deepEqual(await focused(page), { row: "predictions-entry-0-0", name: "Actions for Family A, group 1, entry 1" }, "focus moves to the entry that took the removed one's place")
+    await choose(page, "Actions for Family A, group 1, entry 1", "Remove")
     await page.getByText("No models configured").waitFor()
     await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Add a model")
     assert.deepEqual(await focused(page), { row: "predictions-models", name: "Add a model" })
@@ -600,6 +601,7 @@ test("after a conflict Save explains itself and Reload settings recovers", async
   const page = await mount({ saveKind: "conflict" })
   try {
     await idle(page)
+    await page.evaluate(() => { (window as any).confirmAnswer = true })
     await page.getByRole("switch", { name: "Enable Predictions" }).uncheck()
     await save(page).click()
     await page.waitForFunction(() => /Configuration changed/.test(document.querySelector('[data-footer] [role="status"]')?.textContent ?? ""))
@@ -612,5 +614,68 @@ test("after a conflict Save explains itself and Reload settings recovers", async
     await page.waitForFunction(() => !document.querySelector('[role="status"]')?.textContent?.includes("Reload settings"))
     assert.equal(await page.getByRole("button", { name: "Reload settings" }).count(), 0)
     assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isChecked(), true, "reloading shows the stored value")
+  } finally { await page.close() }
+})
+
+test("a menu that reads its label and disabled state only once still names the entry it acts on after a move and a removal", async () => {
+  const page = await mount({ fields: { models: [["local/family/a#low", "local/b", "local/family/a#high"]] } })
+  try {
+    await idle(page)
+    await choose(page, "Actions for Family A, group 1, entry 1", "Move down")
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "2. Family A", "3. Family A"])
+    for (const name of ["Actions for Model B, group 1, entry 1", "Actions for Family A, group 1, entry 2", "Actions for Family A, group 1, entry 3"]) assert.equal(await menu(page, name).count(), 1, name)
+    // The last entry cannot move down, and that follows the entry's position, not the one the slot was created for.
+    await menu(page, "Actions for Family A, group 1, entry 3").getByRole("button").click()
+    assert.equal(await page.getByRole("menuitem", { name: "Move down" }).isDisabled(), true)
+    await page.getByRole("menuitem", { name: "Move up" }).click()
+    await choose(page, "Actions for Model B, group 1, entry 1", "Remove")
+    assert.deepEqual(await entryTitles(page), ["1. Family A", "2. Family A"])
+    assert.equal(await menu(page, "Actions for Family A, group 1, entry 3").count(), 0, "labels follow positions after a removal")
+    // The same model twice stays distinguishable by position.
+    for (const name of ["Actions for Family A, group 1, entry 1", "Actions for Family A, group 1, entry 2"]) assert.equal(await menu(page, name).count(), 1, name)
+  } finally { await page.close() }
+})
+
+test("match counts come back after any edit that clears the preview, not only after group edits", async () => {
+  const page = await mount()
+  try {
+    await idle(page)
+    await page.waitForFunction(() => /1 model matches now/.test(document.querySelector('[data-action="predictions-group-0"]')?.textContent ?? ""))
+    await page.getByRole("switch", { name: "Enable Predictions" }).uncheck()
+    await page.waitForFunction(() => /1 model matches now/.test(document.querySelector('[data-action="predictions-group-0"]')?.textContent ?? ""), undefined, { timeout: 5000 })
+    await page.getByRole("button", { name: "Discard changes" }).click()
+    await page.waitForFunction(() => /1 model matches now/.test(document.querySelector('[data-action="predictions-group-0"]')?.textContent ?? ""), undefined, { timeout: 5000 })
+    assert.equal(await page.evaluate(() => (window as any).log.predictions + (window as any).log.fetches), 0)
+  } finally { await page.close() }
+})
+
+test("Reload settings asks before it discards an unsaved draft, and keeps the draft when declined", async () => {
+  const page = await mount({ saveKind: "conflict" })
+  try {
+    await idle(page)
+    await page.getByRole("switch", { name: "Enable Predictions" }).uncheck()
+    await save(page).click()
+    await page.getByRole("button", { name: "Reload settings" }).waitFor()
+    await page.evaluate(() => { (window as any).confirmAnswer = false })
+    await page.getByRole("button", { name: "Reload settings" }).click()
+    assert.equal(await page.evaluate(() => (window as any).log.confirms.length), 1)
+    assert.match(await page.evaluate(() => (window as any).log.confirms[0].title), /Discard/)
+    assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isChecked(), false, "declining keeps the draft")
+    await page.evaluate(() => { (window as any).confirmAnswer = true })
+    await page.getByRole("button", { name: "Reload settings" }).click()
+    await page.waitForFunction(() => !document.body.textContent?.includes("Reload settings"))
+    assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isChecked(), true)
+  } finally { await page.close() }
+})
+
+test("the reason Save is disabled stays visible next to Save even when Advanced is collapsed", async () => {
+  const page = await mount()
+  try {
+    await idle(page)
+    await page.getByRole("button", { name: "Show advanced settings" }).click()
+    await page.getByLabel("Timeout per model").fill("8000oops")
+    await page.getByRole("button", { name: "Hide advanced settings" }).click()
+    assert.equal(await save(page).isDisabled(), true)
+    assert.match((await page.locator('[data-footer] [role="status"]').textContent())!, /whole number/i)
   } finally { await page.close() }
 })
