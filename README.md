@@ -207,12 +207,6 @@ See and change every prediction setting in one place, without hunting for a JSON
 1. **Behavior**: **Enable Predictions**, **Predict After Replies** and **Escalation Mode**.
 2. **Models**: ordered fallback groups. Groups run top to bottom, and a later group is tried when every model above it fails. Add a model by searching its name, or add a wildcard pattern such as `provider/family-*`; choose a reasoning variant; move or remove entries and groups. Patterns stay patterns and are matched against current models. See [model groups](#model-groups) for how ranking works.
 
-   <p align="center">
-     <img src="docs/images/predictions-setup-groups.png" width="900" alt="Two fallback groups in Predictions settings, each with a match count, an Add menu and per-entry actions, followed by Advanced and Save changes." />
-   </p>
-
-   <p align="center"><sub>Each group shows how many models match right now. Counts check model names only; no conversation is sent.</sub></p>
-
 3. **Advanced** (collapsed in Desktop): **Timeout per model**, **Recent interactions**, **Include GitHub PR context** and **Debug notices**. GitHub PR context is off by default; turning it on may send descriptions and metadata of linked public and accessible private PRs to every attempted provider, including fallback and paid models.
 
 ### Review, then save
