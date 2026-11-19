@@ -46,7 +46,11 @@ async function mount(options: Options = {}): Promise<Page> {
         if (opts.saveKind === "failed") return { kind: "failed", message: "Settings were not saved. Reopen settings and try again." }
         snapshot.fields = { ...snapshot.fields, ...input.fields }
         if (input.removeModels) delete snapshot.fields.models
+        snapshot.overrides = { ...snapshot.overrides, ...input.fields, ...(input.removeModels ? { models: null } : {}) }
+        for (const key of input.reset ?? []) { delete snapshot.overrides[key]; delete snapshot.fields[key] }
+        snapshot.origins = Object.fromEntries(Object.keys(snapshot.origins).map(key => [key, Object.hasOwn(snapshot.overrides, key) ? "preferences" : "default"]))
         snapshot.revision = "r" + (log.saves.length + 1); snapshot.serviceVersion = "v" + (log.saves.length + 1)
+        snapshot.activeRevision = snapshot.revision
         return { kind: "saved_not_active", revision: snapshot.revision, message: "Saved on disk." }
       },
       previewSettings: async ({ fields }: any) => { log.previews++; return { groups: (fields.models ?? []).map((group: string[]) => ({ selectors: group, candidates: group.filter(entry => !entry.includes("missing")).map((_, index) => ({ providerID: "local", id: "m" + index, name: "m" })) })), issues: group0Issues(fields) } },
@@ -129,7 +133,7 @@ test("page orders Behavior, Models, Advanced with exact labels and Advanced coll
   const page = await mount()
   try {
     await idle(page)
-    assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"], "each fallback group is its own section under Models, in the order it is tried")
+    assert.deepEqual(await titles(page), ["User preferences", "Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"], "each fallback group is its own section under Models, in the order it is tried")
     const labels = await page.evaluate(() => [...document.querySelectorAll('[data-section="Behavior"] [data-title]')].map(node => node.textContent))
     assert.deepEqual(labels, ["Enable Predictions", "Predict After Replies", "Escalation Mode"])
     assert.equal(await row(page, "predictions-advanced-github").count(), 0, "GitHub PR context lives only in the collapsed Advanced section")
@@ -343,7 +347,7 @@ test("Add group and the per-group Add menu open the model and pattern dialogs an
     await add.getByRole("button", { name: /Family A/ }).click()
     await add.getByRole("button", { name: "Add model" }).click()
     assert.deepEqual(await entryTitles(page), ["1. Model B", "2. local/family-*", "1. Family A"])
-    assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"])
+    assert.deepEqual(await titles(page), ["User preferences", "Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"])
   } finally { await page.close() }
 })
 
@@ -416,8 +420,8 @@ test("the external-editor warning sits beside Save without any consent dialog", 
   try {
     await idle(page)
     const text = (await row(page, "predictions-save").textContent())!
-    assert.match(text, /another editor during a save can be overwritten, including unrelated settings/)
-    assert.match(text, /Recovery copies may not contain those changes/)
+    assert.match(text, /Simultaneous saves can overwrite each other's changes, including different settings/)
+    assert.match(text, /recovery copy may not contain those changes/)
     assert.doesNotMatch(text, /conflict-proof|guarantee/i)
     assert.equal(await page.evaluate(() => (window as any).log.confirms.length), 0)
   } finally { await page.close() }
@@ -458,6 +462,28 @@ test("a missing main bridge does not prevent server-authorized Save", async () =
     await page.waitForFunction(() => (window as any).log.saves.length === 1)
     assert.equal(await page.evaluate(() => (window as any).log.mainCalls), 0)
     assert.doesNotMatch(await page.locator("body").textContent() ?? "", /PRIVATE/)
+  } finally { await page.close() }
+})
+
+test("user preferences show path, provenance, reset intent and simultaneous-writer limits", async () => {
+  const page = await mount()
+  try {
+    await idle(page)
+    const body = await page.locator("body").textContent() ?? ""
+    assert.match(body, /User preferences/)
+    assert.match(body, /\/server\/opencode\.jsonc/)
+    assert.match(body, /Saved preference/)
+    assert.match(body, /OpenCode configuration/)
+    assert.match(body, /Default/)
+    assert.match(body, /Simultaneous saves can overwrite each other's changes, including different settings/)
+    assert.match(body, /recovery copy may not contain those changes/)
+    await page.screenshot({ path: ".test-artifacts/preferences-gui.png", fullPage: true })
+    await page.getByRole("button", { name: "Use OpenCode configuration", exact: true }).click()
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0)
+    assert.equal(await save(page).isDisabled(), false)
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input.reset), ["models", "automatic"])
   } finally { await page.close() }
 })
 

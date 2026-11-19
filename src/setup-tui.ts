@@ -1,7 +1,7 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
-import { setupText, setupTUIText } from "./setup-copy.ts"
-import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { setupText, setupTUIText, originLabels } from "./setup-copy.ts"
+import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 
 type TUIContext = TUIPlugin.Context
 type Catalog = SetupSnapshot["catalog"][number]
@@ -79,6 +79,8 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
           { title: "Advanced", description: summary.advanced(editor), value: "advanced", category: "Settings" },
           { title: "Save changes", description: invalid ? "Fix invalid settings first." : "Can overwrite other edits.", value: "save", disabled: !state.dirty || readOnly(editor) || invalid || state.saving, category: "Changes" },
           { title: "Discard changes", description: "Restore saved values.", value: "discard", disabled: !state.dirty, category: "Changes" },
+          { title: "Use OpenCode configuration", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
+          { title: "Preference sources", description: "Path and origins.", value: "sources", category: "More" },
           { title: "Prediction status and preview", description: "Diagnostics.", value: "status", category: "More" },
           { title: "About saving", description: "Scope and limits.", value: "about", category: "More" },
         ],
@@ -93,6 +95,11 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       else if (choice === "advanced") await advanced(editor)
       else if (choice === "save") await save(editor)
       else if (choice === "discard") editor.discard()
+      else if (choice === "reset") {
+        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with OpenCode configuration? Save to remove the saved preferences.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue
+        editor.resetPreferences()
+      }
+      else if (choice === "sources") await alert(`User preferences\n${state.snapshot?.source ?? "Server preferences"}\n\n${settingKeys.map(key => `${key}: ${originLabels[state.origins[key]]}`).join("\n")}\n\n${setupText.precedence}`)
       else if (choice === "status") await openStatus()
       else if (choice === "readonly") await alert(`Read-only. ${readOnlyReason(editor)} Current values are shown; edit the configuration file manually to change them.`)
       else if (choice === "about") await alert(`${setupTUIText.scope}\n\n${setupTUIText.fuller}`)

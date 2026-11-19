@@ -28,6 +28,7 @@ async function harness(t: TestContext, options: { argv?: string[]; fields?: obje
   const f = await nativeFixture(t, true)
   f.snapshot.catalog = catalog as any
   if (options.fields) f.snapshot.fields = options.fields as any
+  f.snapshot.overrides = { ...f.snapshot.fields }
   f.snapshot.effective = { ...f.snapshot.effective, ...f.snapshot.fields } as any
   if (options.argv) f.runtime.argv = options.argv
   f.hooks.settingsFails = options.settingsFails
@@ -77,14 +78,35 @@ test("palette command is Predictions Setup in the Predictions group with no defa
   assert.equal(h.command().bind, undefined)
 })
 
+test("CLI sources show user preferences path, three origins and concurrent-save limits", async t => {
+  const h = await harness(t, { fields: { debug: false, models: "local/a" } })
+  h.f.snapshot.overrides = { debug: false }
+  h.f.snapshot.fallbackFields = { models: "local/a" }
+  h.f.snapshot.origins.models = "configuration"; h.f.snapshot.origins.debug = "preferences"
+  await h.run(pick("Preference sources"), call => {
+    assert.match(call.options.message, /User preferences/)
+    assert.ok(call.options.message.includes(h.f.file))
+    for (const label of ["Saved preference", "OpenCode configuration", "Default"]) assert.ok(call.options.message.includes(label))
+    return undefined
+  }, pick("About saving"), call => {
+    assert.match(call.options.message, /Simultaneous saves can overwrite each other's changes, including different settings/)
+    assert.match(call.options.message, /recovery copy may not contain those changes/)
+    return undefined
+  }, pick("Use OpenCode configuration"), call => {
+    assert.equal(option(call, "Save changes").disabled, false)
+    return undefined
+  }, yes(true))
+  assert.equal(saves(h), 0)
+})
+
 test("root menu orders Behavior, Models, Advanced with current values and keeps the narrow CLI scope visible", async t => {
   const h = await harness(t, { fields: { automatic: false, models: [["local/family/a#low"], ["local/b"]] } })
   await h.run(cancel)
   const root = h.calls[0]
   assert.equal(root.options.title, "Predictions Setup")
-  assert.deepEqual(titles(root), ["Behavior", "Models", "Advanced", "Save changes", "Discard changes", "Prediction status and preview", "About saving"])
+  assert.deepEqual(titles(root), ["Behavior", "Models", "Advanced", "Save changes", "Discard changes", "Use OpenCode configuration", "Preference sources", "Prediction status and preview", "About saving"])
   for (const row of root.options.options) assert.ok(row.title.length + String(row.description ?? "").length <= 44, `row fits the CLI dialog without truncation: ${row.title}: ${row.description}`)
-  assert.ok(root.options.options.every((row: any) => row.disabled !== true || row.title.includes("Save") || row.title.includes("Discard")), "informational rows are never disabled: disabled rows do not render")
+  assert.ok(root.options.options.every((row: any) => row.disabled !== true || row.title.includes("Save") || row.title.includes("Discard") || row.title === "Use OpenCode configuration"), "informational rows are never disabled: disabled rows do not render")
   assert.equal(option(root, "Behavior").description, "On · After replies off · manual")
   assert.match(option(root, "Models").description, /2 groups, 2 entries/)
   assert.equal(option(root, "Advanced").description, "8000 ms · 3 recent · PR off")
@@ -262,7 +284,7 @@ test("the external-editor warning sits beside Save and About saving gives the fu
   await h.run(
     pick("Behavior"), pick("Enable Predictions"), cancel,
     call => { const save = option(call, "Save changes"); assert.match(save.description, /overwrite/); assert.ok(save.title.length + save.description.length <= 44, save.description); assert.doesNotMatch(save.description, /conflict-proof/); return "about" },
-    call => { assert.match(call.options.message, /another editor during a save can be overwritten, including unrelated settings/); assert.match(call.options.message, /Recovery copies hold the file as it was just before a save/); assert.match(call.options.message, /global OpenCode configuration/); assert.match(call.options.message, /not conflict-proof/); return undefined },
+    call => { assert.match(call.options.message, /Simultaneous saves can overwrite each other's changes, including different settings/); assert.match(call.options.message, /recovery copy may not contain those changes/); assert.match(call.options.message, /user prediction preferences on the selected server/); return undefined },
     cancel, yes(true),
   )
   assert.equal(h.calls.filter(call => call.kind === "confirm").length, 1, "only the unsaved-exit confirmation, never a save consent")

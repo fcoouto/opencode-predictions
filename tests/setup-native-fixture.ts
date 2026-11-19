@@ -9,7 +9,7 @@ import { parseOptions } from "../src/options.ts"
 import { startLocalSetup } from "../src/setup-local.ts"
 import type { SaveInput, SetupSnapshot } from "../src/setup.ts"
 import type { StandaloneRuntime } from "../src/setup-origin.ts"
-import { resolvePreferences } from "../src/preferences.ts"
+import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 const temporary = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
 export async function nativeFixture(t: TestContext, rpc = false) {
@@ -31,6 +31,12 @@ export async function nativeFixture(t: TestContext, rpc = false) {
       if (input.revision !== snapshot.revision) return { kind: "conflict" as const, message: "Configuration changed. Reload settings before trying again." }
       await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.()
       snapshot.fields = { ...snapshot.fields, ...input.fields }; if (input.removeModels) delete snapshot.fields.models
+      if (rpc) {
+        const { revision: _, ...change } = input
+        snapshot.overrides = applyPreferenceChange(snapshot.overrides, change)
+        const resolved = resolvePreferences(snapshot.fallbackFields, snapshot.overrides)
+        snapshot.fields = resolved.fields; snapshot.origins = resolved.origins
+      }
       snapshot.revision = "revision-two"
       return { kind: "saved_not_active" as const, revision: "revision-two", message: "Saved on disk." }
   }

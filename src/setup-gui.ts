@@ -3,8 +3,8 @@ import type { Plugin as GUIPlugin } from "@opencode/plugin/gui"
 import { Index, Show, createComponent, createRenderEffect, createSignal, untrack } from "solid-js"
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
-import { setupText } from "./setup-copy.ts"
-import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { setupText, originLabels } from "./setup-copy.ts"
+import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 
 type GUIContext = Parameters<GUIPlugin.Setup>[0]
 type UiMenuEntry = Parameters<GUIContext["ui"]["Menu"]>[0]["items"][number]
@@ -301,7 +301,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   }
   const content = () => createComponent(ui.SettingsLayout, {
     title: "Predictions",
-    get description() { version(); return pinned ? `Settings apply to the global OpenCode configuration on ${pinned.target.label}.` : "Connect to an OpenCode server to review prediction settings." },
+    get description() { version(); return pinned ? `User prediction preferences on ${pinned.target.label}. ${setupText.scope}` : "Connect to an OpenCode server to review prediction settings." },
     get actions() { return button(() => "Prediction status and preview", () => void openStatus()) },
     get children() {
       return [
@@ -331,6 +331,21 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
           },
         })),
         when(() => !!state()?.snapshot, () => [
+          createComponent(ui.SettingsSection, {
+            title: "User preferences",
+            get children() {
+              return createComponent(ui.SettingsRow, {
+                id: "predictions-preferences", title: text(() => state()?.snapshot?.source ?? "Server preferences"),
+                get description() { return column(note(() => setupText.precedence), note(() => settingKeys.map(key => `${key}: ${originLabels[state()!.origins[key]]}`).join("\n"))) },
+                get children() {
+                  return button(() => "Use OpenCode configuration", async () => {
+                    if (state()?.dirty && !await ctx.dialogs.confirm({ title: "Replace unsaved prediction settings?", description: "This stages removal of your saved preferences and replaces your current draft. Save to apply.", confirm: "Use OpenCode configuration" })) return
+                    current()?.resetPreferences(); setTimeoutText(undefined)
+                  }, { disabled: () => locked() || !Object.keys(state()?.snapshot?.overrides ?? {}).length })
+                },
+              })
+            },
+          }),
           createComponent(ui.SettingsSection, {
             title: "Behavior",
             get footer() { return note(() => flag("enabled", true) ? undefined : setupText.disabled) },
