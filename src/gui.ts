@@ -48,6 +48,14 @@ export default Plugin.define({
         try { return await rpc.predict({ sessionID: state.sessionID, completion: state.completion, requestID, ...(manual ? { manual: true } : {}), ...(escalation ? { escalation } : {}) }, { location: value.location, signal }) as Reply } finally { stop() }
       },
       paint: adapter.paint,
+      hint: available => {
+        const names: Record<string, string> = { "⌥": "Option", "⇧": "Shift", "⌃": "Control", "⌘": "Command" }
+        const value = session()
+        const last = available && value ? value.server.data.session.message?.list(value.id).findLast(message => message.type === "user" || message.type === "assistant" || message.type === "compaction" && message.status !== "failed") : undefined
+        const completed = last?.type === "assistant" && last.time.completed !== undefined && last.finish !== "tool-calls" && last.content.some(part => part.type === "text" && part.text.trim())
+        const keys = completed ? ctx.keybinds?.keybind("opencode-predictions.request-shortcut") : undefined
+        adapter.hint(keys?.length ? `Press ${keys.map(key => names[key] ?? key).join(" + ")} to request a prediction.` : undefined)
+      },
       insert: adapter.insert,
       communicate: adapter.communicate,
       focus: () => ctx.screen.current()?.composer.focus(),

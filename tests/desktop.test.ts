@@ -49,6 +49,194 @@ async function previewFixture() {
   return page
 }
 
+async function manualHintFixture() {
+  const page = await previewFixture()
+  await page.addScriptTag({ content: guiSource })
+  await page.evaluate(() => {
+    const w = window as any
+    w.hintState = { enabled: true, automatic: false, reason: undefined, connected: true, hasSession: true, busy: false, pending: false, noCompletion: false, keys: ["Option", "Shift", "P"] }
+    w.hintRequests = []
+    w.hintMessages = [
+      { type: "user", text: "Fix the assertion." },
+      { type: "assistant", time: { completed: 2 }, content: [{ type: "text", text: "Fixed the assertion." }] },
+    ]
+    const listeners = new Map<string, () => void>(), commands = new Map<string, any>()
+    const data = {
+      on: (name: string, run: () => void) => { listeners.set(name, run); return () => listeners.delete(name) },
+      session: {
+        get: () => ({ time: { updated: w.hintState.noCompletion ? 0 : 2 } }),
+        status: () => w.hintState.busy ? "running" : "idle",
+        message: { list: () => w.hintMessages },
+        pending: { list: () => [] }, permission: { list: () => [] }, form: { list: () => [] },
+      },
+    }
+    const server = {
+      id: "fixture", get connected() { return w.hintState.connected }, data,
+      client: { rpc: () => ({
+        status: async () => ({ enabled: w.hintState.enabled, automatic: w.hintState.automatic, reason: w.hintState.reason, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [] }),
+        predict: async (input: unknown) => { w.hintRequests.push(input); return new Promise(resolve => { w.finishHintRequest = resolve }) },
+        events: { on: () => () => {} },
+      }) },
+    }
+    const session = { id: "ses_test", key: "fixture/ses_test", directory: "/project", location: { directory: "/project" }, server, get pending() { return w.hintState.pending } }
+    w.applyHintState = (patch: object) => { Object.assign(w.hintState, patch); listeners.get("config.updated")?.() }
+    w.hintCommands = commands
+    w.stopGUI = w.PredictionGUI.mount({
+      sessions: { current: () => w.hintState.hasSession ? session : undefined },
+      servers: { get: () => undefined },
+      screen: { current: () => ({ composer: { text: () => w.editor.textContent, focused: () => document.activeElement === w.editor, quotable: () => w.normal, setText: (text: string) => { w.editor.textContent = text }, focus: () => w.editor.focus() } }) },
+      keybinds: { keybind: () => w.hintState.keys },
+      add: (_registry: unknown, command: any) => commands.set(command.id, command),
+      app: { version: "test" }, toast: { show: () => ({ dismiss() {} }) },
+    })
+  })
+  return page
+}
+
+test("Desktop manual prediction hint stays outside the draft and wraps above composer controls", async () => {
+  const page = await manualHintFixture()
+  try {
+    const hint = page.locator("[data-opencode-prediction-hint]")
+    await hint.waitFor({ state: "visible", timeout: 2000 })
+    assert.equal(await hint.textContent(), "Press Option + Shift + P to request a prediction.")
+    assert.equal(await page.locator('[contenteditable="true"]').innerText(), "")
+    assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 0)
+    assert.equal(await page.evaluate(() => (window as any).hintCommands.get("accept").run()), false)
+    assert.equal(await page.locator("[data-opencode-announcement]").textContent(), "Press Option + Shift + P to request a prediction.")
+    for (const width of [900, 360]) {
+      await page.setViewportSize({ width, height: 700 })
+      await page.waitForFunction(() => {
+        const hint = document.querySelector("[data-opencode-prediction-hint]")!.getBoundingClientRect()
+        const editor = document.querySelector('[contenteditable="true"]')!.getBoundingClientRect()
+        const toolbar = document.querySelector("[data-preview-toolbar]")!.getBoundingClientRect()
+        return Math.abs(hint.left - editor.left) < 1 && Math.abs(hint.width - editor.width) < 1 && hint.bottom <= toolbar.top + 1
+      })
+      await page.screenshot({ path: `.test-artifacts/manual-hint-${width}.png` })
+    }
+    await page.evaluate(() => (window as any).stopGUI())
+    assert.equal(await hint.count(), 0)
+    assert.equal(await page.locator('[contenteditable="true"] + div').isVisible(), true)
+    assert.equal(await page.locator('[contenteditable="true"]').evaluate(element => (element as HTMLElement).style.minHeight), "48px")
+    assert.equal(await page.evaluate(() => (window as any).submissions), 0)
+  } finally { await page.close() }
+})
+
+test("Desktop manual prediction hint follows the effective shortcut and hides when unbound", async () => {
+  const page = await manualHintFixture()
+  try {
+    const hint = page.locator("[data-opencode-prediction-hint]")
+    await hint.waitFor({ state: "visible", timeout: 2000 })
+    await page.evaluate(() => (window as any).applyHintState({ keys: ["⌃", "P"] }))
+    await page.waitForFunction(() => document.querySelector("[data-opencode-prediction-hint]")?.textContent === "Press Control + P to request a prediction.")
+    await page.evaluate(() => (window as any).applyHintState({ keys: [] }))
+    await hint.waitFor({ state: "hidden", timeout: 2000 })
+    assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 0)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
+test("Desktop manual prediction hint shrinks after widening and shorter remapping", async () => {
+  const page = await manualHintFixture()
+  try {
+    const hint = page.locator("[data-opencode-prediction-hint]")
+    const editor = page.locator('[contenteditable="true"]')
+    await hint.waitFor({ state: "visible", timeout: 2000 })
+    const height = await editor.evaluate(element => element.getBoundingClientRect().height)
+    await page.setViewportSize({ width: 360, height: 700 })
+    await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height > height, height)
+    await page.setViewportSize({ width: 900, height: 700 })
+    await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height === height, height, { timeout: 2000 })
+    await page.setViewportSize({ width: 360, height: 700 })
+    await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height > height, height)
+    await page.evaluate(() => (window as any).applyHintState({ keys: ["P"] }))
+    await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height === height, height, { timeout: 2000 })
+    assert.equal(await hint.textContent(), "Press P to request a prediction.")
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
+test("Desktop manual prediction hint requires a completed reply, not a session creation timestamp", async () => {
+  const page = await manualHintFixture()
+  try {
+    const hint = page.locator("[data-opencode-prediction-hint]")
+    await hint.waitFor({ state: "visible", timeout: 2000 })
+    for (const messages of [
+      [],
+      [{ type: "user", text: "New prompt" }],
+      [{ type: "assistant", time: {}, content: [{ type: "text", text: "Still streaming" }] }],
+      [{ type: "assistant", time: { completed: 2 }, content: [{ type: "reasoning", text: "Not a reply" }] }],
+    ]) {
+      await page.evaluate(messages => { const w = window as any; w.hintMessages = messages; w.applyHintState({}) }, messages)
+      await hint.waitFor({ state: "hidden", timeout: 2000 })
+    }
+    await page.evaluate(() => {
+      const w = window as any
+      w.hintMessages = [{ type: "assistant", time: { completed: 2 }, content: [{ type: "text", text: "Historical completed reply without an idle marker." }] }]
+      w.applyHintState({})
+    })
+    await hint.waitFor({ state: "visible", timeout: 2000 })
+    assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 0)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
+test("Desktop manual prediction hint withdraws when context or composer cannot request", async () => {
+  const page = await manualHintFixture()
+  try {
+    const hint = page.locator("[data-opencode-prediction-hint]")
+    const cases = [
+      { automatic: true }, { enabled: false }, { reason: "models_required" }, { connected: false },
+      { hasSession: false }, { busy: true }, { pending: true }, { noCompletion: true },
+    ]
+    for (const patch of cases) {
+      await hint.waitFor({ state: "visible", timeout: 2000 })
+      await page.evaluate(patch => (window as any).applyHintState(patch), patch)
+      await hint.waitFor({ state: "hidden", timeout: 2000 })
+      await page.evaluate(() => (window as any).applyHintState({ enabled: true, automatic: false, reason: undefined, connected: true, hasSession: true, busy: false, pending: false, noCompletion: false }))
+    }
+    for (const action of ["typing", "composition", "blur", "menu", "shell"]) {
+      await hint.waitFor({ state: "visible", timeout: 2000 })
+      await page.evaluate(action => {
+        const w = window as any
+        if (action === "typing") { w.editor.textContent = "My draft"; w.editor.dispatchEvent(new InputEvent("input", { bubbles: true })) }
+        if (action === "composition") w.editor.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true }))
+        if (action === "blur") w.editor.blur()
+        if (action === "menu") { const menu = document.createElement("div"); menu.setAttribute("role", "menu"); menu.textContent = "Host menu"; document.body.append(menu) }
+        if (action === "shell") w.normal = false
+      }, action)
+      await hint.waitFor({ state: "hidden", timeout: 2000 })
+      if (action === "typing") assert.equal(await page.locator('[contenteditable="true"]').innerText(), "My draft")
+      await page.evaluate(() => {
+        const w = window as any
+        w.editor.textContent = ""; w.normal = true; document.querySelector('[role="menu"]')?.remove()
+        w.editor.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true })); w.editor.focus()
+      })
+    }
+    assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 0)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
+test("Desktop manual prediction hint yields to pending requests and real suggestions", async () => {
+  const page = await manualHintFixture()
+  try {
+    const hint = page.locator("[data-opencode-prediction-hint]")
+    await hint.waitFor({ state: "visible", timeout: 2000 })
+    await page.evaluate(() => (window as any).hintCommands.get("request-shortcut").run())
+    await page.locator("[data-opencode-communication]").waitFor({ state: "visible", timeout: 2000 })
+    assert.equal(await hint.count(), 0)
+    await page.evaluate(() => (window as any).finishHintRequest({ text: "Run the tests." }))
+    await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 2000 })
+    assert.equal(await hint.count(), 0)
+    assert.equal(await page.locator('[contenteditable="true"]').innerText(), "")
+    assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 1)
+    await page.evaluate(() => (window as any).hintCommands.get("accept").run())
+    assert.equal(await page.locator('[contenteditable="true"]').innerText(), "Run the tests.")
+    assert.equal(await page.evaluate(() => (window as any).submissions), 0)
+    await page.evaluate(() => (window as any).stopGUI())
+  } finally { await page.close() }
+})
+
 test("Desktop multiline prediction grows the bottom-anchored composer above its controls", async () => {
   const page = await previewFixture()
   try {

@@ -28,6 +28,11 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
       } catch (error) { console.error("Desktop readiness:", { submittedAt, snapshot: await page.evaluate(() => (window as any).__predictionFixture.snapshot()) }); throw error }
       assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
       assert.equal(fixture.calls.filter(isPredictionCall).length, 0)
+      const hint = page.locator("[data-opencode-prediction-hint]")
+      await hint.waitFor({ state: "visible", timeout: 5000 })
+      assert.equal(await hint.textContent(), "Press Option + Shift + P to request a prediction.")
+      assert.equal(await editor.innerText(), "")
+      await page.screenshot({ path: resolve(".test-artifacts/manual-hint-desktop.png") })
       await editor.press("Alt+Shift+P")
     }
     try {
@@ -37,6 +42,7 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
       throw error
     }
     assert.equal(await editor.innerText(), "")
+    assert.equal(await page.locator("[data-opencode-prediction-hint]").count(), 0)
     if (!automatic) {
       assert.equal((await page.evaluate(() => (window as any).__predictionFixture.snapshot())).lastKey.matches, true)
       await editor.press("Escape")
