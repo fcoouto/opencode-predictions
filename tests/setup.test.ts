@@ -160,6 +160,52 @@ test("administrative masking cannot prove a reset persisted after a lost acknowl
   editor.dispose()
 })
 
+for (const intent of ["edit", "reset"] as const) test(`unverified Save preserves ${intent} intent and original revision after another writer replaces preferences`, async () => {
+  const f = preferenceEditorFixture({ legacy: { automatic: false, debug: false }, overrides: { debug: false } })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  const before = structuredClone(editor.state().snapshot)
+  if (intent === "reset") editor.resetPreferences()
+  else editor.change({ debug: true })
+  const draft = structuredClone(editor.state().fields), reset = [...editor.state().reset]
+  let writes = 0
+  f.api.save = async () => {
+    writes++
+    const resolved = resolvePreferences(f.snapshot.fallbackFields, { automatic: true })
+    const parsed = parseOptions(resolved.rawOptions)
+    assert.ok(parsed.ok)
+    Object.assign(f.snapshot, { revision: "external", activeRevision: "external", overrides: { automatic: true }, fields: resolved.fields, origins: resolved.origins, effective: parsed.value })
+    return { kind: "saved_not_active", revision: "external", message: "Saved on disk. Effective activation is not verified." }
+  }
+  assert.equal((await editor.save()).kind, "saved_not_active")
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().blocked, true)
+  assert.deepEqual(editor.state().snapshot, before, "another writer's revision cannot be attached to this draft")
+  assert.deepEqual(editor.state().fields, draft)
+  assert.deepEqual(editor.state().reset, reset)
+  assert.equal((await editor.save()).kind, "failed")
+  assert.equal(writes, 1, "a blocked draft requires explicit reload, not another automatic or manual transaction")
+  editor.dispose()
+})
+
+test("durable acknowledgement without readback retains the unresolved draft and reset", { timeout: 4000 }, async () => {
+  const f = preferenceEditorFixture({ legacy: { debug: false }, overrides: { debug: false } })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.resetPreferences()
+  const before = structuredClone(editor.state().snapshot)
+  f.api.save = async () => {
+    f.api.read = async () => new Promise(() => {})
+    return { kind: "saved_not_active", revision: "r2", message: "Saved on disk." }
+  }
+  assert.equal((await editor.save()).kind, "saved_not_active")
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().blocked, true)
+  assert.deepEqual(editor.state().snapshot, before)
+  assert.deepEqual(editor.state().reset, ["debug"])
+  editor.dispose()
+})
+
 test("invalid drafts cannot write and stale preview responses cannot replace later edits", async () => {
   const f = editorFixture()
   const editor = createSetupEditor(f.api, () => {})

@@ -10,7 +10,7 @@ export type PreferenceRuntimeState = { stored: PreferenceRead; resolved: Resolve
 
 export function createPreferencesRuntime(store: PreferencesStore, legacy: unknown, make: (rawOptions: unknown) => Engine) {
   const lifetime = new AbortController()
-  let current: PreferenceRuntimeState | undefined, effective: unknown, generation = 0
+  let current: PreferenceRuntimeState | undefined, effective: unknown, generation = 0, adopted = 0
   const state = () => {
     if (!current) throw new Error("Prediction preferences are not loaded.")
     return current
@@ -20,7 +20,7 @@ export function createPreferencesRuntime(store: PreferencesStore, legacy: unknow
     signal.throwIfAborted()
     const stored = await abortable(() => store.read(signal), signal)
     signal.throwIfAborted()
-    if (ticket !== generation) return
+    if (ticket < adopted) return
     const resolved = resolvePreferences(legacy, stored.policy === "managed" ? {} : stored.overrides)
     const parsed = parseOptions(resolved.rawOptions)
     const valid = stored.documentValid && !resolved.issues.length && parsed.ok
@@ -33,6 +33,7 @@ export function createPreferencesRuntime(store: PreferencesStore, legacy: unknow
     }
     effective = next
     current = { stored, resolved, revision, activeRevision: valid ? revision : null, service }
+    adopted = ticket
   }
   return {
     state,

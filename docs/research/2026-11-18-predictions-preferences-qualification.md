@@ -67,10 +67,19 @@ The native observer bundles ordinary dependencies rather than assuming Desktop s
 - Focused lifecycle: **6/6**, no skips.
 - Focused Git install and Save: **1/1**, no skips.
 - Narrow/wide CLI dialogs and the additional eight-field terminal regression: **3/3**, no skips.
-- Whole unit suite after retirement, policy/compatibility fixes, and lost-reset regression: **467/467**, no skips.
+- Whole unit suite after the final review fixes: **472/472**, no skips.
 - Typecheck, bundle, and `git diff --check`: pass.
 - Consolidated native/research rerun: **52/52**, no skips.
 - Packed-install gate: **69/69**, no skips, using the installed `opencode-predictions-0.3.0.tgz` artifact. This includes ordinary shared-service CLI, Desktop with project discovery, authenticated Save, reset, Git install, unchanged OpenCode bytes, composer preservation, and zero settings-triggered generation.
+
+## Fresh whole-branch review
+
+One independent, read-only review covered the complete implementation. It found two Important issues and no Critical or Minor findings:
+
+1. A newer refresh that canceled without adopting state could discard an older successful corrupt-file read. Refresh ordering now compares against the newest **adopted** read. Two RED→GREEN regressions cover pre-dispatch provider/PR suppression and post-completion stale-reply suppression.
+2. A durable but unverified Save acknowledgement could clear a dirty draft and attach expected fields to another writer's revision. Only matching readback now adopts a snapshot; mismatched or unavailable readback preserves the original revision, draft, and reset intent, and blocks Save until explicit reload. Three RED→GREEN regressions cover edited fields, staged reset, and unavailable readback.
+
+The five new regressions and the whole **472-test** unit suite pass, as do typecheck, bundle, and package checks. The rebuilt artifact's installed-host rerun passes **69/69** with no skips. Both findings are fixed in one verified pass; no second review was substituted for regression verification.
 
 ## Limits
 

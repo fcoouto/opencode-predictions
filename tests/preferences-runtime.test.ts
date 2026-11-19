@@ -139,3 +139,32 @@ test("older refresh completion cannot overwrite newer state and disposal cannot 
     assert.equal(f.calls.construct, count)
   } finally { f.runtime.dispose() }
 })
+
+for (const stage of ["before dispatch", "after completion"] as const) test(`a canceled newer refresh cannot discard invalid preferences ${stage}`, { timeout: 2000 }, async () => {
+  const f = fixture({ models: "local/a", includeGithubPRContext: true })
+  try {
+    await f.runtime.refresh(signal())
+    const before = f.runtime.state().stored
+    const invalid = { ...before, revision: "corrupt", documentValid: false, writable: false, reason: "Invalid preferences" }
+    const criticalRead = stage === "before dispatch" ? 1 : 2
+    let reads = 0, ready!: () => void, finish!: (value: PreferenceRead) => void
+    const reached = new Promise<void>(resolve => { ready = resolve })
+    f.store.read = async () => {
+      const read = ++reads
+      if (read === criticalRead) { ready(); return new Promise(resolve => { finish = resolve }) }
+      if (read === criticalRead + 1) return new Promise(() => {})
+      return read < criticalRead ? before : invalid
+    }
+    const prediction = f.runtime.predict({ sessionID: "ses_test", completion: 2 }, signal())
+    await reached
+    const cancelled = new AbortController()
+    const newer = assert.rejects(f.runtime.refresh(cancelled.signal))
+    cancelled.abort()
+    await newer
+    finish(invalid)
+    assert.equal((await prediction).text, undefined, "a discarded corrupt-file read must not publish an old suggestion")
+    assert.equal(f.runtime.state().activeRevision, null)
+    assert.equal(f.calls.generate, stage === "before dispatch" ? 0 : 1)
+    assert.equal(f.calls.pr, stage === "before dispatch" ? 0 : 1)
+  } finally { f.runtime.dispose() }
+})

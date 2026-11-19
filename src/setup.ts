@@ -179,9 +179,7 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
         }
         if (lifetime.signal.aborted) return failed("Settings editor closed.")
         result ??= failed("Changes may have been saved. Reopen settings before trying again.")
-        if (result.kind === "saved" || result.kind === "saved_not_active") {
-          if (state.dirty) { state.snapshot = { ...before, fields: expected, overrides, origins: { ...state.origins }, revision: result.revision }; state.dirty = false; state.reset = [] }
-        } else if (result.kind !== "invalid") state.blocked = true
+        if (state.dirty && result.kind !== "invalid") state.blocked = true
         state.lastSave = result
         if (result.kind === "invalid") state.issues = result.issues
         return result
