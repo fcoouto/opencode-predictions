@@ -1,8 +1,11 @@
-import type { ConfigStore } from "./config.ts"
+import type { PreferencesStore } from "./preferences-store.ts"
+import type { PreferencesRuntime } from "./preferences-runtime.ts"
+import { applyPreferenceChange, resolvePreferences, validatePreferenceFields } from "./preferences.ts"
+import { isDeepStrictEqual } from "node:util"
 import { resolveModels, resolveModelGroups, type CatalogModel, type Candidate } from "./models.ts"
 import { parseOptions } from "./options.ts"
 import { abortable } from "./service.ts"
-import { readGroups, changedFields, settingKeys, validateSettings as validation, type SaveInput, type SaveResult, type SettingsInput, type SetupIssue, type SetupSnapshot, type SetupPreview } from "./setup.ts"
+import { readGroups, validateSettings as validation, type SaveInput, type SaveResult, type SettingsInput, type SetupSnapshot, type SetupPreview } from "./setup.ts"
 
 function resolve(fields: SettingsInput, catalog: readonly CatalogModel[]): SetupPreview {
   const issues = validation(fields)
@@ -32,7 +35,7 @@ function resolve(fields: SettingsInput, catalog: readonly CatalogModel[]): Setup
   return { groups: selectors.map((entries, index) => ({ selectors: entries, candidates: candidates[index] })), issues }
 }
 
-export function createSetupService(store: ConfigStore, models: (signal: AbortSignal) => Promise<readonly CatalogModel[]>, current: () => { options: unknown; version: string }) {
+export function createSetupService(store: PreferencesStore, models: (signal: AbortSignal) => Promise<readonly CatalogModel[]>, runtime: PreferencesRuntime) {
   async function catalog(signal: AbortSignal): Promise<CatalogModel[]> {
     try {
       return (await abortable(() => models(signal), signal)).map(model => ({
@@ -46,10 +49,17 @@ export function createSetupService(store: ConfigStore, models: (signal: AbortSig
   }
   return {
     async read(signal: AbortSignal): Promise<SetupSnapshot> {
-      const snapshot = await store.read(signal)
+      await runtime.refresh(signal)
       const metadata = await catalog(signal)
-      const state = current(), parsed = parseOptions(state.options)
-      return { ...snapshot, effective: parsed.ok ? parsed.value : null, catalog: metadata, issues: resolve(snapshot.fields, metadata).issues, serviceVersion: state.version }
+      const state = runtime.state(), { stored, resolved } = state, parsed = parseOptions(resolved.rawOptions)
+      return {
+        revision: state.revision, source: stored.source, scope: "global", writable: stored.writable,
+        ...(stored.reason ? { reason: stored.reason } : {}), fields: resolved.fields,
+        overrides: stored.overrides, fallbackFields: resolved.fallbackFields, origins: resolved.origins, activeRevision: state.activeRevision,
+        effective: state.activeRevision && parsed.ok ? parsed.value : null, catalog: metadata,
+        issues: [...resolved.issues, ...resolve(resolved.fields, metadata).issues.filter(issue => !resolved.issues.some(existing => existing.field === issue.field))],
+        serviceVersion: state.service.status().version,
+      }
     },
     async preview(fields: SettingsInput, signal: AbortSignal): Promise<SetupPreview> {
       signal.throwIfAborted()
@@ -59,27 +69,39 @@ export function createSetupService(store: ConfigStore, models: (signal: AbortSig
     },
     async save(input: SaveInput, signal: AbortSignal): Promise<SaveResult> {
       signal.throwIfAborted()
-      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["revision", "fields", "removeModels"].includes(key))) throw new Error("Unknown save field.")
-      if (typeof input.revision !== "string" || !input.revision || (input.removeModels !== undefined && input.removeModels !== true)) throw new Error("Invalid save input.")
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["revision", "fields", "removeModels", "reset"].includes(key))) throw new Error("Unknown save field.")
+      if (typeof input.revision !== "string" || !input.revision || Buffer.byteLength(JSON.stringify(input)) > 65536) throw new Error("Invalid save input.")
       const invalid = validation(input.fields)
       if (invalid.length) return { kind: "invalid", issues: invalid }
-      if (input.removeModels && Object.hasOwn(input.fields, "models")) throw new Error("Conflicting model edits.")
-      const fresh = await store.read(signal)
-      if (!fresh.writable) return { kind: "read_only", message: fresh.reason ?? "This configuration is read-only." }
+      const { revision: _revision, ...change } = input
+      const edits = applyPreferenceChange({}, change)
+      await runtime.refresh(signal)
+      const fresh = runtime.state()
+      if (!fresh.stored.writable) return { kind: "read_only", message: fresh.stored.reason ?? "Prediction preferences are read-only." }
       if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
-      const prospective = { ...fresh.fields, ...input.fields, ...(input.removeModels ? { models: undefined } : {}) }
-      const issues = validation(prospective)
+      const prospective = { ...fresh.stored.overrides, ...edits }
+      for (const key of input.reset ?? []) delete prospective[key]
+      const issues = validatePreferenceFields(prospective)
       if (issues.length) return { kind: "invalid", issues }
-      const patch = changedFields(fresh.fields, prospective)
-      if (!Object.keys(patch).length) return { kind: "saved", revision: fresh.revision, serviceVersion: current().version }
-      const before = current().version
-      const result = await store.write(input.revision, patch, signal)
-      if (result.kind !== "written") return result
-      const state = current(), parsed = parseOptions(state.options), expected = parseOptions(prospective)
-      if (state.version !== before && parsed.ok && expected.ok && settingKeys.every(key => JSON.stringify(parsed.value[key]) === JSON.stringify(expected.value[key]))) {
-        return { kind: "saved", revision: result.revision, serviceVersion: state.version }
+      const expected = resolvePreferences(fresh.resolved.fallbackFields, prospective)
+      const inheritedIssues = validation(expected.fields)
+      if (inheritedIssues.length) return { kind: "invalid", issues: inheritedIssues }
+      let written = fresh.stored.revision
+      if (!isDeepStrictEqual(prospective, fresh.stored.overrides)) {
+        const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual(value, fresh.stored.overrides[key as keyof SettingsInput])))
+        const result = await store.write(fresh.stored.revision, { fields, ...(input.reset ? { reset: input.reset } : {}), ...(input.removeModels ? { removeModels: true } : {}) }, signal)
+        if (result.kind !== "written") return result
+        written = result.revision
       }
-      return { kind: "saved_not_active", revision: result.revision, message: "Saved on disk. Effective activation is not verified." }
+      try { await runtime.refresh(signal) } catch {
+        signal.throwIfAborted()
+        return { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." }
+      }
+      const state = runtime.state()
+      if (state.stored.revision === written && state.activeRevision === state.revision && isDeepStrictEqual(state.stored.overrides, prospective)) {
+        return { kind: "saved", revision: state.revision, serviceVersion: state.service.status().version }
+      }
+      return { kind: "saved_not_active", revision: state.revision, message: "Saved on disk. Effective activation is not verified." }
     },
   }
 }

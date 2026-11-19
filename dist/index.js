@@ -99,14 +99,39 @@ var Predictions = Rpc.define({
           writable: { type: "boolean" },
           reason: { type: "string" },
           fields: settingsFields,
-          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
+          overrides: settingsFields,
+          fallbackFields: settingsFields,
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
           serviceVersion: { type: "string" }
         },
-        required: ["revision", "scope", "writable", "fields", "effective", "catalog", "issues", "serviceVersion"],
+        required: ["revision", "scope", "writable", "fields", "overrides", "fallbackFields", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
         additionalProperties: false
+      }
+    },
+    saveSettings: {
+      // Preserve unknown keys at both levels for explicit rejection by the server.
+      input: {
+        type: "object",
+        properties: {
+          revision: { type: "string", minLength: 1 },
+          fields: { ...settingsFields, additionalProperties: true },
+          reset: { type: "array", items: { type: "string" } },
+          removeModels: { type: "boolean" }
+        },
+        required: ["revision", "fields"],
+        additionalProperties: true
+      },
+      output: {
+        anyOf: [
+          { type: "object", properties: { kind: { const: "saved", type: "string" }, revision: { type: "string" }, serviceVersion: { type: "string" } }, required: ["kind", "revision", "serviceVersion"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "saved_not_active", type: "string" }, revision: { type: "string" }, message: { type: "string" } }, required: ["kind", "revision", "message"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "invalid", type: "string" }, issues: { type: "array", items: setupIssue } }, required: ["kind", "issues"], additionalProperties: false },
+          { type: "object", properties: { kind: { type: "string", enum: ["conflict", "read_only", "failed"] }, message: { type: "string" } }, required: ["kind", "message"], additionalProperties: false }
+        ]
       }
     },
     previewSettings: {
@@ -225,17 +250,17 @@ Conversation:
   const user = Array.from(current.user);
   const assistant = Array.from(current.assistant);
   const retainedUser = Array.from(current.user.trim() ? "" : latestUser);
-  const excerpt2 = (text, limit) => text.length <= limit ? text.join("") : text.slice(0, Math.ceil(limit / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit / 2)).join("");
+  const excerpt2 = (text, limit2) => text.length <= limit2 ? text.join("") : text.slice(0, Math.ceil(limit2 / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit2 / 2)).join("");
   let low = 1;
   let high = Math.max(user.length, assistant.length, retainedUser.length);
   let result = "";
   while (low <= high) {
-    const limit = Math.floor((low + high) / 2);
-    const prompt = format([{ user: excerpt2(user, limit), assistant: excerpt2(assistant, limit) }], excerpt2(retainedUser, limit));
+    const limit2 = Math.floor((low + high) / 2);
+    const prompt = format([{ user: excerpt2(user, limit2), assistant: excerpt2(assistant, limit2) }], excerpt2(retainedUser, limit2));
     if (encoder.encode(prompt).length <= 32768) {
       result = prompt;
-      low = limit + 1;
-    } else high = limit - 1;
+      low = limit2 + 1;
+    } else high = limit2 - 1;
   }
   return result || void 0;
 }
@@ -404,12 +429,12 @@ function links(prompt) {
     return [];
   }
 }
-function excerpt(text, limit) {
+function excerpt(text, limit2) {
   const points = Array.from(text);
-  if (points.length <= limit) return text;
+  if (points.length <= limit2) return text;
   const marker = excerptMarker;
-  if (limit < marker.length) return "";
-  const size = limit - marker.length;
+  if (limit2 < marker.length) return "";
+  const size = limit2 - marker.length;
   return points.slice(0, Math.ceil(size / 2)).join("") + marker + points.slice(points.length - Math.floor(size / 2)).join("");
 }
 function appendGitHubContext(prompt, sources) {
@@ -422,13 +447,13 @@ function appendGitHubContext(prompt, sources) {
     let high = Math.min(4096, Array.from(source.body).length);
     let best;
     while (low <= high) {
-      const limit = Math.floor((low + high) / 2);
-      const body = excerpt(source.body, limit);
+      const limit2 = Math.floor((low + high) / 2);
+      const body = excerpt(source.body, limit2);
       const candidate2 = { url: source.url, title: excerpt(source.title, 256), body, state: source.state, draft: source.draft, updatedAt: source.updatedAt, fetchedAt: source.fetchedAt, bodyExcerpted: source.bodyExcerpted || body !== source.body };
       if (encoder2.encode(label + JSON.stringify([...selected, candidate2])).length <= budget) {
         best = candidate2;
-        low = limit + 1;
-      } else high = limit - 1;
+        low = limit2 + 1;
+      } else high = limit2 - 1;
     }
     if (best) selected.push(best);
   }
@@ -466,8 +491,8 @@ function failurePolicy(error) {
   const detail = status === 403 && /not available in your country/i.test(message) ? "This model is not available in your country." : status === 429 && /free usage limit reached/i.test(message) ? "Free usage limit reached." : message === "Invalid prediction response" ? "Model returned an invalid prediction response." : fallback;
   const blocked = [401, 402, 403, 404].includes(status ?? 0) || value.reason === "authentication" || value._tag === "ModelNotFoundError" || value._tag === "ProviderNotFoundError" || value._tag === "UnsupportedModelError";
   const budget = value.reason !== "invalid_request" && value.reason !== "content_filter" && /\b(?:exhausted|exceeded|reached|depleted|insufficient)\b/i.test(message) && /\b(?:daily|monthly|budget|credits?)\b|\bfree usage\b|\binsufficient quota\b/i.test(message);
-  const delay2 = typeof value.retryAfterMs === "number" && Number.isFinite(value.retryAfterMs) && value.retryAfterMs > 0 ? Math.max(6e4, value.retryAfterMs) : budget ? 36e5 : 6e4;
-  return { detail: status === void 0 ? detail : `HTTP ${status}: ${detail}`, delayMs: blocked ? Infinity : delay2, modelWide: blocked || budget || status === 429 || value.reason === "rate_limit" };
+  const delay = typeof value.retryAfterMs === "number" && Number.isFinite(value.retryAfterMs) && value.retryAfterMs > 0 ? Math.max(6e4, value.retryAfterMs) : budget ? 36e5 : 6e4;
+  return { detail: status === void 0 ? detail : `HTTP ${status}: ${detail}`, delayMs: blocked ? Infinity : delay, modelWide: blocked || budget || status === 429 || value.reason === "rate_limit" };
 }
 function createService(api, rawOptions, directory) {
   const lifetime = new AbortController();
@@ -517,8 +542,8 @@ function createService(api, rawOptions, directory) {
       ];
     });
     const resolved = groups.flat();
-    const keys3 = new Set(resolved.flatMap((model) => [modelKey(model), candidateKey(model)]));
-    for (const key of skipped.keys()) if (!keys3.has(key)) skipped.delete(key);
+    const keys = new Set(resolved.flatMap((model) => [modelKey(model), candidateKey(model)]));
+    for (const key of skipped.keys()) if (!keys.has(key)) skipped.delete(key);
     for (const key of outcomes.keys()) if (!currentOutcomes.has(key)) outcomes.delete(key);
     for (const key of owners.keys()) if (!seen.has(key)) owners.delete(key);
   };
@@ -579,10 +604,10 @@ function createService(api, rawOptions, directory) {
     const started = performance.now();
     if (!options || !options.enabled || !options.models) return { reason: status().reason, notice: statusNotice(status()) ?? reasonNotice(status().reason) };
     const caller = parent;
-    let deadline2;
+    let deadline;
     const limitAttempt = () => {
-      deadline2 = AbortSignal.timeout(options.timeoutMs);
-      parent = AbortSignal.any([caller, deadline2]);
+      deadline = AbortSignal.timeout(options.timeoutMs);
+      parent = AbortSignal.any([caller, deadline]);
     };
     limitAttempt();
     let offered;
@@ -685,7 +710,7 @@ function createService(api, rawOptions, directory) {
             parent.throwIfAborted();
           }
         }
-        let failure2 = "no_models_eligible";
+        let failure = "no_models_eligible";
         const details = /* @__PURE__ */ new Set();
         for (let index = 0; index < chain.length; index++) {
           parent.throwIfAborted();
@@ -740,7 +765,7 @@ function createService(api, rawOptions, directory) {
             const changed2 = check(await abortable(() => api.session(request.sessionID, parent), parent));
             if (changed2) return { reason: changed2 };
             parent.throwIfAborted();
-            failure2 = timedOut ? "timeout" : "generation_failed";
+            failure = timedOut ? "timeout" : "generation_failed";
             const policy = timedOut ? { detail: `Timed out after ${options.timeoutMs} ms.`, delayMs: 6e4, modelWide: false } : failurePolicy(error);
             details.add(policy.detail);
             const key2 = policy.modelWide ? modelKey(model) : candidateKey(model);
@@ -761,7 +786,7 @@ Queue: ${queue}`, request)), parent);
         }
         const cause = [...details];
         const recovery = cause.length && cause.every((detail) => /authentication failed/.test(detail)) ? "Reconnect the provider, then reload the server plugin." : cause.length && cause.every((detail) => /quota|usage limit/.test(detail)) ? "Wait for quota to reset; check Prediction status and preview." : "Open Prediction status and preview for causes and recovery.";
-        return { reason: failure2, ...cause.length ? { notice: { code: failure2, severity: "error", title: cause.length === 1 ? cause[0] : "All prediction models failed.", message: recovery } } : {} };
+        return { reason: failure, ...cause.length ? { notice: { code: failure, severity: "error", title: cause.length === 1 ? cause[0] : "All prediction models failed.", message: recovery } } : {} };
       };
       const reply = await abortable(async () => {
         const reply2 = await work();
@@ -786,7 +811,7 @@ Queue: ${queue}`, request)), parent);
       }
       return reply;
     } catch {
-      lastOutcome = caller.aborted ? "cancelled" : deadline2?.aborted ? "timeout" : "generation_failed";
+      lastOutcome = caller.aborted ? "cancelled" : deadline?.aborted ? "timeout" : "generation_failed";
       return { reason: lastOutcome, ...lastOutcome !== "cancelled" ? { notice: reasonNotice(lastOutcome === "timeout" ? "timeout" : "service_unavailable") } : {} };
     } finally {
       progress.pending = false;
@@ -808,242 +833,17 @@ Queue: ${queue}`, request)), parent);
 
 // src/index.ts
 import { homedir as homedir2, userInfo } from "node:os";
-import { join as join4 } from "node:path";
 
-// src/config.ts
+// src/preferences-store.ts
 import { createHash, randomUUID } from "node:crypto";
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path";
 import { execFile } from "node:child_process";
-import { isDeepStrictEqual, promisify } from "node:util";
-import { lstat, mkdir, open, readFile, realpath, rename, rmdir, unlink } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
-import { getNodeValue, parseTree as parseTree2 } from "jsonc-parser";
+import { promisify } from "node:util";
 
-// src/config-edit.ts
-import { applyEdits, createScanner, findNodeAtLocation, modify, parseTree, SyntaxKind } from "jsonc-parser";
-function editSetting(text, index, key, value) {
-  const path = ["plugins", index, "options", key];
-  const errors = [];
-  const root = parseTree(text, errors, { allowTrailingComma: true });
-  if (!root || errors.length) throw new Error("Invalid configuration");
-  const node = findNodeAtLocation(root, path);
-  if (!node) return value === void 0 ? text : applyEdits(text, modify(text, path, value, {}));
-  const property = node.parent;
-  if (property?.type !== "property" || property.parent?.type !== "object") throw new Error("Invalid property");
-  const edits = [];
-  const scanner = createScanner(text, false);
-  const trivia = (token) => token >= SyntaxKind.LineCommentTrivia && token <= SyntaxKind.Trivia;
-  const editToken = (content2 = "") => edits.push({ offset: scanner.getTokenOffset(), length: scanner.getTokenLength(), content: content2 });
-  const target = value === void 0 ? property : node;
-  const end = target.offset + target.length;
-  let content = value === void 0 ? "" : JSON.stringify(value);
-  if (content === void 0) throw new Error("Invalid setting value");
-  let comments = false;
-  scanner.setPosition(target.offset);
-  for (let token = scanner.scan(); token !== SyntaxKind.EOF && scanner.getTokenOffset() < end; token = scanner.scan()) {
-    if (token === SyntaxKind.LineCommentTrivia || token === SyntaxKind.BlockCommentTrivia) comments = true;
-    if (!trivia(token)) {
-      editToken(content);
-      content = "";
-    }
-  }
-  if (value !== void 0) return applyEdits(text, comments ? edits : modify(text, path, value, {}));
-  function next(offset) {
-    scanner.setPosition(offset);
-    let token = scanner.scan();
-    while (trivia(token)) token = scanner.scan();
-    return token;
-  }
-  if (next(end) === SyntaxKind.CommaToken) editToken();
-  else {
-    const siblings = property.parent.children;
-    const previous = siblings[siblings.indexOf(property) - 1];
-    if (previous) {
-      if (next(previous.offset + previous.length) !== SyntaxKind.CommaToken) throw new Error("Missing separator");
-      editToken();
-    }
-  }
-  return applyEdits(text, edits);
-}
-
-// src/config.ts
-var keys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"];
-var run = promisify(execFile);
-var missing = (error) => error.code === "ENOENT";
-var readOnly = 'This configuration source or filesystem is not verified for setup writes. Save needs the global opencode.json or opencode.jsonc, a plugin installed by absolute local path and a server started with OPENCODE_DISABLE_PROJECT_CONFIG=1. See "Where Save works" in the README.';
-var uncertain = "Changes may have been saved. Reopen settings before trying again.";
-async function exists(path) {
-  try {
-    await lstat(path);
-    return true;
-  } catch (error) {
-    if (missing(error)) return false;
-    throw error;
-  }
-}
-async function noACL(path) {
-  const { stdout } = await run("/bin/ls", ["-lde", path]);
-  if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) throw new Error(readOnly);
-}
-function parse(text) {
-  const errors = [];
-  const root = parseTree2(text, errors, { allowTrailingComma: true });
-  if (!root || root.type !== "object" || errors.length) throw new Error(readOnly);
-  function unique(node) {
-    if (node.type === "object") {
-      const names = node.children.map((property) => property.children[0].value);
-      if (new Set(names).size !== names.length) throw new Error(readOnly);
-    }
-    node.children?.forEach(unique);
-  }
-  unique(root);
-  return getNodeValue(root);
-}
-function createConfigStore(host) {
-  const directory = resolve(host.env.XDG_CONFIG_HOME ?? join(host.home, ".config"), "opencode");
-  async function inspect(signal) {
-    signal.throwIfAborted();
-    if (process.platform !== "darwin" || !["2.2.6", "2.3.0"].includes(host.version)) throw new Error(readOnly);
-    if (host.env.XDG_CONFIG_HOME !== void 0 && !isAbsolute(host.env.XDG_CONFIG_HOME)) throw new Error(readOnly);
-    if (host.env.OPENCODE_CONFIG || host.env.OPENCODE_CONFIG_CONTENT || host.env.OPENCODE_CONFIG_DIR || host.env.OPENCODE_DISABLE_PROJECT_CONFIG !== "1") throw new Error(readOnly);
-    if (await exists(join(directory, "plugins"))) throw new Error(readOnly);
-    for (const path of host.systemPaths) if (await exists(path)) throw new Error(readOnly);
-    const source = await host.source(signal);
-    if (!source || source.type !== "local" || !isAbsolute(source.path)) throw new Error(readOnly);
-    if (await realpath(directory) !== directory || await realpath(source.path) !== source.path) throw new Error(readOnly);
-    const parent = await lstat(directory);
-    if (!parent.isDirectory() || parent.uid !== process.getuid() || parent.mode & 18) throw new Error(readOnly);
-    await noACL(directory);
-    const paths = (await Promise.all(["opencode.json", "opencode.jsonc"].map(async (name) => {
-      const path = join(directory, name);
-      return await exists(path) ? path : void 0;
-    }))).filter((path) => !!path);
-    if (paths.length !== 1) throw new Error(readOnly);
-    const file = paths[0], info = await lstat(file);
-    if (!info.isFile() || info.nlink !== 1 || info.uid !== process.getuid() || (info.mode & 384) !== 384 || info.mode & 3602) throw new Error(readOnly);
-    await noACL(file);
-    const backup = file + ".predictions-backup";
-    if (await exists(backup)) {
-      const prior = await lstat(backup);
-      if (!prior.isFile() || prior.nlink !== 1 || prior.uid !== info.uid || prior.mode & 127) throw new Error(readOnly);
-      await noACL(backup);
-    }
-    const bytes = await readFile(file);
-    const text = bytes.toString("utf8");
-    if (!Buffer.from(text).equals(bytes)) throw new Error(readOnly);
-    const config = parse(text);
-    if (!Array.isArray(config.plugins)) throw new Error(readOnly);
-    const matches = [];
-    for (const [index2, entry2] of config.plugins.entries()) {
-      const spec = typeof entry2 === "string" ? entry2 : entry2?.package;
-      if (typeof spec !== "string") throw new Error(readOnly);
-      const local = spec.startsWith("file:") ? fileURLToPath(spec) : isAbsolute(spec) ? spec : spec.startsWith(".") ? resolve(directory, spec) : void 0;
-      if (local && await realpath(local) === source.path) matches.push({ entry: entry2, index: index2 });
-    }
-    if (matches.length !== 1) throw new Error(readOnly);
-    const { entry, index } = matches[0];
-    if (typeof entry === "string" || entry.package !== source.path || !entry.options || typeof entry.options !== "object" || Array.isArray(entry.options)) throw new Error(readOnly);
-    const fields = Object.fromEntries(keys.filter((key) => Object.hasOwn(entry.options, key)).map((key) => [key, entry.options[key]]));
-    const valid = parseOptions(entry.options).ok && isDeepStrictEqual(entry.options, host.options(), { skipPrototype: true });
-    const revision = createHash("sha256").update(text).update(JSON.stringify({
-      file,
-      inode: info.ino,
-      device: info.dev,
-      mode: info.mode,
-      uid: info.uid,
-      gid: info.gid,
-      source,
-      env: host.env,
-      directory: host.directory
-    })).digest("hex");
-    signal.throwIfAborted();
-    return { file, info, text, index, options: entry.options, fields, valid, revision };
-  }
-  return {
-    async read(signal) {
-      try {
-        const value = await inspect(signal);
-        return { scope: "global", revision: value.revision, source: value.file, writable: value.valid, fields: value.fields, ...!value.valid ? { reason: readOnly } : {} };
-      } catch {
-        signal.throwIfAborted();
-        return { scope: "global", revision: "", writable: false, fields: {}, reason: readOnly };
-      }
-    },
-    async write(revision, patch, signal) {
-      let locked = false, committed = false, cleanupFailed = false;
-      const lock = join(directory, ".predictions-setup.lock");
-      const temporary = [];
-      let result;
-      async function transaction() {
-        signal.throwIfAborted();
-        try {
-          await inspect(signal);
-        } catch {
-          return { kind: "read_only", message: readOnly };
-        }
-        const deadline2 = Date.now() + 3e3;
-        while (!locked) {
-          signal.throwIfAborted();
-          try {
-            await mkdir(lock, { mode: 448 });
-            locked = true;
-          } catch (error) {
-            if (error.code !== "EEXIST") throw error;
-            if (Date.now() >= deadline2) return { kind: "failed", message: "Another setup writer owns this configuration. Reopen settings after it finishes." };
-            await delay(10, void 0, { signal });
-          }
-        }
-        const before = await inspect(signal);
-        if (revision !== before.revision) return { kind: "conflict", message: "Configuration changed. Reopen settings before saving." };
-        if (!before.valid) return { kind: "read_only", message: readOnly };
-        if (!patch || typeof patch !== "object" || Array.isArray(patch) || !Object.keys(patch).length || Object.entries(patch).some(([key, value]) => !keys.includes(key) || key !== "models" && value === void 0) || !parseOptions({ ...before.options, ...patch }).ok) return { kind: "failed", message: "Settings are invalid." };
-        let text = before.text;
-        for (const [key, value] of Object.entries(patch)) text = editSetting(text, before.index, key, value);
-        parse(text);
-        async function stage(bytes, mode) {
-          signal.throwIfAborted();
-          const path = join(dirname(before.file), ".predictions.tmp-" + randomUUID());
-          const handle = await open(path, "wx", 384);
-          temporary.push(path);
-          try {
-            await handle.writeFile(bytes);
-            await handle.chown(before.info.uid, before.info.gid);
-            await handle.chmod(mode);
-            await handle.sync();
-          } finally {
-            await handle.close();
-          }
-          return path;
-        }
-        const next = await stage(text, before.info.mode & 511);
-        if ((await inspect(signal)).revision !== revision) return { kind: "conflict", message: "Configuration changed. Reopen settings before saving." };
-        const recovery = await stage(before.text, before.info.mode & 384);
-        await rename(recovery, before.file + ".predictions-backup");
-        if ((await inspect(signal)).revision !== revision) return { kind: "conflict", message: "Configuration changed. Reopen settings before saving." };
-        signal.throwIfAborted();
-        await rename(next, before.file);
-        committed = true;
-        const persisted = await inspect(new AbortController().signal);
-        if (persisted.text !== text) return { kind: "failed", message: uncertain };
-        return { kind: "written", revision: persisted.revision };
-      }
-      try {
-        result = await transaction();
-      } catch {
-        result = { kind: "failed", message: committed ? uncertain : "Settings were not saved. Reopen settings and try again." };
-      } finally {
-        for (const path of temporary) await unlink(path).catch((error) => {
-          if (!missing(error)) cleanupFailed = true;
-        });
-        if (locked) await rmdir(lock).catch(() => {
-          cleanupFailed = true;
-        });
-      }
-      return cleanupFailed ? { kind: "failed", message: committed ? uncertain : "Save cleanup failed. Reopen settings before trying again." } : result;
-    }
-  };
-}
+// src/preferences.ts
+import { parseTree } from "jsonc-parser";
 
 // src/setup.ts
 var settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"];
@@ -1062,12 +862,336 @@ function readGroups(fields) {
   if (!parsed.ok) throw new Error(parsed.reason);
   return parsed.value.models.map((group) => group.split(",").map((entry) => entry.trim()));
 }
-function changedFields(original, draft) {
-  return Object.fromEntries(settingKeys.filter((key) => Object.hasOwn(draft, key) && JSON.stringify(original[key]) !== JSON.stringify(draft[key])).map((key) => [key, draft[key]]));
+
+// src/preferences.ts
+function parsePreferences(text) {
+  const invalid = () => new Error("Prediction preferences must be a version 1 JSON document with a settings object.");
+  const errors = [];
+  const root = parseTree(text, errors, { disallowComments: true, allowTrailingComma: false });
+  if (!root || root.type !== "object" || errors.length) throw invalid();
+  function unique(node) {
+    if (node.type === "object") {
+      const names = node.children.map((property) => property.children[0].value);
+      if (new Set(names).size !== names.length) throw invalid();
+    }
+    node.children?.forEach(unique);
+  }
+  unique(root);
+  const value = JSON.parse(text);
+  if (value.version !== 1 || !value.settings || typeof value.settings !== "object" || Array.isArray(value.settings)) throw invalid();
+  return value;
+}
+function preferenceFields(value) {
+  return Object.fromEntries(settingKeys.filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]));
+}
+function validatePreferenceFields(overrides) {
+  const fields = preferenceFields(overrides);
+  if (fields.models === null) delete fields.models;
+  return validateSettings(fields);
+}
+function applyPreferenceChange(overrides, input) {
+  const invalid = () => new Error("Prediction preference changes are invalid.");
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["fields", "reset", "removeModels"].includes(key)) || !input.fields || typeof input.fields !== "object" || Array.isArray(input.fields) || Object.entries(input.fields).some(([key, value]) => !settingKeys.includes(key) || value === void 0) || input.removeModels !== void 0 && input.removeModels !== true || input.removeModels && Object.hasOwn(input.fields, "models") || input.reset !== void 0 && (!Array.isArray(input.reset) || new Set(input.reset).size !== input.reset.length || input.reset.some((key) => !settingKeys.includes(key) || Object.hasOwn(input.fields, key) || key === "models" && input.removeModels)) || validateSettings(input.fields).length) throw invalid();
+  const next = { ...overrides, ...input.fields };
+  for (const key of input.reset ?? []) delete next[key];
+  if (input.removeModels) next.models = null;
+  if (validatePreferenceFields(next).length) throw invalid();
+  return next;
+}
+function resolvePreferences(legacy, overrides) {
+  const valid = legacy === void 0 || !!legacy && typeof legacy === "object" && !Array.isArray(legacy);
+  const base = valid && legacy ? legacy : {};
+  const fallbackFields = preferenceFields(base);
+  for (const key of ["timeoutMs", "contextTurns"]) if (fallbackFields[key] === null) delete fallbackFields[key];
+  const known = preferenceFields(overrides);
+  const fields = { ...fallbackFields, ...known };
+  const rawOptions = valid ? { ...base, ...known } : legacy;
+  if (known.models === null) {
+    delete fields.models;
+    if (rawOptions && typeof rawOptions === "object") delete rawOptions.models;
+  }
+  const origins = Object.fromEntries(settingKeys.map((key) => [key, Object.hasOwn(known, key) ? "preferences" : Object.hasOwn(fallbackFields, key) ? "configuration" : "default"]));
+  return { rawOptions, fields, fallbackFields, origins, issues: validatePreferenceFields(known) };
+}
+
+// src/preferences-store.ts
+var limit = 65536;
+var run = promisify(execFile);
+var missing = (error) => error?.code === "ENOENT";
+var Refusal = class extends Error {
+};
+var fail = (message) => {
+  throw new Refusal(message);
+};
+var uncertain = "Changes may have been saved. Reopen settings before trying again.";
+var identity = (value) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...value.isDirectory() ? [] : [value.nlink]];
+var hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+function preferencesPath(host) {
+  const path = host.platform === "win32" ? win32 : posix;
+  let root = host.env.XDG_CONFIG_HOME;
+  if (root !== void 0 && (!root || !path.isAbsolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.");
+  if (root === void 0) root = host.platform === "win32" ? host.env.APPDATA : path.join(host.home, ".config");
+  if (!root || !path.isAbsolute(root)) return fail("The server's user configuration directory is unavailable.");
+  return path.join(root, "opencode", "predictions.json");
+}
+function administrativePaths(platform, env, username) {
+  if (platform === "win32") return [env.ProgramData && win32.isAbsolute(env.ProgramData) ? win32.join(env.ProgramData, "opencode") : ""];
+  if (platform === "darwin") return [
+    "/Library/Application Support/opencode",
+    "/Library/Managed Preferences/ai.opencode.managed.plist",
+    username ? posix.join("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences"
+  ];
+  return ["/etc/opencode"];
+}
+function decodePreferences(bytes) {
+  if (bytes.byteLength > limit) fail("Prediction preferences exceed 65536 bytes.");
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return fail("Prediction preferences must be valid UTF-8.");
+  }
+  try {
+    return parsePreferences(text);
+  } catch (error) {
+    return fail(error.message);
+  }
+}
+async function exists(path) {
+  if (!isAbsolute(path)) fail("The administrative configuration path is unavailable.");
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (missing(error)) return false;
+    throw error;
+  }
+}
+async function canonical(directory) {
+  const suffix = [];
+  let ancestor = directory;
+  for (; ; ) {
+    try {
+      const resolved = await realpath(ancestor);
+      return { directory: join(resolved, ...suffix), ancestor: resolved };
+    } catch (error) {
+      if (!missing(error) || dirname(ancestor) === ancestor) throw error;
+      suffix.unshift(basename(ancestor));
+      ancestor = dirname(ancestor);
+    }
+  }
+}
+async function safe(info, path, directory = false) {
+  if (process.getuid === void 0 || info.uid !== process.getuid() || info.mode & 3602 || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) fail("Prediction preferences have unsafe ownership, links or write permissions.");
+  if (process.platform === "darwin") {
+    const { stdout } = await run("/bin/ls", ["-lde", path], { timeout: 1e3, maxBuffer: 8192 });
+    if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) fail("Prediction preferences have unsupported access control entries.");
+  }
+}
+function createPreferencesStore(host) {
+  async function inspect(signal) {
+    signal.throwIfAborted();
+    const logical = preferencesPath(host);
+    const target = await canonical(dirname(logical)), directory = target.directory, source = join(directory, "predictions.json");
+    let managed = false;
+    for (const path of host.systemPaths) {
+      try {
+        managed ||= await exists(path);
+      } catch {
+        managed = true;
+      }
+    }
+    if (managed) return { source, directory, policy: "managed", bytes: Buffer.alloc(0), document: { version: 1, settings: {} }, info: void 0, parent: void 0, revision: hash([source, "managed"]), writable: false };
+    const parent = await lstat(target.ancestor);
+    let info, bytes = Buffer.alloc(0), document = { version: 1, settings: {} };
+    try {
+      info = await lstat(source);
+    } catch (error) {
+      if (!missing(error)) throw error;
+    }
+    let writable = true, reason;
+    try {
+      await safe(parent, target.ancestor, true);
+    } catch (error) {
+      if (info) throw error;
+      writable = false;
+      reason = error instanceof Refusal ? error.message : "Prediction preferences are not writable.";
+    }
+    if (info) {
+      await safe(info, source);
+      const handle = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      try {
+        const pinned = await handle.stat();
+        if (JSON.stringify(identity(pinned)) !== JSON.stringify(identity(info))) fail("Prediction preferences changed while reading. Reload settings.");
+        const buffer = Buffer.alloc(limit + 1);
+        const read = await handle.read(buffer, 0, buffer.length, 0);
+        bytes = buffer.subarray(0, read.bytesRead);
+        document = decodePreferences(bytes);
+      } finally {
+        await handle.close();
+      }
+    }
+    const revision = hash([source, info ? identity(info) : null, bytes.toString("hex")]);
+    writable &&= !info || (info.mode & 384) === 384;
+    signal.throwIfAborted();
+    return { source, directory, policy: "user", bytes, document, info, parent: target.ancestor === directory ? parent : void 0, revision, writable, reason };
+  }
+  function snapshot(value) {
+    return {
+      revision: value.revision,
+      source: value.source,
+      writable: value.writable,
+      documentValid: true,
+      policy: value.policy,
+      overrides: preferenceFields(value.document.settings),
+      ...value.policy === "managed" ? { reason: "Administrative configuration prevents user prediction preferences." } : !value.writable ? { reason: value.reason ?? "Prediction preferences are not writable." } : {}
+    };
+  }
+  return {
+    async read(signal) {
+      try {
+        return snapshot(await inspect(signal));
+      } catch (error) {
+        signal.throwIfAborted();
+        let source = "";
+        try {
+          source = preferencesPath(host);
+        } catch {
+        }
+        return {
+          revision: hash([source, "unavailable"]),
+          source,
+          writable: false,
+          documentValid: false,
+          policy: "user",
+          overrides: {},
+          reason: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified. Check the server's configuration directory."
+        };
+      }
+    },
+    async write(revision, input, signal) {
+      signal.throwIfAborted();
+      const temporary = [];
+      let committed = false, cleanupFailed = false, result;
+      async function transaction() {
+        let before;
+        try {
+          before = await inspect(signal);
+        } catch (error) {
+          return { kind: "read_only", message: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified." };
+        }
+        if (!before.writable) return { kind: "read_only", message: snapshot(before).reason };
+        if (before.revision !== revision) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
+        const settings = applyPreferenceChange(before.document.settings, input);
+        const text = JSON.stringify({ ...before.document, settings }, null, 2) + "\n";
+        decodePreferences(Buffer.from(text));
+        await mkdir(before.directory, { recursive: true, mode: 448 });
+        const parent = await lstat(before.directory);
+        await safe(parent, before.directory, true);
+        const recheck = async () => {
+          const fresh = await inspect(signal), current = await lstat(before.directory);
+          if (!fresh.writable || fresh.revision !== revision || fresh.source !== before.source || JSON.stringify(identity(current)) !== JSON.stringify(identity(parent))) fail("Prediction preferences changed. Reload settings before saving.");
+        };
+        async function stage(bytes, mode) {
+          signal.throwIfAborted();
+          const path = join(before.directory, ".predictions.tmp-" + randomUUID());
+          const handle = await open(path, "wx", 384);
+          temporary.push(path);
+          try {
+            await handle.writeFile(bytes);
+            await handle.chmod(mode);
+            await handle.sync();
+          } finally {
+            await handle.close();
+          }
+          return path;
+        }
+        const next = await stage(text, before.info ? before.info.mode & 511 : 384);
+        await recheck();
+        if (before.info) {
+          const backup = before.source + ".backup";
+          if (await exists(backup)) {
+            const info = await lstat(backup);
+            await safe(info, backup);
+            if (info.mode & 127) fail("The prediction preferences backup has unsafe permissions.");
+          }
+          const copy = await stage(before.bytes, 384);
+          await rename(copy, backup);
+        }
+        await recheck();
+        signal.throwIfAborted();
+        await rename(next, before.source);
+        committed = true;
+        const persisted = await inspect(new AbortController().signal);
+        if (!persisted.bytes.equals(Buffer.from(text))) return { kind: "failed", message: uncertain };
+        return { kind: "written", revision: persisted.revision };
+      }
+      try {
+        result = await transaction();
+      } catch (error) {
+        result = { kind: "failed", message: committed ? uncertain : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
+      } finally {
+        for (const path of temporary) await unlink(path).catch((error) => {
+          if (!missing(error)) cleanupFailed = true;
+        });
+      }
+      return cleanupFailed ? { kind: "failed", message: committed ? uncertain : "Save cleanup failed. Reopen settings before trying again." } : result;
+    }
+  };
+}
+
+// src/preferences-runtime.ts
+import { createHash as createHash2 } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+function createPreferencesRuntime(store, legacy, make) {
+  const lifetime = new AbortController();
+  let current, effective, generation = 0, adopted = 0;
+  const state = () => {
+    if (!current) throw new Error("Prediction preferences are not loaded.");
+    return current;
+  };
+  async function refresh(parent) {
+    const signal = AbortSignal.any([parent, lifetime.signal]), ticket = ++generation;
+    signal.throwIfAborted();
+    const stored = await abortable(() => store.read(signal), signal);
+    signal.throwIfAborted();
+    if (ticket < adopted) return;
+    const resolved = resolvePreferences(legacy, stored.policy === "managed" ? {} : stored.overrides);
+    const parsed = parseOptions(resolved.rawOptions);
+    const valid = stored.documentValid && !resolved.issues.length && parsed.ok;
+    const next = valid && parsed.ok ? parsed.value : null;
+    const revision = createHash2("sha256").update(JSON.stringify([stored.revision, legacy, stored.policy])).digest("hex");
+    let service = current?.service;
+    if (!service || !isDeepStrictEqual(effective, next)) {
+      service?.dispose();
+      service = make(valid ? resolved.rawOptions : null);
+    }
+    effective = next;
+    current = { stored, resolved, revision, activeRevision: valid ? revision : null, service };
+    adopted = ticket;
+  }
+  return {
+    state,
+    refresh,
+    async predict(input, signal) {
+      await refresh(signal);
+      const engine = state().service;
+      const reply = await engine.predict(input, signal);
+      await refresh(signal);
+      return engine === state().service ? reply : { reason: "stale" };
+    },
+    dispose() {
+      if (!lifetime.signal.aborted) {
+        lifetime.abort();
+        current?.service.dispose();
+      }
+    }
+  };
 }
 
 // src/setup-service.ts
-function resolve2(fields, catalog) {
+import { isDeepStrictEqual as isDeepStrictEqual2 } from "node:util";
+function resolve(fields, catalog) {
   const issues = validateSettings(fields);
   if (issues.length) return { groups: [], issues };
   const selectors = readGroups(fields) ?? [];
@@ -1094,7 +1218,7 @@ function resolve2(fields, catalog) {
   }
   return { groups: selectors.map((entries, index) => ({ selectors: entries, candidates: candidates[index] })), issues };
 }
-function createSetupService(store, models, current) {
+function createSetupService(store, models, runtime) {
   async function catalog(signal) {
     try {
       return (await abortable(() => models(signal), signal)).map((model) => ({
@@ -1111,227 +1235,83 @@ function createSetupService(store, models, current) {
   }
   return {
     async read(signal) {
-      const snapshot = await store.read(signal);
+      await runtime.refresh(signal);
       const metadata = await catalog(signal);
-      const state = current(), parsed = parseOptions(state.options);
-      return { ...snapshot, effective: parsed.ok ? parsed.value : null, catalog: metadata, issues: resolve2(snapshot.fields, metadata).issues, serviceVersion: state.version };
+      const state = runtime.state(), { stored, resolved } = state, parsed = parseOptions(resolved.rawOptions);
+      return {
+        revision: state.revision,
+        source: stored.source,
+        scope: "global",
+        writable: stored.writable,
+        ...stored.reason ? { reason: stored.reason } : {},
+        fields: resolved.fields,
+        overrides: stored.overrides,
+        fallbackFields: resolved.fallbackFields,
+        origins: resolved.origins,
+        activeRevision: state.activeRevision,
+        effective: state.activeRevision && parsed.ok ? parsed.value : null,
+        catalog: metadata,
+        issues: [...resolved.issues, ...resolve(resolved.fields, metadata).issues.filter((issue) => !resolved.issues.some((existing) => existing.field === issue.field))],
+        serviceVersion: state.service.status().version
+      };
     },
     async preview(fields, signal) {
       signal.throwIfAborted();
       const issues = validateSettings(fields);
       if (issues.length) return { groups: [], issues };
-      return resolve2(fields, await catalog(signal));
+      return resolve(fields, await catalog(signal));
     },
     async save(input, signal) {
       signal.throwIfAborted();
-      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["revision", "fields", "removeModels"].includes(key))) throw new Error("Unknown save field.");
-      if (typeof input.revision !== "string" || !input.revision || input.removeModels !== void 0 && input.removeModels !== true) throw new Error("Invalid save input.");
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["revision", "fields", "removeModels", "reset"].includes(key))) throw new Error("Unknown save field.");
+      if (typeof input.revision !== "string" || !input.revision || Buffer.byteLength(JSON.stringify(input)) > 65536) throw new Error("Invalid save input.");
       const invalid = validateSettings(input.fields);
       if (invalid.length) return { kind: "invalid", issues: invalid };
-      if (input.removeModels && Object.hasOwn(input.fields, "models")) throw new Error("Conflicting model edits.");
-      const fresh = await store.read(signal);
-      if (!fresh.writable) return { kind: "read_only", message: fresh.reason ?? "This configuration is read-only." };
+      const { revision: _revision, ...change } = input;
+      const edits = applyPreferenceChange({}, change);
+      await runtime.refresh(signal);
+      const fresh = runtime.state();
+      if (!fresh.stored.writable) return { kind: "read_only", message: fresh.stored.reason ?? "Prediction preferences are read-only." };
       if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." };
-      const prospective = { ...fresh.fields, ...input.fields, ...input.removeModels ? { models: void 0 } : {} };
-      const issues = validateSettings(prospective);
+      const prospective = { ...fresh.stored.overrides, ...edits };
+      for (const key of input.reset ?? []) delete prospective[key];
+      const issues = validatePreferenceFields(prospective);
       if (issues.length) return { kind: "invalid", issues };
-      const patch = changedFields(fresh.fields, prospective);
-      if (!Object.keys(patch).length) return { kind: "saved", revision: fresh.revision, serviceVersion: current().version };
-      const before = current().version;
-      const result = await store.write(input.revision, patch, signal);
-      if (result.kind !== "written") return result;
-      const state = current(), parsed = parseOptions(state.options), expected = parseOptions(prospective);
-      if (state.version !== before && parsed.ok && expected.ok && settingKeys.every((key) => JSON.stringify(parsed.value[key]) === JSON.stringify(expected.value[key]))) {
-        return { kind: "saved", revision: result.revision, serviceVersion: state.version };
+      const expected = resolvePreferences(fresh.resolved.fallbackFields, prospective);
+      const inheritedIssues = validateSettings(expected.fields);
+      if (inheritedIssues.length) return { kind: "invalid", issues: inheritedIssues };
+      let written = fresh.stored.revision;
+      if (!isDeepStrictEqual2(prospective, fresh.stored.overrides)) {
+        const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual2(value, fresh.stored.overrides[key])));
+        const result = await store.write(fresh.stored.revision, { fields, ...input.reset ? { reset: input.reset } : {}, ...input.removeModels ? { removeModels: true } : {} }, signal);
+        if (result.kind !== "written") return result;
+        written = result.revision;
       }
-      return { kind: "saved_not_active", revision: result.revision, message: "Saved on disk. Effective activation is not verified." };
-    }
-  };
-}
-
-// src/setup-local.ts
-import { randomBytes } from "node:crypto";
-import { chmod, lstat as lstat2, mkdir as mkdir2, realpath as realpath2, rmdir as rmdir2, unlink as unlink2 } from "node:fs/promises";
-import { createConnection, createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join as join2, isAbsolute as isAbsolute2 } from "node:path";
-var requestLimit = 65536;
-var responseLimit = 8388608;
-var deadline = 1e4;
-var failure = () => new Error("Local setup is unavailable.");
-var object = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var keys2 = (value, allowed) => Object.keys(value).every((key) => allowed.includes(key));
-function validSetupLocation(value) {
-  return object(value) && keys2(value, ["directory", "workspaceID"]) && typeof value.directory === "string" && isAbsolute2(value.directory) && !value.directory.includes("\0") && (value.workspaceID === void 0 || typeof value.workspaceID === "string" && !!value.workspaceID);
-}
-function sameLocation(a, b) {
-  return a.directory === b.directory && a.workspaceID === b.workspaceID;
-}
-function validSave(value) {
-  if (!object(value) || !keys2(value, ["revision", "fields", "removeModels"]) || typeof value.revision !== "string" || !value.revision || value.removeModels !== void 0 && value.removeModels !== true) return false;
-  try {
-    validateSettings(value.fields);
-    return !(value.removeModels && Object.hasOwn(value.fields, "models"));
-  } catch {
-    return false;
-  }
-}
-async function socketPath(id) {
-  if (!/^[0-9a-f]{16}$/.test(id)) throw failure();
-  const directory = join2(await realpath2(tmpdir()), "pp-" + id), path = join2(directory, "s");
-  if (Buffer.byteLength(path) > 100) throw failure();
-  return { directory, path };
-}
-async function safePath(directory, path) {
-  const parent = await lstat2(directory), socket = await lstat2(path), uid = process.getuid?.();
-  if (uid === void 0 || !parent.isDirectory() || parent.uid !== uid || (parent.mode & 4095) !== 448 || !socket.isSocket() || socket.uid !== uid || (socket.mode & 4095) !== 384) throw failure();
-}
-async function startLocalSetup(location, api) {
-  const lifetime = new AbortController(), sockets = /* @__PURE__ */ new Set();
-  let owned;
-  const server = createServer({ allowHalfOpen: true }, (socket) => {
-    if (lifetime.signal.aborted || sockets.size >= 16) {
-      socket.destroy();
-      return;
-    }
-    sockets.add(socket);
-    const cancelled = new AbortController();
-    const signal = AbortSignal.any([lifetime.signal, cancelled.signal, AbortSignal.timeout(deadline)]);
-    const stop = () => socket.destroy();
-    signal.addEventListener("abort", stop, { once: true });
-    socket.on("error", () => {
-    });
-    socket.on("close", () => {
-      sockets.delete(socket);
-      cancelled.abort();
-      signal.removeEventListener("abort", stop);
-    });
-    let chunks = [], size = 0;
-    socket.on("data", (chunk) => {
-      size += chunk.length;
-      if (size > requestLimit) {
-        socket.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    socket.on("end", () => {
-      void (async () => {
-        try {
-          signal.throwIfAborted();
-          const text = Buffer.concat(chunks).toString("utf8");
-          chunks = [];
-          if (!text.endsWith("\n") || text.indexOf("\n") !== text.length - 1) throw failure();
-          const input = JSON.parse(text);
-          if (!object(input) || !keys2(input, ["id", "serviceVersion", "serverPid", "location", "method", "input"]) || input.id !== id || input.serverPid !== process.pid || !validSetupLocation(input.location) || !sameLocation(input.location, pinned) || input.method !== "read" && input.method !== "save" || input.method === "read" && Object.hasOwn(input, "input") || input.method === "save" && !validSave(input.input)) throw failure();
-          await safePath(owned.directory, owned.path);
-          const current = await lstat2(owned.path), parent = await lstat2(owned.directory);
-          if (current.dev !== owned.socketDev || current.ino !== owned.socketIno || parent.dev !== owned.dev || parent.ino !== owned.ino) throw failure();
-          const snapshot = await abortable(() => api.read(signal), signal);
-          if (input.serviceVersion !== snapshot.serviceVersion) throw failure();
-          let value;
-          if (input.method === "read") value = { ...snapshot, localAuthority: { id } };
-          else if (!snapshot.writable) value = { kind: "read_only", message: "This configuration is read-only." };
-          else value = await abortable(() => api.save(input.input, signal), signal);
-          signal.throwIfAborted();
-          const output = JSON.stringify({ pid: process.pid, value }) + "\n";
-          if (Buffer.byteLength(output) > responseLimit) throw failure();
-          socket.end(output);
-        } catch {
-          if (!socket.destroyed) socket.end('{"error":"Local setup is unavailable."}\n');
-        }
-      })();
-    });
-  });
-  server.on("error", () => {
-  });
-  const id = randomBytes(8).toString("hex"), pinned = { ...location };
-  const dispose = async () => {
-    lifetime.abort();
-    for (const socket of sockets) socket.destroy();
-    if (owned && server.listening) {
       try {
-        const parent = await lstat2(owned.directory), socket = await lstat2(owned.path);
-        if (parent.dev !== owned.dev || parent.ino !== owned.ino || socket.dev !== owned.socketDev || socket.ino !== owned.socketIno) {
-          server.unref();
-          return;
-        }
-      } catch (error) {
-        if (error.code !== "ENOENT") {
-          server.unref();
-          return;
-        }
-      }
-    }
-    if (server.listening) await new Promise((resolve3) => server.close(() => resolve3()));
-    if (owned) {
-      try {
-        const current = await lstat2(owned.directory);
-        if (!current.isDirectory() || current.dev !== owned.dev || current.ino !== owned.ino) return;
-        try {
-          const socket = await lstat2(owned.path);
-          if (socket.isSocket() && socket.dev === owned.socketDev && socket.ino === owned.socketIno) await unlink2(owned.path);
-        } catch {
-        }
-        await rmdir2(owned.directory);
+        await runtime.refresh(signal);
       } catch {
+        signal.throwIfAborted();
+        return { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." };
       }
-    }
-  };
-  try {
-    if (!validSetupLocation(location) || !(await abortable(() => api.read(lifetime.signal), AbortSignal.timeout(deadline))).writable) return;
-    const { directory, path } = await socketPath(id);
-    await mkdir2(directory, { mode: 448 });
-    const stat = await lstat2(directory);
-    owned = { directory, path, dev: stat.dev, ino: stat.ino };
-    await new Promise((resolve3, reject) => {
-      server.once("error", reject);
-      server.listen(path, () => {
-        server.off("error", reject);
-        resolve3();
-      });
-    });
-    const socket = await lstat2(path);
-    owned.socketDev = socket.dev;
-    owned.socketIno = socket.ino;
-    await chmod(path, 384);
-    await safePath(directory, path);
-    return { id, dispose };
-  } catch {
-    await dispose();
-    return;
-  }
-}
-function lazyLocalSetup(start) {
-  let current, closed = false;
-  return {
-    get() {
-      if (closed) return Promise.resolve(void 0);
-      const pending = current ??= start().then((authority) => {
-        if (!authority && current === pending) current = void 0;
-        return authority;
-      });
-      return pending;
-    },
-    async dispose() {
-      closed = true;
-      const pending = current;
-      current = void 0;
-      await (await pending)?.dispose();
+      const state = runtime.state();
+      if (state.stored.revision === written && state.activeRevision === state.revision && isDeepStrictEqual2(state.stored.overrides, prospective)) {
+        return { kind: "saved", revision: state.revision, serviceVersion: state.service.status().version };
+      }
+      return { kind: "saved_not_active", revision: state.revision, message: "Saved on disk. Effective activation is not verified." };
     }
   };
 }
 
 // src/context-file.ts
-import { constants } from "node:fs";
+import { constants as constants2 } from "node:fs";
 import { open as open2 } from "node:fs/promises";
 import { homedir } from "node:os";
-import { isAbsolute as isAbsolute3, join as join3 } from "node:path";
+import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
 async function readContextFile(path, signal) {
   signal.throwIfAborted();
-  const resolved = path.startsWith("~/") ? join3(homedir(), path.slice(2)) : path;
-  if (!isAbsolute3(resolved)) throw new Error("Context file requires an absolute path");
-  const file = await open2(resolved, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  const resolved = path.startsWith("~/") ? join2(homedir(), path.slice(2)) : path;
+  if (!isAbsolute2(resolved)) throw new Error("Context file requires an absolute path");
+  const file = await open2(resolved, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0));
   try {
     signal.throwIfAborted();
     if (!(await file.stat()).isFile()) throw new Error("Context file must be a regular file");
@@ -1360,7 +1340,7 @@ async function readContextFile(path, signal) {
 
 // src/github.ts
 import { execFile as execFile2 } from "node:child_process";
-import { createHash as createHash2 } from "node:crypto";
+import { createHash as createHash3 } from "node:crypto";
 import { promisify as promisify2 } from "node:util";
 var run2 = promisify2(execFile2);
 async function githubToken(signal) {
@@ -1408,11 +1388,11 @@ function createGitHubContext(deps = {}) {
       signal.throwIfAborted();
     }
     signal.throwIfAborted();
-    const identity = createHash2("sha256").update(credential ?? "").digest("hex");
+    const identity2 = createHash3("sha256").update(credential ?? "").digest("hex");
     const sources = [];
     for (const url of urls) {
       signal.throwIfAborted();
-      const key = JSON.stringify([sessionID, identity, url]);
+      const key = JSON.stringify([sessionID, identity2, url]);
       const cached = cache.get(key);
       if (cached && cached.expires > now()) {
         sources.push(cached.value);
@@ -1460,61 +1440,48 @@ function createGitHubContext(deps = {}) {
 var index_default = Plugin.define({
   id: "opencode-predictions",
   async setup(ctx) {
-    const service = createService({
-      session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),
-      context: (sessionID, signal) => ctx.session.context({ sessionID }, { signal }),
+    const lifetime = new AbortController();
+    let username;
+    try {
+      username = userInfo().username;
+    } catch {
+    }
+    const store = createPreferencesStore({
+      home: homedir2(),
+      platform: process.platform,
+      env: { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA },
+      systemPaths: administrativePaths(process.platform, process.env, username)
+    });
+    const runtime = createPreferencesRuntime(store, ctx.options, (options) => createService({
+      session: (sessionID, signal2) => ctx.session.get({ sessionID }, { signal: signal2 }),
+      context: (sessionID, signal2) => ctx.session.context({ sessionID }, { signal: signal2 }),
       contextFile: readContextFile,
       includeGithubPRContext: createGitHubContext(),
-      models: async (signal) => (await ctx.model.list(void 0, { signal })).data,
-      generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
+      models: async (signal2) => (await ctx.model.list(void 0, { signal: signal2 })).data,
+      generate: async (model, prompt, signal2) => (await ctx.experimental.generate.text({ model, prompt }, { signal: signal2 })).text,
       notice: async (message, request, notice2) => {
         if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...notice2 ? { notice: notice2 } : {} });
       },
       progress: async (modelName, request) => {
         if (request.requestID) await registration.events.emit("progress", { message: "", modelName, requestID: request.requestID, sessionID: request.sessionID });
       }
-    }, ctx.options, ctx.location.directory);
-    let username;
-    try {
-      username = userInfo().username;
-    } catch {
-    }
-    const store = createConfigStore({
-      version: ctx.app.version,
-      home: homedir2(),
-      directory: ctx.location.directory,
-      env: Object.fromEntries(["XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_PROJECT_CONFIG"].map((key) => [key, process.env[key]])),
-      systemPaths: process.platform === "darwin" ? [
-        "/Library/Application Support/opencode",
-        "/Library/Managed Preferences/ai.opencode.managed.plist",
-        username ? join4("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences"
-      ] : ["/etc/opencode"],
-      source: async (signal) => {
-        if (!username) return;
-        const plugin = (await ctx.plugin.list(void 0, { signal })).data.find((entry) => entry.id === "opencode-predictions");
-        return plugin?.source.type === "local" && plugin.state.status === "active" ? plugin.source : void 0;
-      },
-      options: () => ctx.options
-    });
-    const setup = createSetupService(store, async (signal) => (await ctx.model.list(void 0, { signal })).data, () => ({ options: ctx.options, version: service.status().version }));
-    let closing = false;
-    let location;
-    const local = lazyLocalSetup(() => startLocalSetup(location, setup));
+    }, options, ctx.location.directory));
+    await runtime.refresh(lifetime.signal);
+    const setup = createSetupService(store, async (signal2) => (await ctx.model.list(void 0, { signal: signal2 })).data, runtime);
+    const signal = (parent) => AbortSignal.any([parent, lifetime.signal]);
     const registration = await ctx.rpc.register(Predictions, {
-      predict: (input, context) => service.predict(input, context.signal),
-      status: (_input, context) => service.inspect(context.signal),
-      settings: async (_input, context) => {
-        const snapshot = await setup.read(context.signal);
-        location ??= { directory: ctx.location.directory, ..."workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {} };
-        const authority = snapshot.writable && !closing ? await local.get() : void 0;
-        return { ...snapshot, ...authority && !closing ? { localAuthority: { id: authority.id } } : {}, writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." };
+      predict: (input, context) => runtime.predict(input, signal(context.signal)),
+      status: async (_input, context) => {
+        await runtime.refresh(signal(context.signal));
+        return runtime.state().service.inspect(signal(context.signal));
       },
-      previewSettings: (input, context) => setup.preview(input.fields, context.signal)
+      settings: (_input, context) => setup.read(signal(context.signal)),
+      saveSettings: (input, context) => setup.save(input, signal(context.signal)),
+      previewSettings: (input, context) => setup.preview(input.fields, signal(context.signal))
     });
     return async () => {
-      closing = true;
-      service.dispose();
-      await local.dispose();
+      lifetime.abort();
+      runtime.dispose();
       await registration.dispose();
     };
   }

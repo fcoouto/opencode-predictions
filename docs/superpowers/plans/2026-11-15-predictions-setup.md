@@ -1,5 +1,7 @@
 # Predictions Setup Implementation Plan
 
+> Historical plan. Persistence and Save transport are superseded by the approved [prediction preferences plan](2026-11-18-predictions-preferences.md). Original implementation notes and findings are preserved below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add Predictions Setup for the eight scoped settings in Desktop and interactive CLI, including `includeGithubPRContext` in Advanced, with best-effort global-only configuration editing.

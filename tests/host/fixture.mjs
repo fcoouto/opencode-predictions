@@ -9,7 +9,7 @@ import { Service } from "@opencode/client/service"
 
 export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
 
-export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}, { configSource = "inline" } = {}) {
+export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "" } = {}) {
   if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
@@ -58,8 +58,13 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   }
   /** @type {NodeJS.ProcessEnv} */
   const env = { PATH: process.env.PATH, HOME: root, USER: process.env.USER ?? "test", LANG: "en_US.UTF-8", TERM: "xterm-256color", TMPDIR: temporary, FIXTURE_API_KEY: "fixture-only", OPENCODE_CONFIG_CONTENT: JSON.stringify(config), OPENCODE_DISABLE_PROJECT_CONFIG: "1", OPENCODE_DESKTOP_TEST_ROOT: root }
+  if (projectConfig) delete env.OPENCODE_DISABLE_PROJECT_CONFIG
+  if (emptyPassword) env.OPENCODE_SERVER_PASSWORD = ""
+  if (pluginReference === "string") config.plugins = [packagePath]
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
-  const configDirectory = join(root, "config", "opencode")
+  if (configHome) env.XDG_CONFIG_HOME = configHome
+  const configDirectory = join(env.XDG_CONFIG_HOME, "opencode")
+  const preferencesFile = join(configDirectory, "predictions.json")
   await mkdir(configDirectory, { recursive: true })
   const configFile = configSource === "inline" ? undefined : join(configDirectory, configSource === "global-jsonc" ? "opencode.jsonc" : "opencode.json")
   const writeConfig = async value => {
@@ -96,7 +101,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
       child.once("error", error => { clearTimeout(timeout); reject(error) })
       child.once("exit", code => { clearTimeout(timeout); reject(new Error(`Fixture server exited ${code}: ${output}`)) })
     })
-    const password = output.match(/server password (\S+)/)[1]
+    const password = output.match(/server password (\S+)/)?.[1]
     headers = { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }
     api = OpenCode.make({ baseUrl: address, headers })
     const ready = AbortSignal.timeout(10000)
@@ -112,12 +117,12 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
     child.kill("SIGTERM")
     await Promise.race([once(child, "exit"), new Promise(resolveWait => setTimeout(() => { child.kill("SIGKILL"); resolveWait() }, 3000).unref())])
   }
-  await start()
+  try { await start() } catch (error) { await stopChild(); provider.closeAllConnections(); provider.close(); throw error }
   const stop = async () => {
     await Service.stop({ file: join(root, "state", "opencode", "service.json") })
     await stopChild()
     provider.closeAllConnections(); provider.close()
   }
   const restart = async () => { await stopChild(); await start() }
-  return { root, directory, env, get api() { return api }, get address() { return address }, calls, get config() { return config }, configFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
+  return { root, directory, env, get api() { return api }, get address() { return address }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
 }

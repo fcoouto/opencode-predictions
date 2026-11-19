@@ -1,34 +1,39 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createSetupService } from "../src/setup-service.ts"
-import type { ConfigStore } from "../src/config.ts"
+import { createPreferencesRuntime } from "../src/preferences-runtime.ts"
+import { createPreferencesStore, type PreferenceRead, type PreferencesStore } from "../src/preferences-store.ts"
+import { mkdir, mkdtemp, readFile } from "node:fs/promises"
+import { join, resolve } from "node:path"
 import type { CatalogModel } from "../src/models.ts"
-import { changedFields, type ConfigSnapshot, type SettingsInput } from "../src/setup.ts"
+import { changedFields, type SettingsInput } from "../src/setup.ts"
 import { Predictions } from "../src/rpc.ts"
 import { createService, type ServiceAPI } from "../src/service.ts"
+import { JsonSchema, Schema, SchemaRepresentation } from "effect"
 
 test("save validates full prospective fields before writing and rejects stale revisions", async () => {
   const f = fixture({ models: "broken" })
-  assert.equal((await f.service.save({ revision: "r1", fields: { debug: true } }, signal())).kind, "invalid")
+  await f.runtime.refresh(signal())
+  let revision = f.runtime.state().revision
+  assert.equal((await f.service.save({ revision, fields: { debug: true } }, signal())).kind, "invalid")
   assert.deepEqual(f.counts(), { metadataCalls: 0, writes: 0 })
-  f.snapshot.fields = { automatic: false }
+  f.snapshot.overrides = { automatic: false }; f.snapshot.revision = "r2"
   assert.equal((await f.service.save({ revision: "old", fields: { debug: true } }, signal())).kind, "conflict")
-  assert.equal((await f.service.save({ revision: "r1", fields: { timeoutMs: null } }, signal())).kind, "invalid")
-  await assert.rejects(f.service.save({ revision: "r1", fields: {}, source: "/client/config" } as any, signal()), /Unknown/)
+  assert.equal((await f.service.save({ revision, fields: { timeoutMs: null } }, signal())).kind, "invalid")
+  await assert.rejects(f.service.save({ revision, fields: {}, source: "/client/config" } as any, signal()), /Unknown/)
   assert.equal(f.counts().writes, 0)
 })
 
-test("save writes changed fields only and distinguishes durable bytes from effective activation", async () => {
+test("durable bytes are not activation proof", async () => {
   const f = fixture()
   let patch: SettingsInput | undefined
-  f.store.write = async (revision, fields) => {
+  f.store.write = async (revision, input) => {
     assert.equal(revision, "r1")
-    patch = fields
-    f.snapshot.fields = { ...f.snapshot.fields, ...fields }
-    f.snapshot.revision = "r2"
+    patch = input.fields
     return { kind: "written", revision: "r2" }
   }
-  const result = await f.service.save({ revision: "r1", fields: { automatic: false, debug: true } }, signal())
+  await f.runtime.refresh(signal())
+  const result = await f.service.save({ revision: f.runtime.state().revision, fields: { automatic: false, debug: true } }, signal())
   assert.deepEqual(patch, { debug: true })
   assert.equal(result.kind, "saved_not_active")
   assert.equal(f.counts().metadataCalls, 0)
@@ -36,14 +41,16 @@ test("save writes changed fields only and distinguishes durable bytes from effec
 
 test("save unchanged settings avoids replacement and explicit removal does not invent model defaults", async () => {
   const f = fixture()
-  assert.equal((await f.service.save({ revision: "r1", fields: { automatic: false } }, signal())).kind, "saved")
+  await f.runtime.refresh(signal())
+  const revision = f.runtime.state().revision
+  assert.equal((await f.service.save({ revision, fields: { automatic: false } }, signal())).kind, "saved")
   assert.equal(f.counts().writes, 0)
-  f.store.write = async (_revision, fields) => {
-    assert.deepEqual(fields, { models: undefined })
-    f.snapshot.fields = { automatic: false }; f.snapshot.revision = "r2"
+  f.store.write = async (_revision, input) => {
+    assert.deepEqual(input, { fields: {}, removeModels: true })
+    f.snapshot.overrides = { automatic: false, models: null }; f.snapshot.revision = "r2"
     return { kind: "written", revision: "r2" }
   }
-  assert.equal((await f.service.save({ revision: "r1", fields: {}, removeModels: true }, signal())).kind, "saved_not_active")
+  assert.equal((await f.service.save({ revision, fields: {}, removeModels: true }, signal())).kind, "saved")
 })
 
 const catalog = [
@@ -54,20 +61,30 @@ const catalog = [
 const signal = () => new AbortController().signal
 function fixture(fields: SettingsInput = { models: "local/family/a#low", automatic: false }) {
   let metadataCalls = 0, writes = 0
-  const snapshot: ConfigSnapshot = { revision: "r1", source: "/server/global/opencode.jsonc", scope: "global", writable: true, fields }
-  const store: ConfigStore = { read: async () => snapshot, write: async () => { writes++; throw new Error("Unexpected write") } }
+  const snapshot: PreferenceRead = { revision: "r1", source: "/server/predictions.json", writable: true, documentValid: true, policy: "user", overrides: fields }
+  const store: PreferencesStore = { read: async () => structuredClone(snapshot), write: async () => { writes++; throw new Error("Unexpected write") } }
   const current = { options: { ...fields, unknown: "PRIVATE_OPTION" } as unknown, version: "mount-one" }
-  const service = createSetupService(store, async () => { metadataCalls++; return catalog }, () => current)
-  return { service, store, snapshot, current, counts: () => ({ metadataCalls, writes }) }
+  const runtime = createPreferencesRuntime(store, { unknown: "PRIVATE_OPTION" }, options => createService({
+    session: async () => { throw new Error("Unexpected session") },
+    context: async () => { throw new Error("Unexpected context") },
+    models: async () => catalog,
+    generate: async () => { throw new Error("Unexpected generation") },
+  }, options, "/server"))
+  const service = createSetupService(store, async () => { metadataCalls++; return catalog }, runtime)
+  return { service, store, snapshot, current, runtime, counts: () => ({ metadataCalls, writes }) }
 }
 
 test("setup reads stored and effective fields separately and returns only safe model metadata", async () => {
   const f = fixture()
   const snapshot = await f.service.read(signal())
-  assert.equal(snapshot.source, "/server/global/opencode.jsonc")
-  assert.equal(snapshot.revision, "r1")
+  assert.equal(snapshot.source, "/server/predictions.json")
+  assert.equal(snapshot.revision, f.runtime.state().revision)
   assert.deepEqual(snapshot.fields, { models: "local/family/a#low", automatic: false })
-  assert.equal(snapshot.serviceVersion, "mount-one")
+  assert.equal(snapshot.serviceVersion, f.runtime.state().service.status().version)
+  assert.equal(snapshot.activeRevision, snapshot.revision)
+  assert.equal(snapshot.origins.models, "preferences")
+  assert.deepEqual(snapshot.overrides, snapshot.fields)
+  assert.deepEqual(snapshot.fallbackFields, {})
   assert.deepEqual(snapshot.effective, { enabled: true, models: ["local/family/a#low"], automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false })
   assert.deepEqual(snapshot.catalog, catalog.map(({ providerID, id, name, enabled, variants }) => ({ providerID, id, name, enabled, variants: variants.map(({ id }) => ({ id })) })))
   assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE/)
@@ -136,9 +153,9 @@ test("unknown transport fields are rejected before metadata access", async () =>
 
 test("metadata failures return fixed safe errors and cancellation does not wait for ignored signals", async () => {
   const f = fixture()
-  const failed = createSetupService(f.store, async () => { throw new Error("PRIVATE provider error") }, () => f.current)
+  const failed = createSetupService(f.store, async () => { throw new Error("PRIVATE provider error") }, f.runtime)
   await assert.rejects(failed.preview({}, signal()), error => error instanceof Error && error.message === "Model metadata is unavailable.")
-  const pending = createSetupService(f.store, async () => new Promise<readonly CatalogModel[]>(() => {}), () => f.current)
+  const pending = createSetupService(f.store, async () => new Promise<readonly CatalogModel[]>(() => {}), f.runtime)
   const controller = new AbortController()
   const work = pending.preview({}, controller.signal)
   controller.abort()
@@ -154,10 +171,10 @@ test("setup metadata leaves runtime queue, session context and provider generati
     models: async () => catalog,
     generate: async () => { providerGenerateCalls++; return '{"prompt":null}' },
   }
-  const runtime = createService(api, f.current.options, "/server")
-  await runtime.inspect(signal())
-  const before = runtime.status()
-  const setup = createSetupService(f.store, api.models, () => ({ options: f.current.options, version: runtime.status().version }))
+  const owner = createPreferencesRuntime(f.store, {}, options => createService(api, options, "/server"))
+  await owner.refresh(signal())
+  const runtime = owner.state().service, before = runtime.status()
+  const setup = createSetupService(f.store, api.models, owner)
   await setup.read(signal())
   await setup.preview({ models: ["local/other", "local/family/*"] }, signal())
   assert.deepEqual(runtime.status(), before)
@@ -165,10 +182,27 @@ test("setup metadata leaves runtime queue, session context and provider generati
   assert.equal(sessionContextCalls, 0)
 })
 
-test("public RPC declares read and preview without a write or client-supplied target", () => {
+test("public RPC declares Save without a client-supplied target", () => {
   assert.ok("settings" in Predictions.methods)
   assert.ok("previewSettings" in Predictions.methods)
-  assert.equal("saveSettings" in Predictions.methods, false)
+  assert.equal("saveSettings" in Predictions.methods, true)
+})
+
+test("snapshot RPC requires complete valid provenance and accepts inactive revisions", async () => {
+  const f = fixture()
+  const snapshot = await f.service.read(signal())
+  const schema = SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(Predictions.methods.settings.output)) as Schema.Codec<unknown>
+  const read = Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })
+  read({ ...snapshot, activeRevision: null, effective: null })
+  for (const key of ["overrides", "fallbackFields", "origins", "activeRevision"]) {
+    const value = { ...snapshot } as Record<string, unknown>
+    delete value[key]
+    assert.throws(() => read(value))
+  }
+  assert.throws(() => read({ ...snapshot, origins: { ...snapshot.origins, debug: "server" } }))
+  assert.throws(() => read({ ...snapshot, origins: {} }))
+  assert.throws(() => read({ ...snapshot, activeRevision: 1 }))
+  f.runtime.dispose()
 })
 
 test("setup rejects nonboolean GitHub PR context before writing and never retrieves PR data", async () => {
@@ -195,7 +229,82 @@ test("GitHub PR context participates in changed-field detection and saved-not-ac
   assert.deepEqual(changedFields({ includeGithubPRContext: true }, { includeGithubPRContext: false }), { includeGithubPRContext: false })
   assert.deepEqual(changedFields({}, { includeGithubPRContext: false }), { includeGithubPRContext: false })
   const f = fixture()
-  f.store.write = async (_revision, fields) => { f.snapshot.fields = { ...f.snapshot.fields, ...fields }; f.snapshot.revision = "r2"; return { kind: "written", revision: "r2" } }
-  const result = await f.service.save({ revision: "r1", fields: { includeGithubPRContext: true } }, signal())
+  f.store.write = async () => ({ kind: "written", revision: "r2" })
+  await f.runtime.refresh(signal())
+  const result = await f.service.save({ revision: f.runtime.state().revision, fields: { includeGithubPRContext: true } }, signal())
   assert.equal(result.kind, "saved_not_active", "unchanged effective value means activation is unverified")
+})
+
+async function preferencesServiceFixture(legacy: Record<string, unknown> = { models: "local/family/a#low" }) {
+  await mkdir(".test-artifacts", { recursive: true })
+  const home = await mkdtemp(resolve(".test-artifacts/preferences-service-"))
+  const store = createPreferencesStore({ home, platform: process.platform, env: {}, systemPaths: [] })
+  const calls = { session: 0, context: 0, generate: 0, pr: 0 }
+  const runtime = createPreferencesRuntime(store, legacy, options => createService({
+    session: async () => { calls.session++; throw new Error("Unexpected session") },
+    context: async () => { calls.context++; return [] },
+    generate: async () => { calls.generate++; return '{"prompt":null}' },
+    includeGithubPRContext: async () => { calls.pr++; return [] },
+    models: async () => catalog,
+  }, options, "/server"))
+  const setup = createSetupService(store, async () => catalog, runtime)
+  return { store, runtime, setup, calls, file: join(home, ".config/opencode/predictions.json"), legacy }
+}
+
+test("normal server saves preferences without source qualification", async () => {
+  const f = await preferencesServiceFixture()
+  const before = await f.setup.read(signal())
+  assert.equal(before.writable, true)
+  const saved = await f.setup.save({ revision: before.revision, fields: { automatic: false } }, signal())
+  assert.equal(saved.kind, "saved")
+  assert.deepEqual((await f.store.read(signal())).overrides, { automatic: false })
+  const after = await f.setup.read(signal())
+  assert.equal(after.origins.automatic, "preferences")
+  assert.equal(after.activeRevision, after.revision)
+  assert.deepEqual(f.calls, { session: 0, context: 0, generate: 0, pr: 0 })
+  f.runtime.dispose()
+})
+
+test("Save never accepts a path or unknown setting", async () => {
+  const f = await preferencesServiceFixture()
+  const { revision } = await f.setup.read(signal())
+  for (const input of [
+    { revision, fields: {}, path: "/client/path" }, { revision, fields: { unknown: true } },
+    { revision, fields: {}, reset: ["debug", "debug"] }, { revision, fields: { debug: true }, reset: ["debug"] },
+    { revision, fields: {}, reset: ["models"], removeModels: true }, { revision, fields: {}, reset: ["unknown"] },
+    { revision, fields: {}, extra: "x".repeat(65537) },
+  ]) await assert.rejects(f.setup.save(input as any, signal()))
+  await assert.rejects(readFile(f.file), { code: "ENOENT" })
+  f.runtime.dispose()
+})
+
+test("fallback changes conflict with a stale draft", async () => {
+  const f = await preferencesServiceFixture()
+  const before = await f.setup.read(signal())
+  f.legacy.debug = true
+  assert.equal((await f.setup.save({ revision: before.revision, fields: { automatic: false } }, signal())).kind, "conflict")
+  await assert.rejects(readFile(f.file), { code: "ENOENT" })
+  f.runtime.dispose()
+})
+
+test("reset validates the prospective inherited options", async () => {
+  const f = await preferencesServiceFixture({ timeoutMs: "invalid" })
+  let raw = await f.store.read(signal())
+  assert.equal((await f.store.write(raw.revision, { fields: { timeoutMs: 8000 } }, signal())).kind, "written")
+  const before = await f.setup.read(signal()), bytes = await readFile(f.file)
+  assert.equal((await f.setup.save({ revision: before.revision, fields: {}, reset: ["timeoutMs"] }, signal())).kind, "invalid")
+  assert.deepEqual(await readFile(f.file), bytes)
+  f.runtime.dispose()
+})
+
+for (const field of ["timeoutMs", "contextTurns"] as const) test(`numeric-null ${field} stays visible and blocks unrelated Save`, async () => {
+  const f = fixture({ [field]: null })
+  const before = await f.service.read(signal())
+  assert.equal(before.fields[field], null)
+  assert.equal(before.activeRevision, null)
+  assert.equal(before.effective, null)
+  assert.equal(before.issues.some(issue => issue.field === field), true)
+  assert.equal((await f.service.save({ revision: before.revision, fields: { debug: true } }, signal())).kind, "invalid")
+  assert.equal(f.counts().writes, 0)
+  f.runtime.dispose()
 })

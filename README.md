@@ -40,7 +40,7 @@ ghost text. Take it, edit it, or keep typing your own.
 - **Desktop and CLI.** One global plugin entry loads both.
 - **Ask when you want.** Predict after every reply, or only on request.
 - **See every setting.** [Predictions Setup](#predictions-setup) shows each option
-  and saves your changes where supported.
+  and saves preferences on your selected server.
 
 <a id="how-to-install"></a>
 
@@ -200,7 +200,7 @@ See and change every prediction setting in one place, without hunting for a JSON
 | --- | --- | --- |
 | **Open it** | Settings → **Predictions**, or the command palette → **Predictions Setup** | Command palette → **Predictions Setup** |
 | **Layout** | One page | Menus in the same order |
-| **Save** | Verified setups only ([details](#is-save-available-for-you)) | Verified `--standalone` sessions only ([details](#is-save-available-for-you)) |
+| **Save** | Selected server's user preferences | Selected server's user preferences, including the normal shared service |
 
 ### What you can change
 
@@ -213,76 +213,64 @@ See and change every prediction setting in one place, without hunting for a JSON
 
 Changes stay in a draft until you choose **Save changes**; **Discard changes** restores the saved values. Leaving the CLI menu with unsaved edits asks first. Opening setup, previewing matches and saving never generate a prediction, fetch a PR or look up GitHub credentials. A model group with no current match is kept and marked, so you can fix the pattern or connect the provider later.
 
-Settings apply to the plugin's entry in the global OpenCode configuration on the server you are using. Save edits that existing JSON or JSONC file in place and keeps its comments, other plugins and any option setup does not manage. Omitted options keep their defaults and are not written unless you change them.
+Settings apply to **user prediction preferences on the selected server**, across every project and server process using that configuration directory. Save never rewrites `opencode.json(c)`, its comments, other plugins, or credentials. Only changed settings are saved.
+
+The page shows **User preferences**, the actual server-side path, and each field's source: **Saved preference**, **OpenCode configuration**, or **Default**. Inherited values can differ between projects. **Use OpenCode configuration** stages removal of the saved overrides; choose **Save changes** to apply it. Reset asks before replacing unsaved draft edits.
 
 > [!NOTE]
 > Predictions use provider quota and may incur charges. A model's name does not mean it is free.
 
 ### Is Save available for you?
 
-Setup shows your current settings everywhere. **Save works on macOS in a verified setup:**
-Desktop **2.3.0** using its own bundled server, or CLI **2.2.6** started as
-`opencode --standalone`; the plugin installed from an absolute local path; and the
-server started with `OPENCODE_DISABLE_PROJECT_CONFIG=1`. In any other setup the page
-stays **read-only** and still shows what predictions actually use. Edit the
-configuration by hand instead ([Settings](#settings)), and do not change how you
-launch OpenCode only to enable setup.
+Use Desktop or launch the CLI normally with `opencode`. No special launch flags, disabled project discovery, or absolute-path installation are required. Git-installed packages, string/object plugin entries, and inline/project OpenCode configuration do not disable Save.
 
-<details>
-<summary><strong>Every condition for Save</strong></summary>
+Save uses the selected server's existing RPC access controls. Authorized remote clients can save that server's preferences, not their local computer's file. **The plugin adds no separate authentication layer: if a server allows unauthenticated access, reachable callers inherit that access to preferences.** Protect the OpenCode server accordingly. Tested OpenCode 2.2.6 HTTP servers generate credentials even when an empty password is supplied.
 
-Setup shows your current settings everywhere. **Save is available only in a narrow, verified
-setup** and otherwise the page stays read-only (Desktop: "Read-only"; CLI: "Read-only" row).
-Save needs all of the following, because anything else cannot be checked safely:
+Read-only mode means the server cannot safely verify/write storage, the preferences document needs repair, or administrative configuration prevents user overrides. System/managed configuration takes precedence: preferences are not applied or written while it is present or cannot be checked. Resolve the displayed server-side reason rather than changing launch flags.
 
-- **macOS**, with the OpenCode server running on this computer.
-- **Desktop:** app version `2.3.0`, using the app's own bundled server. A server Desktop only
-  connects to stays read-only. Desktop `2.2.7` is read-only.
-- **CLI:** version `2.2.6`, started as `opencode --standalone` (optionally with `--continue`/`-c`,
-  `--auto`, `--print-logs`, `--session`/`-s`, `--prompt`, `--log-level` and one project directory given
-  as an absolute path or starting with `./` or `../`). The executable must be named `opencode`.
-  Any other flag, a shared service, `--server`, a remote server, or `OPENCODE_SERVER`,
-  `OPENCODE_SERVER_URL`, a proxy variable, `NODE_OPTIONS`, `BUN_OPTIONS`, `BUN_BE_BUN` or
-  `OPENCODE_DRIVE` in the environment makes it read-only and says: "Local setup writes currently
-  require a verified opencode --standalone session."
-- **The server's environment:** `OPENCODE_DISABLE_PROJECT_CONFIG=1`, and none of
-  `OPENCODE_CONFIG`, `OPENCODE_CONFIG_CONTENT` or `OPENCODE_CONFIG_DIR`. `XDG_CONFIG_HOME`, if
-  set, must be an absolute path. Project, inline or explicitly selected configuration cannot be
-  edited here, and neither can a setup with a system or managed configuration file present.
-- **The configuration:** exactly one of `~/.config/opencode/opencode.json` or `opencode.jsonc`,
-  a regular file owned by you with one hard link, no ACLs and not writable by others, in a private
-  folder that is not a symlink, with no `plugins` folder beside it. The plugin must be listed there
-  once, as an object (not a plain string or a list) with an `options` object, by the **absolute local
-  path it is installed from**, and those `options` must match what the running plugin loaded, so a
-  change that has not reloaded yet keeps setup read-only. A plugin entry written as a list anywhere in the file, or a Git-installed plugin, cannot be
-  verified and stays read-only.
+Native qualification covers macOS Desktop **2.3.0** and CLI/server **2.2.6**, including shared-service and standalone use. Linux and Windows path tests are not native filesystem/ACL qualification. See the [qualification record](docs/research/2026-11-18-predictions-preferences-qualification.md).
 
-This list is not exhaustive: any condition that cannot be verified keeps setup read-only.
+### Storage and precedence
 
-If setup is read-only for you, edit the configuration by hand (see [Settings](#settings)). Do not
-change how you launch OpenCode only to enable setup.
+The file belongs to the **server's** account and environment:
 
-</details>
+| Server environment | Preferences file |
+| --- | --- |
+| macOS / Linux default | `~/.config/opencode/predictions.json` |
+| Absolute `XDG_CONFIG_HOME`, on any platform | `$XDG_CONFIG_HOME/opencode/predictions.json` |
+| Windows without `XDG_CONFIG_HOME` | `%APPDATA%/opencode/predictions.json` |
+
+An explicitly empty/relative `XDG_CONFIG_HOME`, or missing/nonabsolute Windows `APPDATA`, is refused. A trusted configuration-directory symlink is resolved on the server; symlinked active files, hard links, unsafe ownership/write permissions, and unsupported ACLs are refused.
+
+Precedence is **explicit saved preference → existing OpenCode plugin option → plugin default**. Missing fields inherit; explicit `false` stays false. `contextFile` remains an OpenCode option, not a file-path preference.
+
+The strict JSON format is:
+
+```json
+{
+  "version": 1,
+  "settings": {
+    "automatic": false,
+    "models": null
+  }
+}
+```
+
+`models: null` explicitly selects **no prediction models**, suppressing inherited models. Removing that preference restores inheritance. Numeric `null` is invalid, not a request for defaults. The file must be valid UTF-8, at most 65,536 bytes, without comments, trailing commas, or duplicate keys. Unknown members survive saves but never become effective options.
+
+There is no automatic migration and no preferences file is created until Save. Existing OpenCode options remain untouched. To roll back to inherited configuration, remove the dedicated preferences file or save **Use OpenCode configuration**.
 
 ### Limits and recovery
 
-Save is best effort, not conflict-proof. It detects a change made since you opened setup and
-refuses to overwrite it (**Configuration changed**; reopen setup and redo your edit). It cannot
-stop another editor from changing the file during the moment of the save. Avoid editing the
-configuration file elsewhere while saving: such a change can be overwritten, including
-unrelated settings.
+Avoid saving prediction preferences from multiple places at once. **Simultaneous saves can overwrite each other's changes, including different settings. The recovery copy may not contain those changes.** Saves have no write lock or writer-admission queue. Revision checks reject detected stale drafts, but two writers can both pass their checks and succeed with a lost update.
 
-Before each save the previous file bytes are copied to `<config file>.predictions-backup`
-next to the configuration (for example `opencode.jsonc.predictions-backup`). It is private
-to you, holds only the most recent save and may contain credentials from your configuration.
-It holds the file as it was just before the save, so it cannot be relied on to contain an
-edit another program made during that save. To recover, compare it with the configuration
-and copy the parts you want back by hand. Nothing restores it automatically.
+Atomic replacement prevents partial documents, not lost updates. Before replacing an existing file, Save writes a private `predictions.json.backup` beside it. This is a last-writer-wins snapshot, not guaranteed recovery of concurrent changes. Compare the backup with the active preferences file and recover wanted values manually; nothing restores it automatically.
 
-OpenCode reloads the plugin after a save. If the message says the settings were saved but
-activation is not verified, reopen setup or check **Prediction status and preview**. If a
-connection was lost during Save, reopen setup before trying again: the change may already
-be saved, and setup never repeats a save by itself.
+Malformed, unsupported-version, or unreadable preferences disable predictions until repaired. Structurally valid but invalid settings, such as numeric `null`, remain visible and can be repaired by a fully valid edit or reset. Back up the file before manual repair. A readable, valid but unwritable file can remain active.
+
+The server refreshes preferences for status/settings/prediction requests without rewriting OpenCode configuration or requiring a plugin remount. **Saved** means persisted intent and active revision were verified. **Saved, not active** means durable bytes without verified activation.
+
+After a lost connection or interrupted Save, reopen settings and read actual persisted values before making a fresh change. Save never automatically replays a transaction. No manual lock cleanup is needed.
 
 ## Cost and privacy
 
@@ -319,7 +307,7 @@ The optional model-pilot tool writes a JSON report only when invoked, under
 
 ## Settings
 
-Predictions Setup edits these fields for you. To edit them by hand, set them inside the plugin's `options` object. The installation example
+Predictions Setup saves these fields as user preferences. To set inherited configuration by hand, use the plugin's `options` object. Saved preferences override those options; save **Use OpenCode configuration** to remove the overrides first. The installation example
 uses a `20000` ms timeout; the plugin default is `8000` ms.
 
 | Setting | Default | Meaning |
@@ -695,7 +683,7 @@ task, it favors a short contextual reply instead of repeating the proposal.
 
 ## Compatibility
 
-Requires OpenCode V2. Tested on macOS with CLI `2.2.6` and Desktop `2.2.7`. Saving from Predictions Setup is verified only for the exact combinations in [Is Save available for you?](#is-save-available-for-you), including Desktop `2.3.0`.
+Requires OpenCode V2. Current preference workflows are qualified on macOS with CLI/server `2.2.6` and Desktop `2.3.0`; prediction behavior was also tested previously with Desktop `2.2.7`. These are tested versions, not an exact-version Save allowlist. See [Is Save available for you?](#is-save-available-for-you) for storage/access requirements and platform limits.
 These are tested versions, not an allowlist. Private editor integration and the
 experimental Desktop API may need updates after OpenCode changes.
 

@@ -14,7 +14,8 @@ import time
 binary, session_id, directory, observation = sys.argv[1:]
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 30, int(os.environ.get("PREDICTIONS_PTY_COLS", "100")), 0, 0))
-child = subprocess.Popen([binary, "--standalone", "--session", session_id, directory], stdin=slave, stdout=slave, stderr=slave, env=os.environ, cwd=directory, start_new_session=True)
+launch = [] if os.environ.get("PREDICTIONS_SHARED_SERVICE") == "1" else ["--standalone"]
+child = subprocess.Popen([binary, *launch, "--session", session_id, directory], stdin=slave, stdout=slave, stderr=slave, env=os.environ, cwd=directory, start_new_session=True)
 os.close(slave)
 output = bytearray()
 
@@ -136,7 +137,7 @@ try:
         capture("full-reopened")
         text = screen_text()
         assert "Off · After replies on · auto" in text and "9000 ms · 5 recent · PR on" in text, text[-1500:]
-        print(json.dumps({"fullSetup": True}))
+        print(json.dumps({"fullSetup": True, "host": json.loads(pathlib.Path(observation + ".host").read_text())}))
     elif os.environ.get("PREDICTIONS_SETUP_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
         send_and_wait(b"\x1b[17~", "Predictions Setup")

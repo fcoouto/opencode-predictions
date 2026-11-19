@@ -1,156 +1,157 @@
-import { describe, test } from "node:test"
+import { test } from "node:test"
 import assert from "node:assert/strict"
-import { join, resolve } from "node:path"
-import { fork } from "node:child_process"
-import { readFile, stat, writeFile } from "node:fs/promises"
-import { setTimeout as delay } from "node:timers/promises"
+import { join } from "node:path"
+import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { createFixture } from "./fixture.mjs"
-import { PersistenceProbe } from "./persistence-probe/rpc.ts"
-import type { ProbeHost, ProbeSnapshot } from "./persistence-candidate.ts"
 import { Predictions } from "../../src/rpc.ts"
-import type { Status } from "../../src/service.ts"
+import { createSetupEditor, type SetupSnapshot, type SaveResult } from "../../src/setup.ts"
+import { OpenCode } from "@opencode/client"
 
-test("isolated fixture can restart with the same HOME and global file", { timeout: 60000 }, async () => {
-  await using fixture = await createFixture(undefined, { automatic: false }, {}, { configSource: "global-jsonc" })
-  assert.equal(typeof fixture.restart, "function")
-  const file = fixture.configFile, home = fixture.env.HOME, oldAddress = fixture.address
-  await fixture.restart()
-  assert.equal(fixture.configFile, file)
-  assert.equal(fixture.env.HOME, home)
-  assert.notEqual(fixture.address, oldAddress)
-  const documents = await fixture.api.config.get({ location: { directory: fixture.directory } })
-  assert.ok(documents.some(entry => entry.type === "document" && entry.path === file))
-  assert.equal(fixture.calls.length, 0)
+const signal = () => new AbortController().signal
+const location = (f: Awaited<ReturnType<typeof createFixture>>) => ({ directory: f.directory })
+const read = (f: Awaited<ReturnType<typeof createFixture>>, at = location(f)) => f.api.rpc(Predictions).settings({}, { location: at }) as Promise<SetupSnapshot>
+const save = (f: Awaited<ReturnType<typeof createFixture>>, input: unknown, at = location(f)) => f.api.rpc(Predictions).saveSettings(input, { location: at }) as Promise<SaveResult>
+
+test("two locations inherit differently while two server processes share one preference root", { timeout: 60000 }, async () => {
+  await using a = await createFixture(process.env.PREDICTIONS_PACKAGE, { contextTurns: 2 }, {}, { projectConfig: true, configSource: "global-jsonc" })
+  const other = join(a.root, "other-project")
+  await mkdir(other)
+  await writeFile(join(other, "opencode.json"), JSON.stringify({ plugins: [{ package: a.config.plugins[0].package, options: { models: "fixture/model", contextTurns: 1 } }] }))
+  const first = await read(a), second = await read(a, { directory: other })
+  assert.equal(first.effective?.contextTurns, 2)
+  assert.equal(second.effective?.contextTurns, 1)
+  assert.notEqual(first.revision, second.revision)
+  assert.equal((await save(a, { revision: first.revision, fields: { debug: true } }, { directory: other })).kind, "conflict")
+  assert.equal((await save(a, { revision: first.revision, fields: { automatic: false } })).kind, "saved")
+  assert.equal((await read(a, { directory: other })).effective?.automatic, false)
+  await using b = await createFixture(process.env.PREDICTIONS_PACKAGE, { contextTurns: 4 }, {}, { projectConfig: true, configHome: a.env.XDG_CONFIG_HOME })
+  const peer = await read(b)
+  assert.equal(peer.source, first.source)
+  assert.equal(peer.effective?.automatic, false)
+  assert.equal(peer.effective?.contextTurns, 4)
+  assert.equal((await save(b, { revision: peer.revision, fields: { debug: true } })).kind, "saved")
+  assert.equal((await read(a)).effective?.debug, true)
+  await a.restart()
+  assert.equal((await read(a)).effective?.debug, true)
+  assert.deepEqual(a.calls, []); assert.deepEqual(b.calls, [])
 })
 
-describe("macOS server persistence probe", { skip: process.platform !== "darwin" }, () => {
-for (const configSource of ["global-json", "global-jsonc"] as const) {
-  test(`saved options activate without generation: ${configSource}`, { timeout: 60000 }, async () => {
-    await using fixture = await createFixture(resolve("tests/host/persistence-probe"), { automatic: false }, {}, { configSource })
-    const location = { directory: fixture.directory }
-    const probe = () => fixture.api.rpc(PersistenceProbe)
-    const before = await probe().read({}, { location }) as ProbeSnapshot & { mount: string; version: string }
-    assert.equal(before.writable, true)
-    assert.equal(before.version, (await fixture.api.server.info()).version)
-    assert.ok(["2.2.6", "2.3.0"].includes(before.version), "scope this gate to the explicitly qualified server versions")
-    assert.equal(before.source, fixture.configFile)
-    assert.notEqual(fixture.env.HOME, process.env.HOME, "client HOME must not choose the server's target")
-    const original = await readFile(fixture.configFile!, "utf8")
-    const saved = await probe().save({ revision: before.revision!, patch: { automatic: true, contextTurns: 5 } }, { location }) as { kind: string }
-    assert.equal(saved.kind, "written")
-    let after = before
-    for (let tries = 0; tries < 100; tries++) {
-      after = await probe().read({}, { location }) as typeof before
-      if (after.writable && after.fields?.contextTurns === 5 && after.mount !== before.mount) break
-      await delay(30)
-    }
-    assert.equal(after.writable, true, JSON.stringify(after))
-    assert.equal(after.fields?.contextTurns, 5)
-    assert.notEqual(after.mount, before.mount, "real host must remount with fresh ctx.options")
-    const status = await fixture.api.rpc(Predictions).status({}, { location }) as Status
-    assert.equal(status.automatic, true)
-    assert.equal(await readFile(fixture.configFile! + ".predictions-backup", "utf8"), original)
-    const documents = await fixture.api.config.get({ location })
-    assert.equal(documents.some(entry => entry.type === "document" && entry.path === fixture.configFile! + ".predictions-backup"), false)
-    assert.equal(fixture.calls.length, 0)
-    await fixture.restart()
-    const restarted = await probe().read({}, { location }) as typeof before
-    assert.equal(restarted.writable, true)
-    assert.equal(restarted.fields?.contextTurns, 5)
-    assert.equal(restarted.fields?.automatic, true)
-    assert.equal(fixture.calls.length, 0)
-  })
-}
-
-test("lost save acknowledgement reconciles persisted and active values without repeating the write", { timeout: 60000 }, async () => {
-  await using fixture = await createFixture(resolve("tests/host/persistence-probe"), { automatic: false }, {}, { configSource: "global-jsonc" })
-  const location = { directory: fixture.directory }
-  const api = fixture.api.rpc(PersistenceProbe)
-  const before = await api.read({}, { location }) as ProbeSnapshot & { mount: string }
-  const original = await readFile(fixture.configFile!, "utf8")
-  const controller = new AbortController()
-  const pending = api.save({ revision: before.revision!, patch: { contextTurns: 4 }, loseAck: true }, { location, signal: controller.signal })
-  // Attach immediately: host remounts can cancel an in-flight RPC before the caller aborts.
-  const outcome = pending.then(value => ({ ok: true, value }), error => ({ ok: false, error }))
-  for (let tries = 0; tries < 100; tries++) {
-    if ((await readFile(fixture.configFile!, "utf8")).includes('"contextTurns": 4')) break
-    await delay(20)
-  }
-  assert.match(await readFile(fixture.configFile!, "utf8"), /"contextTurns": 4/)
-  controller.abort()
-  assert.equal((await outcome).ok, false, "caller must not receive a successful acknowledgement")
-  const inode = (await stat(fixture.configFile!)).ino
-  let after: typeof before = before
-  for (let tries = 0; tries < 100; tries++) {
-    after = await api.read({}, { location }) as typeof before
-    if (after.writable && after.fields?.contextTurns === 4 && after.mount !== before.mount) break
-    await delay(30)
-  }
-  assert.equal(after.fields?.contextTurns, 4)
-  assert.notEqual(after.mount, before.mount)
-  assert.equal((await stat(fixture.configFile!)).ino, inode, "reconciliation must not replace the file a second time")
-  assert.equal(await readFile(fixture.configFile! + ".predictions-backup", "utf8"), original)
-  assert.equal(fixture.calls.length, 0)
+test("distinct server roots and pinned clients never write to another selected server", { timeout: 60000 }, async () => {
+  await using a = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  await using b = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  const before = await read(a)
+  assert.equal((await save(a, { revision: before.revision, fields: { debug: true } })).kind, "saved")
+  assert.equal((await read(b)).origins.debug, "default")
+  await assert.rejects(readFile(b.preferencesFile), { code: "ENOENT" })
+  assert.deepEqual(a.calls, []); assert.deepEqual(b.calls, [])
 })
 
-test("server-side Bun writer and independent Node writer coordinate on the same file", { timeout: 60000 }, async t => {
-  await using fixture = await createFixture(resolve("tests/host/persistence-probe"), { automatic: false }, {}, { configSource: "global-jsonc" })
-  const location = { directory: fixture.directory }
-  const api = fixture.api.rpc(PersistenceProbe)
-  const snapshot = await api.read({}, { location }) as ProbeSnapshot
-  assert.equal(snapshot.writable, true)
-  const source = (await fixture.api.plugin.list({ location })).data.find(entry => entry.id === "opencode-predictions")!.source
-  assert.equal(source.type, "local")
-  if (source.type !== "local") throw new Error("Expected local fixture")
-  const host: ProbeHost = {
-    home: fixture.root, directory: fixture.directory, source, options: fixture.config.plugins[0].options,
-    env: Object.fromEntries(["XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_PROJECT_CONFIG"].map(key => [key, fixture.env[key]])),
-    systemPaths: [join(fixture.root, "managed")],
-  }
-  const worker = fork(new URL("./persistence-worker.ts", import.meta.url), [], { stdio: ["ignore", "ignore", "pipe", "ipc"] })
-  t.after(() => worker.kill())
-  const locked = new Promise<void>(resolve => worker.on("message", (message: any) => { if (message.kind === "locked") resolve() }))
-  const result = new Promise<any>(resolve => worker.on("message", (message: any) => { if (message.kind === "result") resolve(message.result) }))
-  worker.send({ host, revision: snapshot.revision, patch: { debug: true }, hold: true })
-  await locked
-  let settled = false
-  const serverSave = api.save({ revision: snapshot.revision!, patch: { contextTurns: 5 }, markStarted: true }, { location }).finally(() => { settled = true })
-  let started = false
-  for (let tries = 0; tries < 100; tries++) {
-    try { started = (await readFile(join(fixture.root, ".persistence-probe-write-started"), "utf8")) === "started" } catch {}
-    if (started) break
-    await delay(20)
-  }
-  assert.equal(started, true)
-  assert.equal(settled, false, "server cannot finish while another process owns the transaction")
-  worker.send({ kind: "release" })
-  assert.equal((await result).kind, "written")
-  assert.equal((await serverSave as { kind: string }).kind, "conflict")
-  assert.equal(fixture.calls.length, 0)
+test("manual replacement and deletion invalidate stale drafts without changing fallback configuration", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, { debug: false }, {}, { configSource: "global-jsonc", projectConfig: true })
+  const original = await readFile(f.configFile!), before = await read(f)
+  assert.equal((await save(f, { revision: before.revision, fields: { debug: true } })).kind, "saved")
+  const previous = await read(f), replacement = f.preferencesFile + ".external"
+  await writeFile(replacement, '{"version":1,"settings":{"timeoutMs":7000},"future":{"keep":true}}\n', { mode: 0o600 })
+  await rename(replacement, f.preferencesFile)
+  assert.equal((await read(f)).effective?.timeoutMs, 7000)
+  assert.equal((await save(f, { revision: previous.revision, fields: { automatic: false } })).kind, "conflict")
+  await unlink(f.preferencesFile)
+  const deleted = await read(f)
+  assert.equal(deleted.effective?.timeoutMs, 8000)
+  assert.equal(deleted.effective?.debug, false)
+  assert.equal((await save(f, { revision: deleted.revision, fields: { automatic: false } })).kind, "saved")
+  assert.deepEqual(await readFile(f.configFile!), original)
+  assert.deepEqual(f.calls, [])
 })
 
-test("real server removes sole model property with trailing comma without losing its comment", { timeout: 60000 }, async () => {
-  await using fixture = await createFixture(resolve("tests/host/persistence-probe"), { timeoutMs: undefined, obsolete: undefined, automatic: undefined }, {}, { configSource: "global-jsonc" })
-  const location = { directory: fixture.directory }
-  const original = (await readFile(fixture.configFile!, "utf8")).replace('"models": "fixture/model"', '"models": "fixture/model", /* keep setup note */')
-  await writeFile(fixture.configFile!, original)
-  const api = fixture.api.rpc(PersistenceProbe)
-  const before = await api.read({}, { location }) as ProbeSnapshot & { mount: string }
-  assert.equal(before.writable, true)
-  assert.deepEqual(before.fields, { models: "fixture/model" })
-  const result = await api.save({ revision: before.revision!, patch: {}, removeModels: true }, { location }) as { kind: string }
-  assert.equal(result.kind, "written")
-  let after = before
-  for (let tries = 0; tries < 100; tries++) {
-    after = await api.read({}, { location }) as typeof before
-    if (after.writable && after.mount !== before.mount) break
-    await delay(30)
+test("malformed and future preference files disable activation and cannot be overwritten", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  for (const text of ["{bad", '{"version":2,"settings":{"debug":true}}']) {
+    await writeFile(f.preferencesFile, text, { mode: 0o600 })
+    const snapshot = await read(f)
+    assert.equal(snapshot.writable, false)
+    assert.equal(snapshot.activeRevision, null)
+    assert.equal(snapshot.effective, null)
+    assert.equal((await save(f, { revision: snapshot.revision, fields: { debug: false } })).kind, "read_only")
+    assert.equal(await readFile(f.preferencesFile, "utf8"), text)
   }
-  assert.equal(after.writable, true)
-  assert.notEqual(after.mount, before.mount)
-  assert.deepEqual(after.fields, {})
-  assert.match(await readFile(fixture.configFile!, "utf8"), /\/\* keep setup note \*\//)
-  assert.equal(await readFile(fixture.configFile! + ".predictions-backup", "utf8"), original)
-  assert.equal(fixture.calls.length, 0)
+  assert.deepEqual(f.calls, [])
 })
+
+for (const field of ["timeoutMs", "contextTurns"]) test(`numeric-null ${field} disables manual and startup activation and permits explicit repair`, { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  await writeFile(f.preferencesFile, JSON.stringify({ version: 1, settings: { [field]: null } }), { mode: 0o600 })
+  for (const startup of [false, true]) {
+    if (startup) await f.restart()
+    const snapshot = await read(f)
+    assert.equal(snapshot.fields[field as keyof typeof snapshot.fields], null)
+    assert.equal(snapshot.activeRevision, null)
+    assert.equal(snapshot.issues.some(issue => issue.field === field), true)
+    assert.equal((await save(f, { revision: snapshot.revision, fields: { debug: true } })).kind, "invalid")
+  }
+  const before = await read(f)
+  assert.equal((await save(f, { revision: before.revision, fields: { [field]: field === "timeoutMs" ? 8000 : 3 } })).kind, "saved")
+  const after = await read(f)
+  assert.equal(after.activeRevision, after.revision)
+  assert.deepEqual(f.calls, [])
+})
+
+test("explicit no-model suppression differs from reset and unwritable files remain inspectable", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  const before = await read(f)
+  assert.equal((await save(f, { revision: before.revision, fields: {}, removeModels: true })).kind, "saved")
+  const noModels = await read(f)
+  assert.equal(noModels.fields.models, undefined)
+  assert.equal(noModels.overrides.models, null)
+  assert.equal((await save(f, { revision: noModels.revision, fields: {}, reset: ["models"] })).kind, "saved")
+  const inherited = await read(f)
+  assert.equal(inherited.fields.models, "fixture/model")
+  await chmod(f.preferencesFile, 0o400)
+  const readonly = await read(f)
+  assert.equal(readonly.writable, false)
+  assert.equal(readonly.activeRevision, readonly.revision)
+  assert.equal((await save(f, { revision: readonly.revision, fields: { debug: true } })).kind, "read_only")
+  await chmod(f.preferencesFile, 0o600)
+  assert.deepEqual(f.calls, [])
+})
+
+test("a committed but lost HTTP acknowledgement reconciles through exactly one production Save", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  let transactions = 0
+  const client = OpenCode.make({ baseUrl: f.address, headers: f.headers, fetch: async (input, init) => {
+    if (!String(input).includes("/saveSettings")) return fetch(input, init)
+    transactions++
+    const response = await fetch(input, init)
+    await response.arrayBuffer()
+    throw new Error("Test-only lost acknowledgement after commit")
+  } })
+  const rpc = client.rpc(Predictions), at = location(f)
+  const editor = createSetupEditor({
+    read: async () => await rpc.settings({}, { location: at }) as SetupSnapshot,
+    preview: async () => ({ groups: [], issues: [] }),
+    save: async input => await rpc.saveSettings(input, { location: at }) as SaveResult,
+  }, () => {})
+  await editor.load(); editor.change({ debug: true })
+  assert.equal((await editor.save()).kind, "saved")
+  assert.equal(transactions, 1)
+  const inode = (await stat(f.preferencesFile)).ino
+  await editor.save()
+  assert.equal(transactions, 1)
+  assert.equal((await stat(f.preferencesFile)).ino, inode)
+  assert.equal(editor.state().snapshot?.activeRevision, editor.state().snapshot?.revision)
+  assert.deepEqual(f.calls, [])
+  editor.dispose()
+})
+
+test("a server filesystem write failure preserves active bytes and never claims activation", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  const before = await read(f)
+  assert.equal((await save(f, { revision: before.revision, fields: { automatic: false } })).kind, "saved")
+  const draft = await read(f), bytes = await readFile(f.preferencesFile), directory = join(f.env.XDG_CONFIG_HOME!, "opencode")
+  await chmod(directory, 0o500)
+  try {
+    assert.equal((await save(f, { revision: draft.revision, fields: { debug: true } })).kind, "failed")
+    assert.deepEqual(await readFile(f.preferencesFile), bytes)
+  } finally { await chmod(directory, 0o700) }
+  assert.deepEqual(f.calls, [])
 })

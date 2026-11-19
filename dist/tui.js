@@ -516,14 +516,14 @@ function startClient(host) {
       const progress = (message) => log((text) => host.show({ code: "progress", severity: "info", title: "Prompt predictions", message: text }), message);
       const live = () => !disposed && !signal.aborted && epoch === generation && host.scope() === location && host.state()?.key === state.key && !host.state()?.draft;
       const flight = { signal, scope: location, epoch: generation, explicit };
-      const deadline2 = new AbortController();
+      const deadline = new AbortController();
       let timer;
       const renew = () => {
         clearTimeout(timer);
-        timer = setTimeout(() => deadline2.abort(), (cache?.timeoutMs ?? 8e3) * 2);
+        timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? 8e3) * 2);
       };
       renew();
-      const requestSignal = AbortSignal.any([signal, deadline2.signal]);
+      const requestSignal = AbortSignal.any([signal, deadline.signal]);
       predicting = flight;
       try {
         let reply;
@@ -546,7 +546,7 @@ function startClient(host) {
             }
           }, explicit, escalation2), requestSignal);
         } catch {
-          const reason = deadline2.signal.aborted && !signal.aborted ? "timeout" : "service_unavailable";
+          const reason = deadline.signal.aborted && !signal.aborted ? "timeout" : "service_unavailable";
           reply = { reason, notice: reasonNotice(reason) };
         }
         if (!live()) {
@@ -592,8 +592,8 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
     const generation = epoch;
     const inspectedFailure = record().requestFailure;
     const abort = new AbortController();
-    const deadline2 = AbortSignal.timeout(cache?.timeoutMs ?? 8e3);
-    const signal = AbortSignal.any([abort.signal, deadline2]);
+    const deadline = AbortSignal.timeout(cache?.timeoutMs ?? 8e3);
+    const signal = AbortSignal.any([abort.signal, deadline]);
     const live = () => !disposed && !abort.signal.aborted && epoch === generation && host.scope() === location;
     const request2 = { abort, done: Promise.resolve() };
     loading = request2;
@@ -615,7 +615,7 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
       } catch {
         if (live()) {
           checked = Date.now();
-          if (deadline2.aborted) {
+          if (deadline.aborted) {
             manual = void 0;
             controller.stage(void 0);
             health(reasonNotice("timeout"));
@@ -821,14 +821,39 @@ var Predictions = Rpc.define({
           writable: { type: "boolean" },
           reason: { type: "string" },
           fields: settingsFields,
-          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
+          overrides: settingsFields,
+          fallbackFields: settingsFields,
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
           serviceVersion: { type: "string" }
         },
-        required: ["revision", "scope", "writable", "fields", "effective", "catalog", "issues", "serviceVersion"],
+        required: ["revision", "scope", "writable", "fields", "overrides", "fallbackFields", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
         additionalProperties: false
+      }
+    },
+    saveSettings: {
+      // Preserve unknown keys at both levels for explicit rejection by the server.
+      input: {
+        type: "object",
+        properties: {
+          revision: { type: "string", minLength: 1 },
+          fields: { ...settingsFields, additionalProperties: true },
+          reset: { type: "array", items: { type: "string" } },
+          removeModels: { type: "boolean" }
+        },
+        required: ["revision", "fields"],
+        additionalProperties: true
+      },
+      output: {
+        anyOf: [
+          { type: "object", properties: { kind: { const: "saved", type: "string" }, revision: { type: "string" }, serviceVersion: { type: "string" } }, required: ["kind", "revision", "serviceVersion"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "saved_not_active", type: "string" }, revision: { type: "string" }, message: { type: "string" } }, required: ["kind", "revision", "message"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "invalid", type: "string" }, issues: { type: "array", items: setupIssue } }, required: ["kind", "issues"], additionalProperties: false },
+          { type: "object", properties: { kind: { type: "string", enum: ["conflict", "read_only", "failed"] }, message: { type: "string" } }, required: ["kind", "message"], additionalProperties: false }
+        ]
       }
     },
     previewSettings: {
@@ -852,132 +877,40 @@ var Predictions = Rpc.define({
   }
 });
 
-// src/setup-origin.ts
-import { execFile } from "node:child_process";
-import { basename, isAbsolute } from "node:path";
-import { promisify } from "node:util";
-var OriginRefusal = class extends Error {
-  constructor() {
-    super("This target is not verified for local setup.");
+// src/preferences.ts
+import { parseTree } from "jsonc-parser";
+function preferenceFields(value) {
+  return Object.fromEntries(settingKeys.filter((key) => Object.hasOwn(value, key)).map((key) => [key, value[key]]));
+}
+function validatePreferenceFields(overrides) {
+  const fields = preferenceFields(overrides);
+  if (fields.models === null) delete fields.models;
+  return validateSettings(fields);
+}
+function applyPreferenceChange(overrides, input) {
+  const invalid = () => new Error("Prediction preference changes are invalid.");
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["fields", "reset", "removeModels"].includes(key)) || !input.fields || typeof input.fields !== "object" || Array.isArray(input.fields) || Object.entries(input.fields).some(([key, value]) => !settingKeys.includes(key) || value === void 0) || input.removeModels !== void 0 && input.removeModels !== true || input.removeModels && Object.hasOwn(input.fields, "models") || input.reset !== void 0 && (!Array.isArray(input.reset) || new Set(input.reset).size !== input.reset.length || input.reset.some((key) => !settingKeys.includes(key) || Object.hasOwn(input.fields, key) || key === "models" && input.removeModels)) || validateSettings(input.fields).length) throw invalid();
+  const next = { ...overrides, ...input.fields };
+  for (const key of input.reset ?? []) delete next[key];
+  if (input.removeModels) next.models = null;
+  if (validatePreferenceFields(next).length) throw invalid();
+  return next;
+}
+function resolvePreferences(legacy, overrides) {
+  const valid = legacy === void 0 || !!legacy && typeof legacy === "object" && !Array.isArray(legacy);
+  const base = valid && legacy ? legacy : {};
+  const fallbackFields = preferenceFields(base);
+  for (const key of ["timeoutMs", "contextTurns"]) if (fallbackFields[key] === null) delete fallbackFields[key];
+  const known = preferenceFields(overrides);
+  const fields = { ...fallbackFields, ...known };
+  const rawOptions = valid ? { ...base, ...known } : legacy;
+  if (known.models === null) {
+    delete fields.models;
+    if (rawOptions && typeof rawOptions === "object") delete rawOptions.models;
   }
-};
-function refuse(lifetime) {
-  const error = new OriginRefusal();
-  lifetime.abort(error);
-  throw error;
+  const origins = Object.fromEntries(settingKeys.map((key) => [key, Object.hasOwn(known, key) ? "preferences" : Object.hasOwn(fallbackFields, key) ? "configuration" : "default"]));
+  return { rawOptions, fields, fallbackFields, origins, issues: validatePreferenceFields(known) };
 }
-function ambiguous(lifetime) {
-  const error = new Error("Local setup is unavailable.");
-  lifetime.abort(error);
-  throw error;
-}
-function standaloneArguments(argv) {
-  const seen = /* @__PURE__ */ new Set();
-  let directory = false;
-  for (let index = 2; index < argv.length; index++) {
-    const arg = argv[index] === "-c" ? "--continue" : argv[index] === "-s" ? "--session" : argv[index];
-    if (["--standalone", "--continue", "--auto", "--print-logs", "--session", "--prompt", "--log-level"].includes(arg)) {
-      if (seen.has(arg)) return false;
-      seen.add(arg);
-      if (["--session", "--prompt", "--log-level"].includes(arg)) {
-        const value = argv[++index];
-        if (!value || value.startsWith("-")) return false;
-      }
-    } else {
-      if (directory || !(isAbsolute(arg) || arg === "." || arg === ".." || arg.startsWith("./") || arg.startsWith("../"))) return false;
-      directory = true;
-    }
-  }
-  return seen.has("--standalone");
-}
-var routingEnvironment = [
-  "OPENCODE_SERVER",
-  "OPENCODE_SERVER_URL",
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "ALL_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "all_proxy",
-  "NODE_OPTIONS",
-  "BUN_OPTIONS",
-  "BUN_BE_BUN",
-  "OPENCODE_DRIVE"
-];
-function nativeRuntime() {
-  const run = promisify(execFile);
-  return {
-    platform: process.platform,
-    pid: process.pid,
-    uid: process.getuid?.() ?? -1,
-    executable: process.execPath,
-    get argv() {
-      return process.argv;
-    },
-    get env() {
-      return process.env;
-    },
-    async inspect(pid, signal) {
-      const { stdout } = await run("/bin/ps", ["-p", String(pid), "-o", "ppid=,uid=,lstart=,args="], {
-        signal,
-        timeout: 1e3,
-        maxBuffer: 8192,
-        env: { LC_ALL: "C" }
-      });
-      const fields = stdout.match(/^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.+)\s*$/);
-      return fields ? { parent: Number(fields[1]), uid: Number(fields[2]), started: fields[3].replace(/\s+/g, " "), command: fields[4].trim() } : void 0;
-    }
-  };
-}
-function createStandaloneSetupOrigin(host, runtime = nativeRuntime()) {
-  const lifetime = new AbortController();
-  const client = host.client;
-  const argv = JSON.stringify(runtime.argv);
-  const executable = runtime.executable, pid = runtime.pid, uid = runtime.uid;
-  let anchor;
-  const qualified = () => host.app.version === "2.2.6" && host.client === client && runtime.platform === "darwin" && runtime.pid === pid && runtime.uid === uid && uid >= 0 && runtime.executable === executable && isAbsolute(executable) && basename(executable) === "opencode" && JSON.stringify(runtime.argv) === argv && standaloneArguments(runtime.argv) && !routingEnvironment.some((key) => !!runtime.env[key]);
-  return {
-    async dispatch(signal, local) {
-      signal = AbortSignal.any([signal, lifetime.signal]);
-      signal.throwIfAborted();
-      let serverPid;
-      try {
-        if (!qualified()) refuse(lifetime);
-        const verification = AbortSignal.any([signal, AbortSignal.timeout(2e3)]);
-        const info = await abortable(() => client.server.info({ signal: verification }), verification);
-        if (info.version !== "2.2.6" || !Number.isSafeInteger(info.pid) || info.pid <= 0 || info.pid === pid) refuse(lifetime);
-        if (anchor && anchor.pid !== info.pid) refuse(lifetime);
-        const process2 = await abortable(() => runtime.inspect(info.pid, verification), verification);
-        verification.throwIfAborted();
-        if (!process2 || process2.parent !== pid || process2.uid !== uid || process2.command !== executable + " serve --stdio --port 0" || !process2.started) refuse(lifetime);
-        if (anchor && anchor.started !== process2.started) refuse(lifetime);
-        if (!qualified()) refuse(lifetime);
-        anchor ??= { pid: info.pid, started: process2.started };
-        serverPid = info.pid;
-      } catch {
-        signal.throwIfAborted();
-        refuse(lifetime);
-      }
-      const value = await abortable(() => local({ serverPid }, signal), signal);
-      signal.throwIfAborted();
-      if (!qualified()) ambiguous(lifetime);
-      return value;
-    },
-    dispose() {
-      lifetime.abort();
-    },
-    revoked: () => lifetime.signal.aborted
-  };
-}
-
-// src/setup-native-api.ts
-import { isDeepStrictEqual } from "node:util";
-
-// src/setup-local.ts
-import { chmod, lstat, mkdir, realpath, rmdir, unlink } from "node:fs/promises";
-import { createConnection, createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join, isAbsolute as isAbsolute2 } from "node:path";
 
 // src/setup.ts
 var settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"];
@@ -1003,7 +936,7 @@ function validateSettings(fields) {
   return parsed.ok ? [] : [{ field: settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }];
 }
 function createSetupEditor(api, changed) {
-  const state = { fields: {}, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false };
+  const state = { fields: {}, reset: [], origins: resolvePreferences({}, {}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false };
   const lifetime = new AbortController();
   let generation = 0, previewAbort;
   const notify = () => {
@@ -1025,7 +958,10 @@ function createSetupEditor(api, changed) {
   };
   const update = () => {
     state.issues = validateSettings(state.fields);
-    state.dirty = !!state.snapshot && Object.keys(changedFields(state.snapshot.fields, state.fields)).length > 0;
+    const snapshot = state.snapshot;
+    const edits = snapshot ? changedFields(snapshot.fields, state.fields) : {};
+    state.dirty = !!snapshot && (state.reset.length > 0 || Object.keys(edits).length > 0);
+    if (snapshot) state.origins = Object.fromEntries(settingKeys.map((key) => [key, state.reset.includes(key) ? Object.hasOwn(snapshot.fallbackFields, key) ? "configuration" : "default" : Object.hasOwn(edits, key) ? "preferences" : snapshot.origins[key]]));
     groups();
     notify();
   };
@@ -1039,6 +975,8 @@ function createSetupEditor(api, changed) {
     const snapshot = displayed(incoming);
     state.snapshot = structuredClone(snapshot);
     state.fields = structuredClone(snapshot.fields);
+    state.reset = [];
+    state.origins = { ...snapshot.origins };
     state.issues = [...snapshot.issues];
     state.dirty = false;
     groups();
@@ -1081,8 +1019,17 @@ function createSetupEditor(api, changed) {
     change(fields) {
       if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot) return;
       validateSettings(fields);
+      state.reset = state.reset.filter((key) => !Object.hasOwn(fields, key));
       resetPreview();
       state.fields = { ...state.fields, ...structuredClone(fields) };
+      state.lastSave = void 0;
+      update();
+    },
+    resetPreferences() {
+      if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot?.writable) return;
+      resetPreview();
+      state.fields = structuredClone(state.snapshot.fallbackFields);
+      state.reset = settingKeys.filter((key) => Object.hasOwn(state.snapshot.overrides, key));
       state.lastSave = void 0;
       update();
     },
@@ -1133,26 +1080,32 @@ function createSetupEditor(api, changed) {
       const before = state.snapshot;
       const expected = structuredClone(state.fields);
       const patch = changedFields(before.fields, expected);
+      for (const key of state.reset) delete patch[key];
       const removeModels = Object.hasOwn(patch, "models") && patch.models === void 0;
       if (removeModels) delete patch.models;
+      const input = { revision: before.revision, fields: patch, ...removeModels ? { removeModels: true } : {}, ...state.reset.length ? { reset: [...state.reset] } : {} };
+      const { revision: _revision, ...change } = input;
+      const overrides = applyPreferenceChange(before.overrides, change);
       state.saving = true;
       state.error = void 0;
       notify();
       let result;
       try {
         try {
-          result = await abortable(() => api.save({ revision: before.revision, fields: patch, ...removeModels ? { removeModels: true } : {} }, lifetime.signal), lifetime.signal);
+          result = await abortable(() => api.save(input, lifetime.signal), lifetime.signal);
         } catch {
         }
+        if (result?.kind === "saved") result = { kind: "saved_not_active", revision: result.revision, message: "Saved on disk. Effective activation is not verified." };
         if (lifetime.signal.aborted) return failed("Settings editor closed.");
-        if (!result || result.kind === "saved" || result.kind === "saved_not_active" || result.kind === "failed") {
+        if (!result || result.kind === "saved_not_active" || result.kind === "failed") {
           try {
             const fresh = await readback();
             lifetime.signal.throwIfAborted();
             const fieldsMatch = settingKeys.every((key) => JSON.stringify(fresh.fields[key]) === JSON.stringify(expected[key]));
-            if (fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch) {
+            const overridesMatch = settingKeys.every((key) => Object.hasOwn(fresh.overrides, key) === Object.hasOwn(overrides, key) && JSON.stringify(fresh.overrides[key]) === JSON.stringify(overrides[key]));
+            if (fresh.writable && fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch && overridesMatch) {
               const parsed = parseOptions(expected);
-              const active = parsed.ok && !!fresh.effective && settingKeys.every((key) => JSON.stringify(fresh.effective[key]) === JSON.stringify(parsed.value[key])) && fresh.serviceVersion !== before.serviceVersion;
+              const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every((key) => JSON.stringify(fresh.effective[key]) === JSON.stringify(parsed.value[key]));
               result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion } : { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." };
               adopt(fresh);
             }
@@ -1161,12 +1114,7 @@ function createSetupEditor(api, changed) {
         }
         if (lifetime.signal.aborted) return failed("Settings editor closed.");
         result ??= failed("Changes may have been saved. Reopen settings before trying again.");
-        if (result.kind === "saved" || result.kind === "saved_not_active") {
-          if (state.dirty) {
-            state.snapshot = { ...before, fields: expected, revision: result.revision };
-            state.dirty = false;
-          }
-        } else if (result.kind !== "invalid") state.blocked = true;
+        if (state.dirty && result.kind !== "invalid") state.blocked = true;
         state.lastSave = result;
         if (result.kind === "invalid") state.issues = result.issues;
         return result;
@@ -1205,163 +1153,34 @@ function changedFields(original, draft) {
   return Object.fromEntries(settingKeys.filter((key) => Object.hasOwn(draft, key) && JSON.stringify(original[key]) !== JSON.stringify(draft[key])).map((key) => [key, draft[key]]));
 }
 
-// src/setup-local.ts
-var requestLimit = 65536;
-var responseLimit = 8388608;
-var deadline = 1e4;
-var failure = () => new Error("Local setup is unavailable.");
-var object = (value) => !!value && typeof value === "object" && !Array.isArray(value);
-var keys = (value, allowed) => Object.keys(value).every((key) => allowed.includes(key));
-function validSetupLocation(value) {
-  return object(value) && keys(value, ["directory", "workspaceID"]) && typeof value.directory === "string" && isAbsolute2(value.directory) && !value.directory.includes("\0") && (value.workspaceID === void 0 || typeof value.workspaceID === "string" && !!value.workspaceID);
-}
-function validSave(value) {
-  if (!object(value) || !keys(value, ["revision", "fields", "removeModels"]) || typeof value.revision !== "string" || !value.revision || value.removeModels !== void 0 && value.removeModels !== true) return false;
-  try {
-    validateSettings(value.fields);
-    return !(value.removeModels && Object.hasOwn(value.fields, "models"));
-  } catch {
-    return false;
-  }
-}
-async function socketPath(id) {
-  if (!/^[0-9a-f]{16}$/.test(id)) throw failure();
-  const directory = join(await realpath(tmpdir()), "pp-" + id), path = join(directory, "s");
-  if (Buffer.byteLength(path) > 100) throw failure();
-  return { directory, path };
-}
-async function safePath(directory, path) {
-  const parent = await lstat(directory), socket = await lstat(path), uid = process.getuid?.();
-  if (uid === void 0 || !parent.isDirectory() || parent.uid !== uid || (parent.mode & 4095) !== 448 || !socket.isSocket() || socket.uid !== uid || (socket.mode & 4095) !== 384) throw failure();
-}
-async function exchange(target, method, input, signal) {
-  let socket;
-  try {
-    signal = AbortSignal.any([signal, AbortSignal.timeout(deadline)]);
-    signal.throwIfAborted();
-    if (!object(target) || !keys(target, ["id", "serviceVersion", "location", "serverPid"]) || !validSetupLocation(target.location) || typeof target.serviceVersion !== "string" || !target.serviceVersion || !Number.isSafeInteger(target.serverPid) || target.serverPid <= 0 || method === "save" && !validSave(input)) throw failure();
-    const request = JSON.stringify({ id: target.id, serviceVersion: target.serviceVersion, serverPid: target.serverPid, location: target.location, method, ...input ? { input } : {} }) + "\n";
-    if (Buffer.byteLength(request) > requestLimit) throw failure();
-    const { directory, path } = await socketPath(target.id);
-    await safePath(directory, path);
-    signal.throwIfAborted();
-    socket = createConnection({ path, signal });
-    const connection = socket;
-    const reply = await new Promise((resolve, reject) => {
-      const chunks = [];
-      let size = 0;
-      connection.on("connect", () => connection.end(request));
-      connection.on("data", (chunk) => {
-        size += chunk.length;
-        if (size > responseLimit) {
-          reject(failure());
-          connection.destroy();
-          return;
-        }
-        chunks.push(chunk);
-      });
-      connection.on("error", reject);
-      connection.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-      connection.on("close", () => reject(failure()));
-    });
-    signal.throwIfAborted();
-    if (!reply.endsWith("\n") || reply.indexOf("\n") !== reply.length - 1) throw failure();
-    const response = JSON.parse(reply);
-    if (!object(response) || !keys(response, ["pid", "value"]) || response.pid !== target.serverPid || !object(response.value)) throw failure();
-    return response.value;
-  } catch {
-    throw failure();
-  } finally {
-    socket?.destroy();
-  }
-}
-async function readLocalSetup(target, signal) {
-  const value = await exchange(target, "read", void 0, signal);
-  if (value.serviceVersion !== target.serviceVersion || value.localAuthority?.id !== target.id || typeof value.writable !== "boolean") throw failure();
-  return value;
-}
-async function saveLocalSetup(target, input, signal) {
-  const value = await exchange(target, "save", input, signal);
-  if (!["saved", "saved_not_active", "invalid", "conflict", "read_only", "failed"].includes(value.kind)) throw failure();
-  return value;
-}
-
-// src/setup-native-api.ts
-function createNativeSetupAPI(network, location, dispatch, dispose, revoked = () => false) {
-  const pinned = { ...location };
-  let target, source;
-  const readonly = () => ({ kind: "read_only", message: "This target is not verified for local setup." });
+// src/setup-tui-api.ts
+function createTUISetupAPI(ctx, location) {
+  const client = ctx.client, pinned = { ...location };
+  const selected = () => {
+    if (ctx.client !== client) throw new Error("This setup target changed. Reopen settings.");
+    return client.rpc(Predictions);
+  };
   return {
     async read(signal) {
-      target = void 0;
-      const remote = await waitForSetupSnapshot(network.read, signal);
-      try {
-        if (!validSetupLocation(pinned) || !remote.localAuthority || source !== void 0 && remote.source !== source) throw new Error();
-        const local = await dispatch(signal, async (serverPid, signal2) => {
-          const candidate2 = { id: remote.localAuthority.id, serviceVersion: remote.serviceVersion, location: pinned, serverPid };
-          const value = await readLocalSetup(candidate2, signal2);
-          if (value.source !== remote.source || value.revision !== remote.revision || !isDeepStrictEqual(value.fields, remote.fields)) throw new Error();
-          target = candidate2;
-          return value;
-        });
-        if (local.writable) source ??= local.source;
-        else target = void 0;
-        return local;
-      } catch {
-        target = void 0;
-        signal.throwIfAborted();
-        return { ...remote, writable: false, reason: remote.reason ?? readonly().message };
-      }
+      const snapshot = await waitForSetupSnapshot(async (signal2) => await selected().settings({}, { location: pinned, signal: signal2 }), signal);
+      selected();
+      return snapshot;
     },
-    preview: (fields, signal) => network.preview(fields, signal),
+    preview: async (fields, signal) => await selected().previewSettings({ fields }, { location: pinned, signal }),
     async save(input, signal) {
-      if (!target) return readonly();
-      const issues = validateSettings(input.fields);
-      if (issues.length) return { kind: "invalid", issues };
-      const selected = target;
-      let remote;
-      try {
-        remote = await waitForSetupSnapshot(network.read, signal);
-      } catch {
-        signal.throwIfAborted();
-        throw new Error("Local setup is unavailable.");
-      }
-      if (remote.localAuthority?.id !== selected.id || remote.serviceVersion !== selected.serviceVersion || remote.source !== source) {
-        target = void 0;
-        return readonly();
-      }
-      try {
-        return await dispatch(signal, (serverPid, signal2) => {
-          if (serverPid !== selected.serverPid || target !== selected) throw new OriginRefusal();
-          return saveLocalSetup(selected, input, signal2);
-        });
-      } catch (error) {
-        target = void 0;
-        if (error instanceof OriginRefusal) return readonly();
-        throw new Error("Local setup is unavailable.");
-      }
-    },
-    dispose() {
-      target = void 0;
-      dispose();
-    },
-    revoked
+      const waiting = AbortSignal.any([signal, AbortSignal.timeout(12e3)]);
+      const result = await abortable(() => selected().saveSettings(input, { location: pinned, signal: waiting }), waiting);
+      selected();
+      return result;
+    }
   };
-}
-
-// src/setup-tui-api.ts
-function createTUISetupAPI(ctx, location, runtime) {
-  const client = ctx.client, pinned = { ...location };
-  const origin = createStandaloneSetupOrigin(ctx, runtime);
-  return createNativeSetupAPI({
-    read: async (signal) => await client.rpc(Predictions).settings({}, { location: pinned, signal }),
-    preview: async (fields, signal) => await client.rpc(Predictions).previewSettings({ fields }, { location: pinned, signal })
-  }, pinned, (signal, local) => origin.dispatch(signal, (identity, signal2) => local(identity.serverPid, signal2)), () => origin.dispose(), () => origin.revoked());
 }
 
 // src/setup-copy.ts
 var setupText = {
-  warning: "Avoid editing this configuration file elsewhere while saving. Changes made in another editor during a save can be overwritten, including unrelated settings. Recovery copies may not contain those changes.",
+  warning: "Avoid saving prediction preferences from multiple places at once. Simultaneous saves can overwrite each other's changes, including different settings. The recovery copy may not contain those changes.",
+  scope: "Settings apply to user prediction preferences on the selected server. They affect all projects using this configuration directory.",
+  precedence: "Saved preferences override OpenCode configuration. Use OpenCode configuration removes these overrides after you save.",
   github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
   order: "Groups run top to bottom. A later group is tried when every model above it fails. With Escalation set to Automatically, another model is also tried once after no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
   cost: "Match counts check model names only and send no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
@@ -1369,15 +1188,15 @@ var setupText = {
   disabled: "Controls stay editable while predictions are off; changes apply when you turn them on."
 };
 var setupTUIText = {
-  standalone: "Local setup writes currently require a verified opencode --standalone session.",
-  scope: "Settings apply to the global OpenCode configuration on the selected server.",
-  fuller: "Avoid editing this configuration file elsewhere while saving. Changes made in another editor during a save can be overwritten, including unrelated settings. Recovery copies hold the file as it was just before a save, so they cannot include edits another editor makes during that save, and they may contain credentials. Saves are not conflict-proof."
+  scope: setupText.scope,
+  fuller: setupText.precedence + "\n\n" + setupText.warning
 };
+var originLabels = { preferences: "Saved preference", configuration: "OpenCode configuration", default: "Default" };
 
 // src/setup-tui.ts
 var title = "Predictions Setup";
 var escalationNames = { off: "Off", manual: "Manually", automatic: "Automatically once after no suggestion" };
-function registerSetupTUI(ctx, openStatus, runtime) {
+function registerSetupTUI(ctx, openStatus) {
   const dialog = ctx.ui.dialog;
   let running = false, disposed = false;
   const location = () => {
@@ -1396,7 +1215,7 @@ function registerSetupTUI(ctx, openStatus, runtime) {
         await alert("Open a project, or connect to an OpenCode server, before changing prediction settings.");
         return;
       }
-      editor = createSetupEditor(createTUISetupAPI(ctx, target, runtime), () => {
+      editor = createSetupEditor(createTUISetupAPI(ctx, target), () => {
       });
       await editor.load();
       if (editor.state().error || !editor.state().snapshot) {
@@ -1422,7 +1241,7 @@ function registerSetupTUI(ctx, openStatus, runtime) {
   const readOnly = (editor) => !editor.state().snapshot?.writable;
   const readOnlyReason = (editor) => {
     const snapshot = editor.state().snapshot;
-    return snapshot?.localAuthority ? setupTUIText.standalone : snapshot?.reason ?? "This configuration cannot be edited here.";
+    return snapshot?.reason ?? "This configuration cannot be edited here.";
   };
   async function editable(editor) {
     if (!readOnly(editor)) return true;
@@ -1464,6 +1283,8 @@ function registerSetupTUI(ctx, openStatus, runtime) {
           { title: "Advanced", description: summary.advanced(editor), value: "advanced", category: "Settings" },
           { title: "Save changes", description: invalid ? "Fix invalid settings first." : "Can overwrite other edits.", value: "save", disabled: !state.dirty || readOnly(editor) || invalid || state.saving, category: "Changes" },
           { title: "Discard changes", description: "Restore saved values.", value: "discard", disabled: !state.dirty, category: "Changes" },
+          { title: "Use OpenCode configuration", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
+          { title: "Preference sources", description: "Path and origins.", value: "sources", category: "More" },
           { title: "Prediction status and preview", description: "Diagnostics.", value: "status", category: "More" },
           { title: "About saving", description: "Scope and limits.", value: "about", category: "More" }
         ]
@@ -1477,6 +1298,15 @@ function registerSetupTUI(ctx, openStatus, runtime) {
       else if (choice === "advanced") await advanced(editor);
       else if (choice === "save") await save(editor);
       else if (choice === "discard") editor.discard();
+      else if (choice === "reset") {
+        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with OpenCode configuration? Save to remove the saved preferences.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue;
+        editor.resetPreferences();
+      } else if (choice === "sources") await alert(`User preferences
+${state.snapshot?.source ?? "Server preferences"}
+
+${settingKeys.map((key) => `${key}: ${originLabels[state.origins[key]]}`).join("\n")}
+
+${setupText.precedence}`);
       else if (choice === "status") await openStatus();
       else if (choice === "readonly") await alert(`Read-only. ${readOnlyReason(editor)} Current values are shown; edit the configuration file manually to change them.`);
       else if (choice === "about") await alert(`${setupTUIText.scope}
@@ -1700,7 +1530,7 @@ ${setupTUIText.fuller}`);
 // src/tui.ts
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join as join2 } from "node:path";
+import { join } from "node:path";
 var tui_default = Plugin.define({
   id: "opencode-predictions.tui",
   setup(ctx) {
@@ -1712,7 +1542,7 @@ var tui_default = Plugin.define({
       try {
         let settings = {};
         try {
-          settings = JSON.parse(readFileSync(join2(process.env.XDG_CONFIG_HOME ?? join2(homedir(), ".config"), "opencode", "cli.json"), "utf8"));
+          settings = JSON.parse(readFileSync(join(process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"), "opencode", "cli.json"), "utf8"));
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }

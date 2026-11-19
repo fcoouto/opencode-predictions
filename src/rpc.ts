@@ -76,11 +76,32 @@ export const Predictions = Rpc.define({
         properties: {
           revision: { type: "string" }, source: { type: "string" }, scope: { type: "string", enum: ["global"] },
           writable: { type: "boolean" }, reason: { type: "string" }, fields: settingsFields,
-          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
+          overrides: settingsFields, fallbackFields: settingsFields,
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map(key => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel }, issues: { type: "array", items: setupIssue }, serviceVersion: { type: "string" },
         },
-        required: ["revision", "scope", "writable", "fields", "effective", "catalog", "issues", "serviceVersion"], additionalProperties: false,
+        required: ["revision", "scope", "writable", "fields", "overrides", "fallbackFields", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"], additionalProperties: false,
+      },
+    },
+    saveSettings: {
+      // Preserve unknown keys at both levels for explicit rejection by the server.
+      input: {
+        type: "object", properties: {
+          revision: { type: "string", minLength: 1 },
+          fields: { ...settingsFields, additionalProperties: true },
+          reset: { type: "array", items: { type: "string" } }, removeModels: { type: "boolean" },
+        },
+        required: ["revision", "fields"], additionalProperties: true,
+      },
+      output: {
+        anyOf: [
+          { type: "object", properties: { kind: { const: "saved", type: "string" }, revision: { type: "string" }, serviceVersion: { type: "string" } }, required: ["kind", "revision", "serviceVersion"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "saved_not_active", type: "string" }, revision: { type: "string" }, message: { type: "string" } }, required: ["kind", "revision", "message"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "invalid", type: "string" }, issues: { type: "array", items: setupIssue } }, required: ["kind", "issues"], additionalProperties: false },
+          { type: "object", properties: { kind: { type: "string", enum: ["conflict", "read_only", "failed"] }, message: { type: "string" } }, required: ["kind", "message"], additionalProperties: false },
+        ],
       },
     },
     previewSettings: {
