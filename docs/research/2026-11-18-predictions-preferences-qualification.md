@@ -22,7 +22,7 @@ The shared-service proof checks the actual `serve --service` process and discove
 | Ordinary shared-service and standalone CLI edit all eight fields and reopen saved values | `tests/host/preferences.test.ts`, real PTY driver `terminal.py` |
 | Normal project discovery; inline and global JSON/JSONC; string/object plugin references; unrelated plugins directory | `tests/host/preferences.test.ts` |
 | Installed Git reference, not a simulated local-source type; prebuilt package and no dependency preparation | `tests/host/git.test.ts`; packed-install gate recorded below |
-| Missing and wrong HTTP credentials receive **401** without file creation | `tests/host/preferences.test.ts` |
+| Missing and wrong HTTP credentials receive **401** without file creation on CLI/server 2.2.6 and Desktop's bundled 2.3.0 server | `tests/host/preferences.test.ts`, `tests/host/setup-ui.test.ts` |
 | Empty password still requires host-generated credentials | `tests/host/preferences.test.ts` |
 | Different inherited options across locations; two server processes sharing one config root; distinct roots | `tests/host/persistence-activation.test.ts` |
 | Restart, manual atomic replacement, file deletion, stale drafts, unknown members, malformed/future documents | `tests/host/persistence-activation.test.ts`, `tests/preferences-store.test.ts` |
@@ -66,10 +66,11 @@ The native observer bundles ordinary dependencies rather than assuming Desktop s
 - Focused compatibility: **9/9**, including a real kernel write-failure case.
 - Focused lifecycle: **6/6**, no skips.
 - Focused Git install and Save: **1/1**, no skips.
-- Whole unit suite after retirement and lost-reset policy regression: **464/464**, no skips.
+- Narrow/wide CLI dialogs and the additional eight-field terminal regression: **3/3**, no skips.
+- Whole unit suite after retirement, policy/compatibility fixes, and lost-reset regression: **467/467**, no skips.
 - Typecheck, bundle, and `git diff --check`: pass.
 - Consolidated native/research rerun: **52/52**, no skips.
-- Packed-install gate: pending at this checkpoint.
+- Packed-install gate: **69/69**, no skips, using the installed `opencode-predictions-0.3.0.tgz` artifact. This includes ordinary shared-service CLI, Desktop with project discovery, authenticated Save, reset, Git install, unchanged OpenCode bytes, composer preservation, and zero settings-triggered generation.
 
 ## Limits
 

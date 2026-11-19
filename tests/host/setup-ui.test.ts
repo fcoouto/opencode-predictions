@@ -41,6 +41,17 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
     await show()
     const original = await readFile(fixture.configFile!)
     assert.equal(await page.evaluate(() => (window as any).__predictionFixture.setupServerVersion()), "2.3.0")
+    const service = JSON.parse(await readFile(join(fixture.root, "state/opencode/service.json"), "utf8"))
+    assert.equal(service.version, "2.3.0")
+    for (const authorization of ["", "Basic " + Buffer.from("opencode:wrong").toString("base64")]) {
+      const denied = await fetch(service.url + "/api/rpc/fcoouto.predictions/saveSettings", {
+        method: "POST", headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+        body: JSON.stringify({ input: { revision: "unauthorized", fields: { debug: true } }, location: { directory: fixture.directory } }),
+      })
+      assert.equal(denied.status, 401, "Desktop's bundled server rejects unauthenticated preference writes")
+      await denied.arrayBuffer()
+      await assert.rejects(readFile(fixture.preferencesFile), { code: "ENOENT" })
+    }
     // A zero-match selector is warned about but kept.
     await page.getByText("0 models match now", { exact: true }).waitFor({ state: "visible", timeout: 15000 })
     await page.getByText("No current models match this selector.").waitFor({ state: "visible" })

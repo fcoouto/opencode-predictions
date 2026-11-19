@@ -2,6 +2,8 @@
 
 Status: approved for implementation in conversation after review and the explicit removal of write locking. Scope includes dedicated-file precedence and Save through the selected server's existing access controls. No automatic migration, publishing, or user-configuration edits are authorized.
 
+Implementation evidence is recorded in the [qualification record](../../research/2026-11-18-predictions-preferences-qualification.md). Planning-stage evidence notes below predate implementation.
+
 User decision: remove the locking feature and accept concurrent-writer risk. This supersedes the earlier serialization and manual lock-recovery proposals.
 
 ## Intent
