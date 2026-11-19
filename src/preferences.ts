@@ -1,5 +1,5 @@
 import { parseTree, type Node, type ParseError } from "jsonc-parser"
-import { settingKeys, validateSettings, type SettingsInput, type SettingKey, type SettingOrigin, type SetupIssue } from "./setup.ts"
+import { settingKeys, validateSettings, type SaveInput, type SettingsInput, type SettingKey, type SettingOrigin, type SetupIssue } from "./setup.ts"
 
 export type PreferenceDocument = { version: 1; settings: Record<string, unknown>; [key: string]: unknown }
 export type ResolvedPreferences = { rawOptions: unknown; fields: SettingsInput; fallbackFields: SettingsInput; origins: Record<SettingKey, SettingOrigin>; issues: SetupIssue[] }
@@ -30,6 +30,23 @@ export function validatePreferenceFields(overrides: SettingsInput): SetupIssue[]
   const fields = preferenceFields(overrides)
   if (fields.models === null) delete fields.models
   return validateSettings(fields)
+}
+
+export function applyPreferenceChange(overrides: Record<string, unknown>, input: Omit<SaveInput, "revision">): Record<string, unknown> {
+  const invalid = () => new Error("Prediction preference changes are invalid.")
+  if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["fields", "reset", "removeModels"].includes(key))
+    || !input.fields || typeof input.fields !== "object" || Array.isArray(input.fields)
+    || Object.entries(input.fields).some(([key, value]) => !settingKeys.includes(key as SettingKey) || value === undefined)
+    || input.removeModels !== undefined && input.removeModels !== true
+    || input.removeModels && Object.hasOwn(input.fields, "models")
+    || input.reset !== undefined && (!Array.isArray(input.reset) || new Set(input.reset).size !== input.reset.length
+      || input.reset.some(key => !settingKeys.includes(key) || Object.hasOwn(input.fields, key) || key === "models" && input.removeModels))
+    || validateSettings(input.fields).length) throw invalid()
+  const next = { ...overrides, ...input.fields }
+  for (const key of input.reset ?? []) delete next[key]
+  if (input.removeModels) next.models = null
+  if (validatePreferenceFields(next).length) throw invalid()
+  return next
 }
 
 export function resolvePreferences(legacy: unknown, overrides: SettingsInput): ResolvedPreferences {
