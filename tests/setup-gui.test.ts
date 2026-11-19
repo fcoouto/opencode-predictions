@@ -34,6 +34,7 @@ async function mount(options: Options = {}): Promise<Page> {
     ]
     const defaults = { enabled: true, automatic: true, debug: false, includeGithubPRContext: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3 }
     const snapshot: any = { revision: "r1", source: "/server/opencode.jsonc", scope: "global", writable: !opts.readOnly, fields: opts.fields ?? { automatic: false, models: [["local/family/a#low"], ["local/b"]] }, catalog, issues: [], serviceVersion: "v1", localAuthority: { id: "0123456789abcdef" } }
+    Object.assign(snapshot, { overrides: { ...snapshot.fields }, fallbackFields: {}, activeRevision: "r1", origins: Object.fromEntries(["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"].map(key => [key, Object.hasOwn(snapshot.fields, key) ? "preferences" : "default"])) })
     const effective = () => ({ ...defaults, ...snapshot.fields, ...(snapshot.fields.models ? { models: snapshot.fields.models.map((group: string[]) => group.join(", ")) } : {}) })
     const view = () => ({ ...snapshot, effective: effective(), ...(opts.readOnly ? { reason: "This configuration source is not verified for setup writes." } : {}) })
     const clients: any = {}

@@ -9,6 +9,7 @@ import { parseOptions } from "../src/options.ts"
 import { startLocalSetup } from "../src/setup-local.ts"
 import type { SetupSnapshot } from "../src/setup.ts"
 import type { StandaloneRuntime } from "../src/setup-origin.ts"
+import { resolvePreferences } from "../src/preferences.ts"
 
 const temporary = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
 export async function nativeFixture(t: TestContext) {
@@ -22,7 +23,7 @@ export async function nativeFixture(t: TestContext) {
   const parsed = parseOptions({})
   assert.ok(parsed.ok)
   const location = { directory: "/fixture/project" }
-  const snapshot: SetupSnapshot = { revision: "revision-one", source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
+  const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, fallbackFields: {}, origins: resolvePreferences({}, {}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, socketReads = 0, metadataReads = 0, unavailable = 0
   const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean } = {}
   const authority = await startLocalSetup(location, {

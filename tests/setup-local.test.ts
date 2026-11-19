@@ -8,6 +8,7 @@ import { tmpdir } from "node:os"
 import { parseOptions } from "../src/options.ts"
 import { startLocalSetup, lazyLocalSetup, readLocalSetup, saveLocalSetup, type LocalSetupTarget } from "../src/setup-local.ts"
 import type { SetupSnapshot, SaveInput } from "../src/setup.ts"
+import { resolvePreferences } from "../src/preferences.ts"
 
 const signal = () => new AbortController().signal
 const temporaryRoot = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
@@ -23,7 +24,7 @@ async function fixture(t: TestContext) {
   const parsed = parseOptions({})
   assert.ok(parsed.ok)
   let writable = true, reads = 0, saves = 0
-  const snapshot: SetupSnapshot = { scope: "global", source: file, revision: "before", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "instance-one" }
+  const snapshot: SetupSnapshot = { scope: "global", source: file, revision: "before", activeRevision: "before", overrides: {}, fallbackFields: {}, origins: resolvePreferences({}, {}).origins, writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "instance-one" }
   const api = {
     async read() { reads++; return { ...snapshot, writable } },
     async save(input: SaveInput) {
