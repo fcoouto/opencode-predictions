@@ -32,7 +32,7 @@ async function mount(options: Options = {}): Promise<Page> {
       { providerID: "local", id: "b", name: "Model B", enabled: true, variants: [] },
       { providerID: "paid", id: "long", name: "非常に長いモデル名 ".repeat(8) + "Ünïcødé", enabled: true, variants: [] },
     ]
-    const defaults = { enabled: true, automatic: true, debug: false, includeGithubPRContext: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3 }
+    const defaults = { enabled: true, automatic: true, debug: false, includeGithubPRContext: false, escalation: "manual", timeoutMs: 30000, contextTurns: 3 }
     const snapshot: any = { revision: "r1", source: "/server/predictions.json", scope: "global", writable: !opts.readOnly, fields: opts.fields ?? { automatic: false, models: [["local/family/a#low"], ["local/b"]] }, catalog, issues: [], serviceVersion: "v1" }
     Object.assign(snapshot, { overrides: { ...snapshot.fields }, activeRevision: "r1", origins: Object.fromEntries(["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"].map(key => [key, Object.hasOwn(snapshot.fields, key) ? "preferences" : "default"])) })
     const effective = () => ({ ...defaults, ...snapshot.fields, ...(snapshot.fields.models ? { models: snapshot.fields.models.map((group: string[]) => group.join(", ")) } : {}) })
@@ -140,6 +140,8 @@ test("page orders Behavior, Models, Advanced with exact labels and Advanced coll
     assert.equal(await row(page, "predictions-advanced-github").count(), 0, "GitHub PR context lives only in the collapsed Advanced section")
     assert.equal(await page.getByRole("switch", { name: "Include GitHub PR context" }).count(), 0)
     await page.getByRole("button", { name: "Show advanced settings" }).click()
+    assert.equal(await page.getByLabel("Timeout per model").inputValue(), "30000")
+    assert.match((await row(page, "predictions-advanced-timeout").textContent())!, /Default 30000/)
     assert.equal(await page.getByRole("switch", { name: "Include GitHub PR context" }).isChecked(), false, "omitted means off")
     const advanced = await page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-advanced-"] [data-title]')].map(node => node.textContent))
     assert.deepEqual(advanced, ["Timeout per model", "Recent interactions", "Context file", "Include GitHub PR context", "Debug notices"])

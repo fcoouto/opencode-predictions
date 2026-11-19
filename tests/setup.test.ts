@@ -6,7 +6,7 @@ import { createSetupEditor, type SaveInput, type SettingsInput, type SetupAPI, t
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 function editorFixture() {
-  const snapshot: SetupSnapshot = { revision: "r1", activeRevision: "r1", overrides: { automatic: false, models: "local/a" }, origins: resolvePreferences({ automatic: false, models: "local/a" }).origins, source: "/server/predictions.json", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
+  const snapshot: SetupSnapshot = { revision: "r1", activeRevision: "r1", overrides: { automatic: false, models: "local/a" }, origins: resolvePreferences({ automatic: false, models: "local/a" }).origins, source: "/server/predictions.json", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 30000, contextTurns: 3, debug: false, includeGithubPRContext: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
   let writes = 0, reads = 0
   const api: SetupAPI = {
     read: async () => { reads++; return structuredClone(snapshot) },

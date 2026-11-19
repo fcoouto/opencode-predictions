@@ -60,7 +60,7 @@ test("manual replacement and deletion invalidate stale drafts without editing Op
   assert.equal((await save(f, { revision: previous.revision, fields: { automatic: false } })).kind, "conflict")
   await unlink(f.preferencesFile)
   const deleted = await read(f)
-  assert.equal(deleted.effective?.timeoutMs, 8000)
+  assert.equal(deleted.effective?.timeoutMs, 30000)
   assert.equal(deleted.effective?.debug, false)
   assert.equal((await save(f, { revision: deleted.revision, fields: { automatic: false } })).kind, "saved")
   assert.deepEqual(await readFile(f.configFile!), original)

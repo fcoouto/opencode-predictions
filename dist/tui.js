@@ -214,6 +214,7 @@ function createTerminalAdapter(renderer, reducedMotion = () => false) {
 }
 
 // src/options.ts
+var defaultTimeoutMs = 3e4;
 function parseOptions(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] };
   const raw = input;
@@ -225,7 +226,7 @@ function parseOptions(input = {}) {
   for (const name of ["enabled", "automatic", "debug", "includeGithubPRContext"]) {
     if (raw[name] !== void 0 && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`);
   }
-  const timeoutMs = raw.timeoutMs ?? 8e3;
+  const timeoutMs = raw.timeoutMs ?? defaultTimeoutMs;
   const escalation2 = raw.escalation === void 0 ? "manual" : raw.escalation;
   if (escalation2 !== "off" && escalation2 !== "manual" && escalation2 !== "automatic") return invalid('escalation must be "off", "manual", or "automatic"');
   const contextTurns = raw.contextTurns ?? 3;
@@ -520,7 +521,7 @@ function startClient(host) {
       let timer;
       const renew = () => {
         clearTimeout(timer);
-        timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? 8e3) * 2);
+        timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? defaultTimeoutMs) * 2);
       };
       renew();
       const requestSignal = AbortSignal.any([signal, deadline.signal]);
@@ -592,7 +593,7 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
     const generation = epoch;
     const inspectedFailure = record().requestFailure;
     const abort = new AbortController();
-    const deadline = AbortSignal.timeout(cache?.timeoutMs ?? 8e3);
+    const deadline = AbortSignal.timeout(cache?.timeoutMs ?? defaultTimeoutMs);
     const signal = AbortSignal.any([abort.signal, deadline]);
     const live = () => !disposed && !abort.signal.aborted && epoch === generation && host.scope() === location;
     const request2 = { abort, done: Promise.resolve() };
@@ -1263,7 +1264,7 @@ function registerSetupTUI(ctx, openStatus) {
       const all = groups(editor);
       return all.length ? `${all.length} ${all.length === 1 ? "group" : "groups"}, ${all.flat().length} ${all.flat().length === 1 ? "entry" : "entries"}` : "No models configured";
     },
-    advanced: (editor) => `${fields(editor).timeoutMs ?? 8e3} ms \xB7 ${fields(editor).contextTurns ?? 3} recent \xB7 PR ${onOff(flag(editor, "includeGithubPRContext", false)).toLowerCase()}`
+    advanced: (editor) => `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms \xB7 ${fields(editor).contextTurns ?? 3} recent \xB7 PR ${onOff(flag(editor, "includeGithubPRContext", false)).toLowerCase()}`
   };
   async function root(editor) {
     for (; ; ) {
@@ -1345,7 +1346,7 @@ ${setupTUIText.fuller}`);
       const choice = await dialog.select({
         title: "Advanced",
         options: [
-          { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? 8e3} ms`, value: "timeout" },
+          { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms`, value: "timeout" },
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} \xB7 private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
@@ -1363,7 +1364,7 @@ ${setupTUIText.fuller}`);
         const next = await dialog.select({ title: "Recent interactions", current: String(fields(editor).contextTurns ?? 3), options: ["1", "2", "3", "4", "5"].map((value) => ({ title: value, value })) });
         if (next !== void 0) edit(editor, { contextTurns: Number(next) });
       } else {
-        let value = String(fields(editor).timeoutMs ?? 8e3);
+        let value = String(fields(editor).timeoutMs ?? defaultTimeoutMs);
         for (; ; ) {
           const answer = await dialog.prompt({ title: "Timeout per model", description: "Milliseconds, a whole number from 1 to 2147483647.", value });
           if (answer === void 0) break;

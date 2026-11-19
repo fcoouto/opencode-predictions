@@ -67,7 +67,7 @@ test("missing preferences use defaults and readable unwritable values remain act
   const f = fixture({})
   try {
     await f.runtime.refresh(signal())
-    assert.equal(f.runtime.state().service.status().timeoutMs, 8000)
+    assert.equal(f.runtime.state().service.status().timeoutMs, 30000)
     assert.equal(f.runtime.state().service.status().contextTurns, 3)
     f.set({ overrides: { debug: true }, writable: false }); await f.runtime.refresh(signal())
     assert.equal(f.runtime.state().service.status().debug, true)
