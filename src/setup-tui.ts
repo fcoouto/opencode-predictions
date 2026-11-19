@@ -2,6 +2,7 @@ import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
 import { setupText, setupTUIText, originLabels, contextFileIssue } from "./setup-copy.ts"
 import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { defaultTimeoutMs } from "./options.ts"
 
 type TUIContext = TUIPlugin.Context
 type Catalog = SetupSnapshot["catalog"][number]
@@ -62,7 +63,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   const summary = {
     behavior: (editor: SetupEditor) => `${onOff(flag(editor, "enabled", true))} · After replies ${onOff(flag(editor, "automatic", true)).toLowerCase()} · ${escalationShort[String(fields(editor).escalation ?? "manual")] ?? "manual"}`,
     models: (editor: SetupEditor) => { const all = groups(editor); return all.length ? `${all.length} ${all.length === 1 ? "group" : "groups"}, ${all.flat().length} ${all.flat().length === 1 ? "entry" : "entries"}` : "No models configured" },
-    advanced: (editor: SetupEditor) => `${fields(editor).timeoutMs ?? 8000} ms · ${fields(editor).contextTurns ?? 3} recent · PR ${onOff(flag(editor, "includeGithubPRContext", false)).toLowerCase()}`,
+    advanced: (editor: SetupEditor) => `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms · ${fields(editor).contextTurns ?? 3} recent · PR ${onOff(flag(editor, "includeGithubPRContext", false)).toLowerCase()}`,
   }
 
   async function root(editor: SetupEditor) {
@@ -143,7 +144,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       const choice = await dialog.select<string>({
         title: "Advanced",
         options: [
-          { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? 8000} ms`, value: "timeout" },
+          { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms`, value: "timeout" },
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} · private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
@@ -158,7 +159,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
         const next = await dialog.select<string>({ title: "Recent interactions", current: String(fields(editor).contextTurns ?? 3), options: ["1", "2", "3", "4", "5"].map(value => ({ title: value, value })) })
         if (next !== undefined) edit(editor, { contextTurns: Number(next) })
       } else {
-        let value = String(fields(editor).timeoutMs ?? 8000)
+        let value = String(fields(editor).timeoutMs ?? defaultTimeoutMs)
         for (;;) {
           const answer = await dialog.prompt({ title: "Timeout per model", description: "Milliseconds, a whole number from 1 to 2147483647.", value })
           if (answer === undefined) break

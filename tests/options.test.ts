@@ -55,7 +55,7 @@ test("escalation defaults to manual and rejects unsupported policies", () => {
 test("model selector preserves nested model IDs and explicit reasoning", () => {
   assert.deepEqual(parseOptions({ models: "openai/team/model#high" }), {
     ok: true,
-    value: { enabled: true, models: ["openai/team/model#high"], includeGithubPRContext: false, timeoutMs: 8000, contextTurns: 3, automatic: true, debug: false, escalation: "manual" },
+    value: { enabled: true, models: ["openai/team/model#high"], includeGithubPRContext: false, timeoutMs: 30000, contextTurns: 3, automatic: true, debug: false, escalation: "manual" },
     warnings: [],
   })
 })

@@ -11,7 +11,7 @@ import { syncBuiltinESMExports } from "node:module"
 const snapshot: SetupSnapshot = {
   revision: "r1", activeRevision: "r1", scope: "global", source: "/remote/predictions.json", writable: true,
   fields: {}, overrides: {}, origins: resolvePreferences({}).origins,
-  effective: { enabled: true, automatic: true, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false },
+  effective: { enabled: true, automatic: true, escalation: "manual", timeoutMs: 30000, contextTurns: 3, debug: false, includeGithubPRContext: false },
   serviceVersion: "one", catalog: [], issues: [],
 }
 const preview: SetupPreview = { groups: [], issues: [] }

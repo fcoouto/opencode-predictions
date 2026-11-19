@@ -108,7 +108,7 @@ test("root menu orders Behavior, Models, Advanced with current values and keeps 
   assert.ok(root.options.options.every((row: any) => row.disabled !== true || row.title.includes("Save") || row.title.includes("Discard") || row.title === "Reset to defaults"), "informational rows are never disabled: disabled rows do not render")
   assert.equal(option(root, "Behavior").description, "On · After replies off · manual")
   assert.match(option(root, "Models").description, /2 groups, 2 entries/)
-  assert.equal(option(root, "Advanced").description, "8000 ms · 3 recent · PR off")
+  assert.equal(option(root, "Advanced").description, "30000 ms · 3 recent · PR off")
   assert.equal(option(root, "Save changes").disabled, true, "nothing to save yet")
   assert.equal(option(root, "Discard changes").disabled, true)
   assert.equal(root.options.options.some((row: any) => row.title === "Read-only"), false, "a verified standalone session shows no read-only row")

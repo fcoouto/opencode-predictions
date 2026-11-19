@@ -304,7 +304,7 @@ which you configure directly on the server.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `models` | unset | Required. Selector text for one ranking group, or an ordered array of selector groups. |
-| `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. |
+| `timeoutMs` | `30000` | Maximum wait per model attempt, in milliseconds. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. The latest eligible human request is also retained when absent from that window. |
 | `contextFile` | unset | Optional absolute or `~/` path to one shared UTF-8 text/Markdown file on the OpenCode server. Maximum `8192` bytes. |
 | `includeGithubPRContext` | `false` | Opt in to sending bounded metadata from linked public and accessible private GitHub PRs to prediction models. |

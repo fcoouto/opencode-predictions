@@ -156,6 +156,7 @@ var Predictions = Rpc.define({
 });
 
 // src/options.ts
+var defaultTimeoutMs = 3e4;
 function parseOptions(input = {}) {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] };
   const raw = input;
@@ -167,7 +168,7 @@ function parseOptions(input = {}) {
   for (const name of ["enabled", "automatic", "debug", "includeGithubPRContext"]) {
     if (raw[name] !== void 0 && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`);
   }
-  const timeoutMs = raw.timeoutMs ?? 8e3;
+  const timeoutMs = raw.timeoutMs ?? defaultTimeoutMs;
   const escalation2 = raw.escalation === void 0 ? "manual" : raw.escalation;
   if (escalation2 !== "off" && escalation2 !== "manual" && escalation2 !== "automatic") return invalid('escalation must be "off", "manual", or "automatic"');
   const contextTurns = raw.contextTurns ?? 3;
@@ -587,7 +588,7 @@ function createService(api, rawOptions, directory) {
       ...groups ? { groups: groups.map((queue, index) => ({ selectors: options.models[index], candidates: queue.map(queueEntry) })), candidates: candidates.map(queueEntry) } : {},
       automatic: options?.automatic ?? true,
       debug: options?.debug ?? false,
-      timeoutMs: options?.timeoutMs ?? 8e3,
+      timeoutMs: options?.timeoutMs ?? defaultTimeoutMs,
       contextTurns: options?.contextTurns ?? 3,
       escalation: options?.escalation ?? "off",
       version,

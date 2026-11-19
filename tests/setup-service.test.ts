@@ -83,7 +83,7 @@ test("setup reads stored and effective fields separately and returns only safe m
   assert.equal(snapshot.activeRevision, snapshot.revision)
   assert.equal(snapshot.origins.models, "preferences")
   assert.deepEqual(snapshot.overrides, snapshot.fields)
-  assert.deepEqual(snapshot.effective, { enabled: true, models: ["local/family/a#low"], automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false })
+  assert.deepEqual(snapshot.effective, { enabled: true, models: ["local/family/a#low"], automatic: false, escalation: "manual", timeoutMs: 30000, contextTurns: 3, debug: false, includeGithubPRContext: false })
   assert.deepEqual(snapshot.catalog, catalog.map(({ providerID, id, name, enabled, variants }) => ({ providerID, id, name, enabled, variants: variants.map(({ id }) => ({ id })) })))
   assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE/)
   assert.deepEqual(f.counts(), { metadataCalls: 1, writes: 0 })
@@ -313,7 +313,7 @@ test("reset restores the default and clears the saved value", async () => {
   const before = await f.setup.read(signal())
   assert.equal((await f.setup.save({ revision: before.revision, fields: {}, reset: ["timeoutMs"] }, signal())).kind, "saved")
   assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, {})
-  assert.equal((await f.setup.read(signal())).effective?.timeoutMs, 8000)
+  assert.equal((await f.setup.read(signal())).effective?.timeoutMs, 30000)
   f.runtime.dispose()
 })
 

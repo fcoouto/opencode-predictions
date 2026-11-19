@@ -2,6 +2,7 @@ import { abortable, type Reply, type Status } from "./service.ts"
 import { createController, type Activity, type Communication } from "./controller.ts"
 import { log } from "./log.ts"
 import { statusNotice, reasonNotice, formatStatus, feedbackRevision, type Notice, type StatusView } from "./feedback.ts"
+import { defaultTimeoutMs } from "./options.ts"
 export type ClientState = { key: string; sessionID: string; completion: number; eligible: boolean; draft: string; automaticEligible?: boolean }
 export type ClientMemory = { mounted: boolean; suppressed: string[]; current?: string }
 export type ClientHost = {
@@ -124,7 +125,7 @@ export function startClient(host: ClientHost) {
       const deadline = new AbortController()
       let timer: ReturnType<typeof setTimeout>
       // Allow a model attempt plus bounded validation; renew only on actual model progress.
-      const renew = () => { clearTimeout(timer); timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? 8000) * 2) }
+      const renew = () => { clearTimeout(timer); timer = setTimeout(() => deadline.abort(), (cache?.timeoutMs ?? defaultTimeoutMs) * 2) }
       renew()
       const requestSignal = AbortSignal.any([signal, deadline.signal])
       predicting = flight
@@ -181,7 +182,7 @@ export function startClient(host: ClientHost) {
     const generation = epoch
     const inspectedFailure = record().requestFailure
     const abort = new AbortController()
-    const deadline = AbortSignal.timeout(cache?.timeoutMs ?? 8000)
+    const deadline = AbortSignal.timeout(cache?.timeoutMs ?? defaultTimeoutMs)
     const signal = AbortSignal.any([abort.signal, deadline])
     const live = () => !disposed && !abort.signal.aborted && epoch === generation && host.scope() === location
     const request = { abort, done: Promise.resolve() }
