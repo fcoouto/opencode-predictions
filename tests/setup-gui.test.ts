@@ -15,7 +15,7 @@ before(async () => {
 after(async () => { await browser?.close() })
 
 // Mounts the real setup page against a fake host: only host UI components, servers and the main bridge are doubles.
-type Options = { emptyDirectory?: boolean; fields?: object; readOnly?: boolean; mainFails?: boolean; mainFailures?: number; noTarget?: boolean; saveKind?: string; catalog?: object[] }
+type Options = { emptyDirectory?: boolean; fields?: object; readOnly?: boolean; mainFails?: boolean; readOnlyReads?: number; noTarget?: boolean; saveKind?: string; catalog?: object[] }
 async function mount(options: Options = {}): Promise<Page> {
   const page = await browser.newPage({ viewport: { width: 900, height: 1200 } })
   page.on("pageerror", error => console.log("PAGEERROR", (error.stack ?? "").split("\n").slice(0, 6).join(" | ")))
@@ -39,7 +39,16 @@ async function mount(options: Options = {}): Promise<Page> {
     const view = () => ({ ...snapshot, effective: effective(), ...(opts.readOnly ? { reason: "This configuration source is not verified for setup writes." } : {}) })
     const clients: any = {}
     const client = (id: string) => clients[id] ??= { rpc: () => ({
-      settings: async () => ({ ...view(), writable: false }),
+      settings: async () => { log.reads++; return { ...view(), ...(log.reads <= (opts.readOnlyReads ?? 0) ? { writable: false, reason: "Server preferences are temporarily read-only." } : {}) } },
+      saveSettings: async (input: any) => {
+        log.saves.push({ serverID: id, input: JSON.parse(JSON.stringify(input)) })
+        if (opts.saveKind === "conflict") return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
+        if (opts.saveKind === "failed") return { kind: "failed", message: "Settings were not saved. Reopen settings and try again." }
+        snapshot.fields = { ...snapshot.fields, ...input.fields }
+        if (input.removeModels) delete snapshot.fields.models
+        snapshot.revision = "r" + (log.saves.length + 1); snapshot.serviceVersion = "v" + (log.saves.length + 1)
+        return { kind: "saved_not_active", revision: snapshot.revision, message: "Saved on disk." }
+      },
       previewSettings: async ({ fields }: any) => { log.previews++; return { groups: (fields.models ?? []).map((group: string[]) => ({ selectors: group, candidates: group.filter(entry => !entry.includes("missing")).map((_, index) => ({ providerID: "local", id: "m" + index, name: "m" })) })), issues: group0Issues(fields) } },
       predict: async () => { log.predictions++; return {} },
     }) }
@@ -57,19 +66,8 @@ async function mount(options: Options = {}): Promise<Page> {
       sessions: { current: () => target() ? { id: "ses_1", location: { directory: directory() }, server: servers.get(serverID()) } : undefined },
       servers: { get: (id: string) => target() ? servers.get(id) : undefined },
       main: () => {
-        if (opts.mainFails || log.mainCalls++ < (opts.mainFailures ?? 0)) throw new Error("PRIVATE no main")
-        return {
-          read: async () => { log.reads++; return view() },
-          save: async (value: any) => {
-            log.saves.push({ serverID: value.serverID, input: JSON.parse(JSON.stringify(value.input)) })
-            if (opts.saveKind === "conflict") return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
-            if (opts.saveKind === "failed") return { kind: "failed", message: "Settings were not saved. Reopen settings and try again." }
-            snapshot.fields = { ...snapshot.fields, ...value.input.fields }
-            if (value.input.removeModels) delete snapshot.fields.models
-            snapshot.revision = "r" + (log.saves.length + 1); snapshot.serviceVersion = "v" + (log.saves.length + 1)
-            return { kind: "saved_not_active", revision: snapshot.revision, message: "Saved on disk." }
-          },
-        }
+        log.mainCalls++
+        throw new Error("PRIVATE no main")
       },
       layout: { settings: (page: string) => log.settings.push(page) },
       toast: { show() {} },
@@ -450,13 +448,15 @@ test("read-only configurations explain why, disable every control and never offe
   } finally { await page.close() }
 })
 
-test("a missing main bridge keeps inspection read-only and writes nothing, even if metadata claims a local authority", async () => {
+test("a missing main bridge does not prevent server-authorized Save", async () => {
   const page = await mount({ mainFails: true })
   try {
     await idle(page)
-    assert.match((await row(page, "predictions-readonly").textContent())!, /Read-only/)
-    assert.equal(await save(page).isDisabled(), true)
-    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0)
+    assert.equal(await row(page, "predictions-readonly").count(), 0)
+    await page.getByRole("switch", { name: "Enable Predictions" }).uncheck()
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    assert.equal(await page.evaluate(() => (window as any).log.mainCalls), 0)
     assert.doesNotMatch(await page.locator("body").textContent() ?? "", /PRIVATE/)
   } finally { await page.close() }
 })
@@ -535,8 +535,8 @@ test("a location-only change on the same server never prompts and re-pins a clea
   } finally { await page.close() }
 })
 
-test("a read-only first load recovers with Check again when the bridge was still starting", async () => {
-  const page = await mount({ mainFailures: 1 })
+test("a read-only first load recovers with Check again after a temporary server refusal", async () => {
+  const page = await mount({ readOnlyReads: 1 })
   try {
     await idle(page)
     assert.equal(await row(page, "predictions-readonly").count(), 1)
@@ -547,7 +547,7 @@ test("a read-only first load recovers with Check again when the bridge was still
 })
 
 test("a read-only first load retries once on its own", async () => {
-  const page = await mount({ mainFailures: 1 })
+  const page = await mount({ readOnlyReads: 1 })
   try {
     await idle(page)
     assert.equal(await row(page, "predictions-readonly").count(), 1)

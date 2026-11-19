@@ -4,7 +4,6 @@ import { Predictions } from "../../../src/rpc.ts"
 import { createDesktopAdapter } from "../../../src/adapters/desktop.ts"
 import { createDesktopSetupOrigin } from "../../../src/setup-origin.ts"
 import { createGUISetupAPI } from "../../../src/setup-gui-api.ts"
-import { SetupLocal } from "../../../src/setup-ipc.ts"
 import { createSetupEditor } from "../../../src/setup.ts"
 const OriginProbe = Ipc.define({
   id: "prediction-test-observer.origin",
@@ -34,15 +33,7 @@ export default Plugin.define({
     return () => provider.dispose()
   },
   setup(ctx) {
-    const setupProvider = ctx.options.setupProbe ? ctx.use(SetupLocal) : undefined
-    const setupEditor = setupProvider ? createSetupEditor(createGUISetupAPI({
-      servers: ctx.servers,
-      main: () => {
-        const live = setupProvider()
-        if (live.status !== "active") throw new Error("Setup main is unavailable.")
-        return live.value
-      },
-    } as unknown as Parameters<typeof createGUISetupAPI>[0], { serverID: "sidecar", location: { directory: String(ctx.options.directory) } }), () => {}) : undefined
+    const setupEditor = ctx.options.setupProbe ? createSetupEditor(createGUISetupAPI(ctx, { serverID: "sidecar", location: { directory: String(ctx.options.directory) } }), () => {}) : undefined
     if (ctx.options.originProbe) {
       const targets = ctx.options.originTargets
       if (!Array.isArray(targets)) throw new Error("Origin fixture targets are missing")
@@ -61,7 +52,7 @@ export default Plugin.define({
     const onKey = (event: KeyboardEvent) => { if (event.code === "KeyP") lastKey = { key: event.key, code: event.code, eligible: adapter.eligible(), matches: ctx.keybinds.matches("opencode-predictions.request-shortcut", event) } }
     document.addEventListener("keydown", onKey, true)
     const fixture = {
-      setupReady: () => setupProvider?.().status === "active",
+      setupReady: () => !!setupEditor && ctx.servers.get("sidecar")?.connected === true,
       setupServerVersion: async () => (await ctx.servers.get("sidecar")!.client.server.info()).version,
       setupRead: async () => { await setupEditor!.load(); return setupEditor!.state().snapshot },
       setupSave: async () => { setupEditor!.change({ debug: true }); return setupEditor!.save() },

@@ -7,12 +7,12 @@ import { join } from "node:path"
 import { OpenCode } from "@opencode/client"
 import { parseOptions } from "../src/options.ts"
 import { startLocalSetup } from "../src/setup-local.ts"
-import type { SetupSnapshot } from "../src/setup.ts"
+import type { SaveInput, SetupSnapshot } from "../src/setup.ts"
 import type { StandaloneRuntime } from "../src/setup-origin.ts"
 import { resolvePreferences } from "../src/preferences.ts"
 
 const temporary = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
-export async function nativeFixture(t: TestContext) {
+export async function nativeFixture(t: TestContext, rpc = false) {
   await mkdir(temporary, { recursive: true })
   const root = await mkdtemp(join(temporary, "a-"))
   const previous = process.env.TMPDIR
@@ -25,29 +25,35 @@ export async function nativeFixture(t: TestContext) {
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, fallbackFields: {}, origins: resolvePreferences({}, {}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, socketReads = 0, metadataReads = 0, unavailable = 0
-  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean } = {}
-  const authority = await startLocalSetup(location, {
-    async read() { socketReads++; return structuredClone(snapshot) },
-    async save(input) {
+  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean } = {}
+  const save = async (input: SaveInput) => {
       saves++
-      if (input.revision !== snapshot.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
+      if (input.revision !== snapshot.revision) return { kind: "conflict" as const, message: "Configuration changed. Reload settings before trying again." }
       await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.()
       snapshot.fields = { ...snapshot.fields, ...input.fields }; if (input.removeModels) delete snapshot.fields.models
       snapshot.revision = "revision-two"
-      return { kind: "saved_not_active", revision: "revision-two", message: "Saved on disk." }
-    },
+      return { kind: "saved_not_active" as const, revision: "revision-two", message: "Saved on disk." }
+  }
+  const authority = await startLocalSetup(location, {
+    async read() { socketReads++; return structuredClone(snapshot) },
+    save,
   })
   assert.ok(authority)
   t.after(() => authority.dispose())
   const server = createServer(async (request, response) => {
-    for await (const _ of request) { /* Drain the bounded synthetic SDK request. */ }
+    let raw = ""
+    for await (const chunk of request) raw += chunk
     response.setHeader("content-type", "application/json")
     if (request.url?.startsWith("/api/info")) response.end(JSON.stringify({ pid: process.pid, version: "2.2.6" }))
     else if (request.url?.includes("/settings")) {
       metadataReads++
       if (hooks.settingsFails) { response.statusCode = 404; response.end(JSON.stringify({ type: "rpc.method_not_found", message: "PRIVATE missing method" })); return }
       if (unavailable-- > 0) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "RPC is starting." })); return }
-      response.end(JSON.stringify({ output: { ...snapshot, writable: false, localAuthority: { id: authority.id } } }))
+      response.end(JSON.stringify({ output: rpc ? snapshot : { ...snapshot, writable: false, localAuthority: { id: authority.id } } }))
+    }
+    else if (rpc && request.url?.includes("/saveSettings")) {
+      if (hooks.saveFails) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "PRIVATE Save failure" })); return }
+      response.end(JSON.stringify({ output: await save(JSON.parse(raw).input) }))
     }
     else if (hooks.previewFails) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "PRIVATE preview" })) }
     else response.end(JSON.stringify({ output: { groups: [], issues: [] } }))

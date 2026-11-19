@@ -1,6 +1,5 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
-import type { StandaloneRuntime } from "./setup-origin.ts"
 import { setupText, setupTUIText } from "./setup-copy.ts"
 import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 
@@ -9,8 +8,7 @@ type Catalog = SetupSnapshot["catalog"][number]
 const title = "Predictions Setup"
 const escalationNames: Record<string, string> = { off: "Off", manual: "Manually", automatic: "Automatically once after no suggestion" }
 
-// `runtime` is a test seam for the standalone-origin guard; production passes nothing and the guard inspects the real process.
-export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void>, runtime?: StandaloneRuntime): () => void {
+export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void>): () => void {
   const dialog = ctx.ui.dialog
   let running = false, disposed = false
 
@@ -28,7 +26,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     try {
       const target = location()
       if (!target) { await alert("Open a project, or connect to an OpenCode server, before changing prediction settings."); return }
-      editor = createSetupEditor(createTUISetupAPI(ctx, target, runtime), () => {})
+      editor = createSetupEditor(createTUISetupAPI(ctx, target), () => {})
       await editor.load()
       if (editor.state().error || !editor.state().snapshot) { await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on this server."); return }
       await root(editor)
@@ -42,8 +40,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   const readOnly = (editor: SetupEditor) => !editor.state().snapshot?.writable
   const readOnlyReason = (editor: SetupEditor) => {
     const snapshot = editor.state().snapshot
-    // A server that advertises a local authority is otherwise qualified; the missing piece is this CLI session's provenance.
-    return snapshot?.localAuthority ? setupTUIText.standalone : (snapshot?.reason ?? "This configuration cannot be edited here.")
+    return snapshot?.reason ?? "This configuration cannot be edited here."
   }
   // Returns false (after explaining) when the target cannot be edited, so no draft diverges from what Save may do.
   async function editable(editor: SetupEditor) {

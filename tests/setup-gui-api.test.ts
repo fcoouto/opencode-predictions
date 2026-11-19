@@ -5,18 +5,18 @@ import { createSetupEditor } from "../src/setup.ts"
 import { nativeFixture } from "./setup-native-fixture.ts"
 const signal = () => new AbortController().signal
 
-test("GUI setup missing main IPC keeps inspection read-only without local file fallback", async t => {
-  const f = await nativeFixture(t)
+test("GUI setup saves with no main IPC and no local file fallback", async t => {
+  const f = await nativeFixture(t, true)
   const ctx = { servers: { get: () => ({ client: f.client }) }, main() { throw new Error("PRIVATE unavailable IPC") } }
   const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
   const before = f.counts().socketReads
-  assert.equal((await api.read(signal())).writable, false)
-  assert.equal((await api.save({ revision: "revision-one", fields: { debug: true } }, signal())).kind, "read_only")
+  assert.equal((await api.read(signal())).writable, true)
+  assert.equal((await api.save({ revision: "revision-one", fields: { debug: true } }, signal())).kind, "saved_not_active")
   assert.equal(f.counts().socketReads, before)
-  assert.equal(f.counts().saves, 0)
+  assert.equal(f.counts().saves, 1)
 })
 test("GUI setup rejects selected-client replacement instead of retargeting Save", async t => {
-  const f = await nativeFixture(t)
+  const f = await nativeFixture(t, true)
   let client = f.client, saves = 0
   const ctx = {
     servers: { get: () => ({ client }) },
@@ -35,10 +35,10 @@ test("closing a setup editor disposes its native target", async t => {
   editor.dispose()
   assert.equal(disposed, 1)
 })
-test("GUI setup bounds a main provider that never starts", { timeout: 4000 }, async t => {
-  const f = await nativeFixture(t)
+test("GUI setup ignores a main provider that never starts", { timeout: 4000 }, async t => {
+  const f = await nativeFixture(t, true)
   const ctx = { servers: { get: () => ({ client: f.client }) }, main: () => ({ read: () => new Promise(() => {}) }) }
   const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
   const result = await Promise.race([api.read(signal()), new Promise<undefined>(resolve => setTimeout(resolve, 2300))])
-  assert.equal(result?.writable, false, "unavailable main must fall back to read-only inspection")
+  assert.equal(result?.writable, true, "RPC must not wait for main IPC")
 })

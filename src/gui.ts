@@ -9,7 +9,6 @@ import { pluginVersion, feedbackRevision, configurationNotice, type Notice } fro
 import { registerSetupGUI } from "./setup-gui.ts"
 
 export default Plugin.define({
-  main: async ctx => (await import("./setup-main.ts")).registerSetupMain(ctx),
   setup(ctx) {
     const adapter = createDesktopAdapter(document, () => ctx.screen.current()?.composer)
     const session = () => ctx.sessions.current()

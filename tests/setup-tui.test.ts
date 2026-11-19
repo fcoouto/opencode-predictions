@@ -25,7 +25,7 @@ const yes = (value: boolean): Step => () => value
 const ok: Step = () => undefined
 
 async function harness(t: TestContext, options: { argv?: string[]; fields?: object; noSession?: boolean; settingsFails?: boolean; previewFails?: boolean } = {}) {
-  const f = await nativeFixture(t)
+  const f = await nativeFixture(t, true)
   f.snapshot.catalog = catalog as any
   if (options.fields) f.snapshot.fields = options.fields as any
   f.snapshot.effective = { ...f.snapshot.effective, ...f.snapshot.fields } as any
@@ -52,7 +52,7 @@ async function harness(t: TestContext, options: { argv?: string[]; fields?: obje
     data: { session: { get: () => ({ location: { directory: f.location.directory } }) }, location: { default: () => ({ directory: f.location.directory }) } },
     keymap: { layer: (factory: () => any) => { command = factory().commands[0] } },
   }
-  const stop = registerSetupTUI(ctx, async () => { statusOpened++ }, f.runtime)
+  const stop = registerSetupTUI(ctx, async () => { statusOpened++ })
   t.after(stop)
   const run = async (...steps: Step[]) => {
     script.push(...steps)
@@ -211,21 +211,16 @@ test("leaving with unsaved edits asks first; Keep editing preserves the draft an
   assert.equal(saves(h), 0)
 })
 
-test("explicit-server, shared and conflicting launches keep inspection but cannot save, and explain the standalone requirement", async t => {
-  const standalone = "Local setup writes currently require a verified opencode --standalone session."
+test("explicit-server and shared launches can edit and save through their server", async t => {
   for (const argv of [["/native/opencode", "/native/opencode", "--server", "http://remote"], ["/native/opencode", "/native/opencode"], ["/native/opencode", "/native/opencode", "--standalone", "--server", "http://remote"]]) {
     const h = await harness(t, { argv })
-    const before = await readFile(h.f.file, "utf8")
     await h.run(
-      call => { assert.equal(option(call, "Read-only").title.length + option(call, "Read-only").description.length <= 44, true); assert.equal(option(call, "Read-only").disabled, undefined, "enabled so it renders"); assert.equal(option(call, "Save changes").disabled, true); return "readonly" },
-      call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, new RegExp(standalone.replaceAll(".", "\\.").replaceAll("--", "\\-\\-"))); return undefined },
       pick("Behavior"),
       pick("Enable Predictions"),
-      call => { assert.match(call.options.message, new RegExp("Read-only\\. " + standalone.replaceAll(".", "\\.").replaceAll("--", "\\-\\-"))); return undefined },
-      cancel, cancel,
+      cancel, pick("Save changes"), ok, cancel,
     )
-    assert.equal(saves(h), 0)
-    assert.equal(await readFile(h.f.file, "utf8"), before, "no client configuration write")
+    assert.equal(saves(h), 1)
+    assert.equal(await readFile(h.f.file, "utf8"), '{"enabled":false}')
     assert.equal(h.calls.some(call => call.kind === "confirm"), false, "nothing was drafted, so leaving needs no confirmation")
   }
 })
@@ -247,7 +242,7 @@ test("a connection lost during Save reports a safe message, keeps the draft and 
   const h = await harness(t)
   await h.run(
     pick("Behavior"), pick("Enable Predictions"), cancel,
-    async () => { await h.f.authority.dispose(); return "save" },
+    () => { h.f.hooks.saveFails = true; return "save" },
     call => { assert.match(call.options.message, /Changes may have been saved/); assert.doesNotMatch(call.options.message, /PRIVATE|\/var\/|\.sock/); return undefined },
     cancel, yes(true),
   )

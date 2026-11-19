@@ -79,7 +79,6 @@ export const Predictions = Rpc.define({
           overrides: settingsFields, fallbackFields: settingsFields,
           origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map(key => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
           activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
-          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel }, issues: { type: "array", items: setupIssue }, serviceVersion: { type: "string" },
         },
