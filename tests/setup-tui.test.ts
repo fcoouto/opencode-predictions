@@ -25,12 +25,11 @@ const yes = (value: boolean): Step => () => value
 const ok: Step = () => undefined
 
 async function harness(t: TestContext, options: { argv?: string[]; fields?: object; noSession?: boolean; settingsFails?: boolean; previewFails?: boolean } = {}) {
-  const f = await nativeFixture(t, true)
+  const f = await nativeFixture(t)
   f.snapshot.catalog = catalog as any
   if (options.fields) f.snapshot.fields = options.fields as any
   f.snapshot.overrides = { ...f.snapshot.fields }
   f.snapshot.effective = { ...f.snapshot.effective, ...f.snapshot.fields } as any
-  if (options.argv) f.runtime.argv = options.argv
   f.hooks.settingsFails = options.settingsFails
   f.hooks.previewFails = options.previewFails
   const script: Step[] = []

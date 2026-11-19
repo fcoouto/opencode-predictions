@@ -145,6 +145,21 @@ test("lost reply cannot claim Saved for matching effective values with different
   editor.dispose()
 })
 
+test("administrative masking cannot prove a reset persisted after a lost acknowledgement", async () => {
+  const f = preferenceEditorFixture({ legacy: { debug: false }, overrides: { debug: false } })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.resetPreferences()
+  f.api.save = async () => {
+    Object.assign(f.snapshot, { revision: "managed", activeRevision: "managed", writable: false, overrides: {}, fields: { debug: false }, reason: "Administrative configuration prevents user prediction preferences." })
+    throw new Error("Disconnected before acknowledgement")
+  }
+  assert.equal((await editor.save()).kind, "failed")
+  assert.equal(editor.state().dirty, true)
+  assert.deepEqual(editor.state().reset, ["debug"])
+  editor.dispose()
+})
+
 test("invalid drafts cannot write and stale preview responses cannot replace later edits", async () => {
   const f = editorFixture()
   const editor = createSetupEditor(f.api, () => {})

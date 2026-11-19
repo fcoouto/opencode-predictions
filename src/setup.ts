@@ -10,7 +10,7 @@ export type SettingsInput = Partial<Record<SettingKey, unknown>>
 export type ConfigSnapshot = { revision: string; source?: string; scope: "global"; writable: boolean; reason?: string; fields: SettingsInput }
 export type SetupLocation = { directory: string; workspaceID?: string }
 export type SetupIssue = { field: SettingKey; group?: number; entry?: number; severity: "error" | "warning"; code: string; message: string }
-export type SetupSnapshot = ConfigSnapshot & { overrides: SettingsInput; fallbackFields: SettingsInput; origins: Record<SettingKey, SettingOrigin>; activeRevision: string | null; effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string; localAuthority?: { id: string } }
+export type SetupSnapshot = ConfigSnapshot & { overrides: SettingsInput; fallbackFields: SettingsInput; origins: Record<SettingKey, SettingOrigin>; activeRevision: string | null; effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string }
 export type SetupPreview = { groups: { selectors: string[]; candidates: Candidate[] }[]; issues: SetupIssue[] }
 export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true; reset?: SettingKey[] }
 export type SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }
@@ -167,7 +167,8 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
             lifetime.signal.throwIfAborted()
             const fieldsMatch = settingKeys.every(key => JSON.stringify(fresh.fields[key]) === JSON.stringify(expected[key]))
             const overridesMatch = settingKeys.every(key => Object.hasOwn(fresh.overrides, key) === Object.hasOwn(overrides, key) && JSON.stringify(fresh.overrides[key]) === JSON.stringify(overrides[key]))
-            if (fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch && overridesMatch) {
+            // Administrative read-only snapshots can mask preferences, so they cannot prove a lost reset committed.
+            if (fresh.writable && fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch && overridesMatch) {
               const parsed = parseOptions(expected)
               const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every(key => JSON.stringify(fresh.effective![key]) === JSON.stringify(parsed.value[key]))
               result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion }

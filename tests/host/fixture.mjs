@@ -9,7 +9,7 @@ import { Service } from "@opencode/client/service"
 
 export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
 
-export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false } = {}) {
+export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "" } = {}) {
   if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
@@ -62,7 +62,8 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   if (emptyPassword) env.OPENCODE_SERVER_PASSWORD = ""
   if (pluginReference === "string") config.plugins = [packagePath]
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
-  const configDirectory = join(root, "config", "opencode")
+  if (configHome) env.XDG_CONFIG_HOME = configHome
+  const configDirectory = join(env.XDG_CONFIG_HOME, "opencode")
   const preferencesFile = join(configDirectory, "predictions.json")
   await mkdir(configDirectory, { recursive: true })
   const configFile = configSource === "inline" ? undefined : join(configDirectory, configSource === "global-jsonc" ? "opencode.jsonc" : "opencode.json")

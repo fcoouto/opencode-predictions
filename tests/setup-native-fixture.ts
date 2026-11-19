@@ -6,46 +6,33 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { OpenCode } from "@opencode/client"
 import { parseOptions } from "../src/options.ts"
-import { startLocalSetup } from "../src/setup-local.ts"
 import type { SaveInput, SetupSnapshot } from "../src/setup.ts"
-import type { StandaloneRuntime } from "../src/setup-origin.ts"
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 const temporary = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
-export async function nativeFixture(t: TestContext, rpc = false) {
+export async function nativeFixture(t: TestContext) {
   await mkdir(temporary, { recursive: true })
   const root = await mkdtemp(join(temporary, "a-"))
-  const previous = process.env.TMPDIR
-  process.env.TMPDIR = root
-  t.after(() => { if (previous === undefined) delete process.env.TMPDIR; else process.env.TMPDIR = previous })
   const file = join(root, "config.json")
   await writeFile(file, "{}")
   const parsed = parseOptions({})
   assert.ok(parsed.ok)
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, fallbackFields: {}, origins: resolvePreferences({}, {}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
-  let saves = 0, socketReads = 0, metadataReads = 0, unavailable = 0
+  let saves = 0, metadataReads = 0, unavailable = 0
   const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean } = {}
   const save = async (input: SaveInput) => {
       saves++
       if (input.revision !== snapshot.revision) return { kind: "conflict" as const, message: "Configuration changed. Reload settings before trying again." }
       await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.()
       snapshot.fields = { ...snapshot.fields, ...input.fields }; if (input.removeModels) delete snapshot.fields.models
-      if (rpc) {
-        const { revision: _, ...change } = input
-        snapshot.overrides = applyPreferenceChange(snapshot.overrides, change)
-        const resolved = resolvePreferences(snapshot.fallbackFields, snapshot.overrides)
-        snapshot.fields = resolved.fields; snapshot.origins = resolved.origins
-      }
+      const { revision: _, ...change } = input
+      snapshot.overrides = applyPreferenceChange(snapshot.overrides, change)
+      const resolved = resolvePreferences(snapshot.fallbackFields, snapshot.overrides)
+      snapshot.fields = resolved.fields; snapshot.origins = resolved.origins
       snapshot.revision = "revision-two"
       return { kind: "saved_not_active" as const, revision: "revision-two", message: "Saved on disk." }
   }
-  const authority = await startLocalSetup(location, {
-    async read() { socketReads++; return structuredClone(snapshot) },
-    save,
-  })
-  assert.ok(authority)
-  t.after(() => authority.dispose())
   const server = createServer(async (request, response) => {
     let raw = ""
     for await (const chunk of request) raw += chunk
@@ -55,9 +42,9 @@ export async function nativeFixture(t: TestContext, rpc = false) {
       metadataReads++
       if (hooks.settingsFails) { response.statusCode = 404; response.end(JSON.stringify({ type: "rpc.method_not_found", message: "PRIVATE missing method" })); return }
       if (unavailable-- > 0) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "RPC is starting." })); return }
-      response.end(JSON.stringify({ output: rpc ? snapshot : { ...snapshot, writable: false, localAuthority: { id: authority.id } } }))
+      response.end(JSON.stringify({ output: snapshot }))
     }
-    else if (rpc && request.url?.includes("/saveSettings")) {
+    else if (request.url?.includes("/saveSettings")) {
       if (hooks.saveFails) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "PRIVATE Save failure" })); return }
       response.end(JSON.stringify({ output: await save(JSON.parse(raw).input) }))
     }
@@ -68,16 +55,5 @@ export async function nativeFixture(t: TestContext, rpc = false) {
   t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
   const client = OpenCode.make({ baseUrl: url })
-  const endpoint = { id: "sidecar", url, headers: {}, sameMachine: true }
-  const lifetime = new AbortController()
-  const host = {
-    app: { name: "opencode", version: "2.3.0", platform: "desktop" as const, packaged: true, channel: "prod" as const },
-    signal: lifetime.signal,
-    serverEndpoints: { get: (_id: string) => endpoint },
-  }
-  const runtime: StandaloneRuntime = {
-    platform: "darwin", uid: 501, pid: process.pid - 1, executable: "/native/opencode", argv: ["/native/opencode", "/native/opencode", "--standalone"], env: {},
-    inspect: async () => ({ parent: process.pid - 1, uid: 501, command: "/native/opencode serve --stdio --port 0", started: "Sun Nov 15 12:00:00 2026" }),
-  }
-  return { hooks, root, file, snapshot, location, endpoint, host, client, runtime, authority, lifetime, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, socketReads, metadataReads }) }
+  return { hooks, root, file, snapshot, location, client, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, metadataReads }) }
 }
