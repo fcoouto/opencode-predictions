@@ -8,7 +8,7 @@ import type { PreferenceRead, PreferencesStore } from "./preferences-store.ts"
 type Engine = ReturnType<typeof createService>
 export type PreferenceRuntimeState = { stored: PreferenceRead; resolved: ResolvedPreferences; revision: string; activeRevision: string | null; service: Engine }
 
-export function createPreferencesRuntime(store: PreferencesStore, legacy: unknown, make: (rawOptions: unknown) => Engine) {
+export function createPreferencesRuntime(store: PreferencesStore, make: (rawOptions: unknown) => Engine) {
   const lifetime = new AbortController()
   let current: PreferenceRuntimeState | undefined, effective: unknown, generation = 0, adopted = 0
   const state = () => {
@@ -21,11 +21,11 @@ export function createPreferencesRuntime(store: PreferencesStore, legacy: unknow
     const stored = await abortable(() => store.read(signal), signal)
     signal.throwIfAborted()
     if (ticket < adopted) return
-    const resolved = resolvePreferences(legacy, stored.policy === "managed" ? {} : stored.overrides)
+    const resolved = stored.policy === "managed" ? resolvePreferences({}) : resolvePreferences(stored.overrides, stored.contextFile)
     const parsed = parseOptions(resolved.rawOptions)
     const valid = stored.documentValid && !resolved.issues.length && parsed.ok
     const next = valid && parsed.ok ? parsed.value : null
-    const revision = createHash("sha256").update(JSON.stringify([stored.revision, legacy, stored.policy])).digest("hex")
+    const revision = "v2:" + createHash("sha256").update(JSON.stringify([stored.revision, stored.policy])).digest("hex")
     let service = current?.service
     if (!service || !isDeepStrictEqual(effective, next)) {
       service?.dispose()

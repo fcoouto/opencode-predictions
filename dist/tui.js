@@ -303,7 +303,7 @@ var configurationNotice = (notice2) => ["models_required", "invalid_options"].in
 function reasonNotice(reason) {
   if (!reason || ["cancelled", "stale", "escalation_refreshed"].includes(reason)) return;
   const info = {
-    disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
+    disabled: ["Predictions are turned off", "Enable predictions in Predictions Setup."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
     context_unavailable: ["Prediction unavailable for this response.", "Continue typing your next prompt."],
@@ -311,9 +311,9 @@ function reasonNotice(reason) {
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
   };
   if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] };
-  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model, or set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true };
+  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model.", persistent: true };
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true };
-  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in the global plugin options and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." };
+  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in predictions.json and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." };
   if (reason === "context_file_too_large") return { code: reason, severity: "error", title: "Prediction context file is too large", message: "Reduce the contextFile contents to at most 8192 UTF-8 bytes, then request a prediction again. No model was called." };
   if (reason === "context_file_invalid") return { code: reason, severity: "error", title: "Prediction context file is not valid text", message: "Save contextFile as UTF-8 text without binary control characters, then request a prediction again. No model was called." };
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." };
@@ -331,9 +331,9 @@ function statusNotice(status) {
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
     const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
-    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct this plugin's options in your OpenCode configuration.`, persistent: true };
+    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct predictions.json on the server.`, persistent: true };
   }
-  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
+  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Check predictions.json on the server.` };
 }
 function formatStatus(status, details) {
   const notice2 = status?.reason === "disabled" ? reasonNotice("disabled") : details.currentNotice ?? (status && (statusNotice(status) ?? (!status.enabled ? reasonNotice("disabled") : void 0)));
@@ -750,7 +750,7 @@ var settingsFields = {
 var setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext", "contextFile"] },
     group: { type: "integer", minimum: 0 },
     entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] },
@@ -810,7 +810,8 @@ var Predictions = Rpc.define({
       input: { type: "object", additionalProperties: false },
       output: { type: "object" }
     },
-    settings: {
+    // Old Setup clients interpret reset as inheritance. Do not serve them a writable snapshot.
+    settingsV2: {
       input: { type: "object", additionalProperties: false },
       output: {
         type: "object",
@@ -822,15 +823,14 @@ var Predictions = Rpc.define({
           reason: { type: "string" },
           fields: settingsFields,
           overrides: settingsFields,
-          fallbackFields: settingsFields,
-          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
           activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
           serviceVersion: { type: "string" }
         },
-        required: ["revision", "scope", "writable", "fields", "overrides", "fallbackFields", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
+        required: ["revision", "scope", "writable", "fields", "overrides", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
         additionalProperties: false
       }
     },
@@ -896,20 +896,12 @@ function applyPreferenceChange(overrides, input) {
   if (validatePreferenceFields(next).length) throw invalid();
   return next;
 }
-function resolvePreferences(legacy, overrides) {
-  const valid = legacy === void 0 || !!legacy && typeof legacy === "object" && !Array.isArray(legacy);
-  const base = valid && legacy ? legacy : {};
-  const fallbackFields = preferenceFields(base);
-  for (const key of ["timeoutMs", "contextTurns"]) if (fallbackFields[key] === null) delete fallbackFields[key];
-  const known = preferenceFields(overrides);
-  const fields = { ...fallbackFields, ...known };
-  const rawOptions = valid ? { ...base, ...known } : legacy;
-  if (known.models === null) {
-    delete fields.models;
-    if (rawOptions && typeof rawOptions === "object") delete rawOptions.models;
-  }
-  const origins = Object.fromEntries(settingKeys.map((key) => [key, Object.hasOwn(known, key) ? "preferences" : Object.hasOwn(fallbackFields, key) ? "configuration" : "default"]));
-  return { rawOptions, fields, fallbackFields, origins, issues: validatePreferenceFields(known) };
+function resolvePreferences(overrides, contextFile) {
+  const fields = preferenceFields(overrides);
+  if (fields.models === null) delete fields.models;
+  const rawOptions = { ...fields, ...contextFile === void 0 ? {} : { contextFile } };
+  const origins = Object.fromEntries(settingKeys.map((key) => [key, Object.hasOwn(overrides, key) ? "preferences" : "default"]));
+  return { rawOptions, fields, origins, issues: validateSettings(fields, contextFile) };
 }
 
 // src/setup.ts
@@ -926,17 +918,19 @@ async function waitForSetupSnapshot(read, signal) {
     }
   }
 }
-function validateSettings(fields) {
+function validateSettings(fields, contextFile) {
   if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.");
   if (Object.keys(fields).some((key) => !settingKeys.includes(key))) throw new Error("Unknown setting.");
   for (const field of ["timeoutMs", "contextTurns"]) {
     if (fields[field] === null) return [{ field, severity: "error", code: "invalid_value", message: "Enter a whole number." }];
   }
-  const parsed = parseOptions(fields);
-  return parsed.ok ? [] : [{ field: settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }];
+  const parsed = parseOptions({ ...fields, contextFile });
+  if (parsed.ok) return [];
+  const contextIssue = parsed.reason.startsWith("contextFile");
+  return [{ field: contextIssue ? "contextFile" : settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason + (contextIssue ? ". Correct it in predictions.json on the server." : "") }];
 }
 function createSetupEditor(api, changed) {
-  const state = { fields: {}, reset: [], origins: resolvePreferences({}, {}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false };
+  const state = { fields: {}, reset: [], origins: resolvePreferences({}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false };
   const lifetime = new AbortController();
   let generation = 0, previewAbort;
   const notify = () => {
@@ -961,7 +955,7 @@ function createSetupEditor(api, changed) {
     const snapshot = state.snapshot;
     const edits = snapshot ? changedFields(snapshot.fields, state.fields) : {};
     state.dirty = !!snapshot && (state.reset.length > 0 || Object.keys(edits).length > 0);
-    if (snapshot) state.origins = Object.fromEntries(settingKeys.map((key) => [key, state.reset.includes(key) ? Object.hasOwn(snapshot.fallbackFields, key) ? "configuration" : "default" : Object.hasOwn(edits, key) ? "preferences" : snapshot.origins[key]]));
+    if (snapshot) state.origins = Object.fromEntries(settingKeys.map((key) => [key, state.reset.includes(key) ? "default" : Object.hasOwn(edits, key) ? "preferences" : snapshot.origins[key]]));
     groups();
     notify();
   };
@@ -1028,7 +1022,7 @@ function createSetupEditor(api, changed) {
     resetPreferences() {
       if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot?.writable) return;
       resetPreview();
-      state.fields = structuredClone(state.snapshot.fallbackFields);
+      state.fields = {};
       state.reset = settingKeys.filter((key) => Object.hasOwn(state.snapshot.overrides, key));
       state.lastSave = void 0;
       update();
@@ -1162,7 +1156,7 @@ function createTUISetupAPI(ctx, location) {
   };
   return {
     async read(signal) {
-      const snapshot = await waitForSetupSnapshot(async (signal2) => await selected().settings({}, { location: pinned, signal: signal2 }), signal);
+      const snapshot = await waitForSetupSnapshot(async (signal2) => await selected().settingsV2({}, { location: pinned, signal: signal2 }), signal);
       selected();
       return snapshot;
     },
@@ -1180,7 +1174,8 @@ function createTUISetupAPI(ctx, location) {
 var setupText = {
   warning: "Avoid saving prediction preferences from multiple places at once. Simultaneous saves can overwrite each other's changes, including different settings. The recovery copy may not contain those changes.",
   scope: "Settings apply to user prediction preferences on the selected server. They affect all projects using this configuration directory.",
-  precedence: "Saved preferences override OpenCode configuration. Use OpenCode configuration removes these overrides after you save.",
+  defaults: "Reset to defaults removes saved settings shown here after you save.",
+  contextFile: "Set contextFile in predictions.json on the OpenCode server. Its contents go to prediction providers.",
   github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
   order: "Groups run top to bottom. A later group is tried when every model above it fails. With Escalation set to Automatically, another model is also tried once after no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
   cost: "Match counts check model names only and send no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
@@ -1189,9 +1184,10 @@ var setupText = {
 };
 var setupTUIText = {
   scope: setupText.scope,
-  fuller: setupText.precedence + "\n\n" + setupText.warning
+  fuller: setupText.defaults + "\n\n" + setupText.warning
 };
-var originLabels = { preferences: "Saved preference", configuration: "OpenCode configuration", default: "Default" };
+var originLabels = { preferences: "Saved preference", default: "Default" };
+var contextFileIssue = (state) => state?.issues.find((issue) => issue.field === "contextFile")?.message ?? state?.snapshot?.issues.find((issue) => issue.field === "contextFile")?.message;
 
 // src/setup-tui.ts
 var title = "Predictions Setup";
@@ -1219,7 +1215,7 @@ function registerSetupTUI(ctx, openStatus) {
       });
       await editor.load();
       if (editor.state().error || !editor.state().snapshot) {
-        await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on this server.");
+        await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on both this client and the server.");
         return;
       }
       await root(editor);
@@ -1283,7 +1279,7 @@ function registerSetupTUI(ctx, openStatus) {
           { title: "Advanced", description: summary.advanced(editor), value: "advanced", category: "Settings" },
           { title: "Save changes", description: invalid ? "Fix invalid settings first." : "Can overwrite other edits.", value: "save", disabled: !state.dirty || readOnly(editor) || invalid || state.saving, category: "Changes" },
           { title: "Discard changes", description: "Restore saved values.", value: "discard", disabled: !state.dirty, category: "Changes" },
-          { title: "Use OpenCode configuration", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
+          { title: "Reset to defaults", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
           { title: "Preference sources", description: "Path and origins.", value: "sources", category: "More" },
           { title: "Prediction status and preview", description: "Diagnostics.", value: "status", category: "More" },
           { title: "About saving", description: "Scope and limits.", value: "about", category: "More" }
@@ -1299,14 +1295,14 @@ function registerSetupTUI(ctx, openStatus) {
       else if (choice === "save") await save(editor);
       else if (choice === "discard") editor.discard();
       else if (choice === "reset") {
-        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with OpenCode configuration? Save to remove the saved preferences.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue;
+        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with defaults? Save to apply the reset.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue;
         editor.resetPreferences();
       } else if (choice === "sources") await alert(`User preferences
 ${state.snapshot?.source ?? "Server preferences"}
 
 ${settingKeys.map((key) => `${key}: ${originLabels[state.origins[key]]}`).join("\n")}
 
-${setupText.precedence}`);
+${setupText.defaults}`);
       else if (choice === "status") await openStatus();
       else if (choice === "readonly") await alert(`Read-only. ${readOnlyReason(editor)} Current values are shown; edit the configuration file manually to change them.`);
       else if (choice === "about") await alert(`${setupTUIText.scope}
@@ -1316,7 +1312,7 @@ ${setupTUIText.fuller}`);
   }
   async function save(editor) {
     const result = await editor.save();
-    const message = result.kind === "saved" ? "Saved. The new settings are active." : result.kind === "saved_not_active" ? "Saved on disk, but activation is not verified. Reopen settings to check the active values." : result.kind === "invalid" ? "Fix the invalid settings before saving." : result.message;
+    const message = result.kind === "saved" ? "Saved. The new settings are active." : result.kind === "saved_not_active" ? "Saved on disk, but activation is not verified. Reopen settings to check the active values." : result.kind === "invalid" ? result.issues.find((issue) => issue.field === "contextFile")?.message ?? "Fix the invalid settings before saving." : result.message;
     await alert(message);
   }
   async function behavior(editor) {
@@ -1353,12 +1349,12 @@ ${setupTUIText.fuller}`);
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} \xB7 private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
-          { title: "About Advanced", description: "GitHub data sent.", value: "about" }
+          { title: "About Advanced", description: "PR and context file data.", value: "about" }
         ]
       });
       if (choice === void 0) return;
       if (choice === "about") {
-        await alert(setupText.github);
+        await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n"));
         continue;
       }
       if (!await editable(editor)) continue;

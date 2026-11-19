@@ -10,7 +10,7 @@ import type { SetupSnapshot } from "../../src/setup.ts"
 
 test("OpenCode installs prebuilt Git packages without invoking dependency preparation", { timeout: 180000 }, async () => {
   const packagePath = process.env.PREDICTIONS_PACKAGE ?? resolve(".")
-  await using fixture = await createFixture(packagePath, {}, {}, { projectConfig: true })
+  await using fixture = await createFixture(packagePath, {}, {}, { projectConfig: true, seedPreferences: false })
   const repository = join(fixture.root, "git-package")
   await mkdir(repository)
   for (const file of ["package.json", "README.md", "LICENSE", "dist"]) await cp(join(packagePath, file), join(repository, file), { recursive: true })
@@ -20,10 +20,10 @@ test("OpenCode installs prebuilt Git packages without invoking dependency prepar
   await run("git", ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "Fixture"], { cwd: repository })
   const { stdout } = await run(process.env.OPENCODE_BIN ?? "opencode", ["plugin", "add", `git+file://${repository}#main`], { cwd: fixture.directory, env: { ...fixture.env, npm_config_fetch_retries: "0", npm_config_fetch_timeout: "20000" }, timeout: 150000, maxBuffer: 1024 * 1024 })
   assert.match(stdout, /installed and added/)
-  await fixture.writeConfig({ ...fixture.config, plugins: [{ package: `git+file://${repository}#main`, options: { models: "fixture/model" } }] })
+  await fixture.writeConfig({ ...fixture.config, plugins: [`git+file://${repository}#main`] })
   await fixture.restart()
   const location = { directory: fixture.directory }, rpc = fixture.api.rpc(Predictions)
-  const before = await rpc.settings({}, { location }) as SetupSnapshot
+  const before = await rpc.settingsV2({}, { location }) as SetupSnapshot
   assert.equal(before.writable, true)
   const loaded = (await fixture.api.plugin.list({ location })).data.find(plugin => plugin.id === "opencode-predictions")!
   assert.equal(loaded.source.type, "package", "exercise the installed Git source, not the source-linked local entry")

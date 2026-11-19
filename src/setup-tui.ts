@@ -1,6 +1,6 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
-import { setupText, setupTUIText, originLabels } from "./setup-copy.ts"
+import { setupText, setupTUIText, originLabels, contextFileIssue } from "./setup-copy.ts"
 import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 
 type TUIContext = TUIPlugin.Context
@@ -28,7 +28,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       if (!target) { await alert("Open a project, or connect to an OpenCode server, before changing prediction settings."); return }
       editor = createSetupEditor(createTUISetupAPI(ctx, target), () => {})
       await editor.load()
-      if (editor.state().error || !editor.state().snapshot) { await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on this server."); return }
+      if (editor.state().error || !editor.state().snapshot) { await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on both this client and the server."); return }
       await root(editor)
     } finally { editor?.dispose(); running = false }
   }
@@ -79,7 +79,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
           { title: "Advanced", description: summary.advanced(editor), value: "advanced", category: "Settings" },
           { title: "Save changes", description: invalid ? "Fix invalid settings first." : "Can overwrite other edits.", value: "save", disabled: !state.dirty || readOnly(editor) || invalid || state.saving, category: "Changes" },
           { title: "Discard changes", description: "Restore saved values.", value: "discard", disabled: !state.dirty, category: "Changes" },
-          { title: "Use OpenCode configuration", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
+          { title: "Reset to defaults", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
           { title: "Preference sources", description: "Path and origins.", value: "sources", category: "More" },
           { title: "Prediction status and preview", description: "Diagnostics.", value: "status", category: "More" },
           { title: "About saving", description: "Scope and limits.", value: "about", category: "More" },
@@ -96,10 +96,10 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       else if (choice === "save") await save(editor)
       else if (choice === "discard") editor.discard()
       else if (choice === "reset") {
-        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with OpenCode configuration? Save to remove the saved preferences.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue
+        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with defaults? Save to apply the reset.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue
         editor.resetPreferences()
       }
-      else if (choice === "sources") await alert(`User preferences\n${state.snapshot?.source ?? "Server preferences"}\n\n${settingKeys.map(key => `${key}: ${originLabels[state.origins[key]]}`).join("\n")}\n\n${setupText.precedence}`)
+      else if (choice === "sources") await alert(`User preferences\n${state.snapshot?.source ?? "Server preferences"}\n\n${settingKeys.map(key => `${key}: ${originLabels[state.origins[key]]}`).join("\n")}\n\n${setupText.defaults}`)
       else if (choice === "status") await openStatus()
       else if (choice === "readonly") await alert(`Read-only. ${readOnlyReason(editor)} Current values are shown; edit the configuration file manually to change them.`)
       else if (choice === "about") await alert(`${setupTUIText.scope}\n\n${setupTUIText.fuller}`)
@@ -110,7 +110,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     const result = await editor.save()
     const message = result.kind === "saved" ? "Saved. The new settings are active."
       : result.kind === "saved_not_active" ? "Saved on disk, but activation is not verified. Reopen settings to check the active values."
-      : result.kind === "invalid" ? "Fix the invalid settings before saving."
+      : result.kind === "invalid" ? result.issues.find(issue => issue.field === "contextFile")?.message ?? "Fix the invalid settings before saving."
       : result.message
     await alert(message)
   }
@@ -147,11 +147,11 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} · private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
-          { title: "About Advanced", description: "GitHub data sent.", value: "about" },
+          { title: "About Advanced", description: "PR and context file data.", value: "about" },
         ],
       })
       if (choice === undefined) return
-      if (choice === "about") { await alert(setupText.github); continue }
+      if (choice === "about") { await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n")); continue }
       if (!await editable(editor)) continue
       if (choice === "github" || choice === "debug") edit(editor, { [choice === "github" ? "includeGithubPRContext" : "debug"]: !flag(editor, choice === "github" ? "includeGithubPRContext" : "debug", false) })
       else if (choice === "context") {

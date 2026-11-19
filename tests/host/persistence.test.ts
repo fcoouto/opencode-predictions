@@ -14,7 +14,7 @@ for (const configSource of ["global-jsonc", "inline"] as const) {
     const original = fixture.configFile ? await readFile(fixture.configFile, "utf8") : undefined
     const api = fixture.api.rpc(Predictions)
     let snapshot: SetupSnapshot | undefined
-    await assert.doesNotReject(async () => { snapshot = await api.settings({}, { location }) as SetupSnapshot })
+    await assert.doesNotReject(async () => { snapshot = await api.settingsV2({}, { location }) as SetupSnapshot })
     assert.ok(snapshot)
     assert.equal(snapshot.scope, "global")
     assert.equal(snapshot.effective?.automatic, false)
@@ -34,7 +34,7 @@ for (const configSource of ["global-jsonc", "inline"] as const) {
     assert.equal(preview.issues.some(issue => issue.code === "no_match" && issue.group === 1 && issue.entry === 1), true)
     const invalid = await api.previewSettings({ fields: { timeoutMs: null } }, { location }) as SetupPreview
     assert.equal(invalid.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error"), true)
-    await assert.rejects(api.settings({ source: "/client/home/never-write.json" }, { location }))
+    await assert.rejects(api.settingsV2({ source: "/client/home/never-write.json" }, { location }))
     await assert.rejects(api.previewSettings({ fields: { source: "/client/home/never-write.json" } }, { location }))
     for (const method of ["proveLocalSettings"]) {
       await assert.rejects(fixture.api.rpc.call({ rpcID: Predictions.id, method, input: {}, location }), (error: any) => error.type === "rpc.method_not_found")

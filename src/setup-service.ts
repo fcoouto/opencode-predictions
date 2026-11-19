@@ -1,6 +1,6 @@
 import type { PreferencesStore } from "./preferences-store.ts"
 import type { PreferencesRuntime } from "./preferences-runtime.ts"
-import { applyPreferenceChange, resolvePreferences, validatePreferenceFields } from "./preferences.ts"
+import { applyPreferenceChange, resolvePreferences } from "./preferences.ts"
 import { isDeepStrictEqual } from "node:util"
 import { resolveModels, resolveModelGroups, type CatalogModel, type Candidate } from "./models.ts"
 import { parseOptions } from "./options.ts"
@@ -55,7 +55,7 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
       return {
         revision: state.revision, source: stored.source, scope: "global", writable: stored.writable,
         ...(stored.reason ? { reason: stored.reason } : {}), fields: resolved.fields,
-        overrides: stored.overrides, fallbackFields: resolved.fallbackFields, origins: resolved.origins, activeRevision: state.activeRevision,
+        overrides: stored.overrides, origins: resolved.origins, activeRevision: state.activeRevision,
         effective: state.activeRevision && parsed.ok ? parsed.value : null, catalog: metadata,
         issues: [...resolved.issues, ...resolve(resolved.fields, metadata).issues.filter(issue => !resolved.issues.some(existing => existing.field === issue.field))],
         serviceVersion: state.service.status().version,
@@ -81,11 +81,8 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
       if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
       const prospective = { ...fresh.stored.overrides, ...edits }
       for (const key of input.reset ?? []) delete prospective[key]
-      const issues = validatePreferenceFields(prospective)
+      const issues = resolvePreferences(prospective, fresh.stored.contextFile).issues
       if (issues.length) return { kind: "invalid", issues }
-      const expected = resolvePreferences(fresh.resolved.fallbackFields, prospective)
-      const inheritedIssues = validation(expected.fields)
-      if (inheritedIssues.length) return { kind: "invalid", issues: inheritedIssues }
       let written = fresh.stored.revision
       if (!isDeepStrictEqual(prospective, fresh.stored.overrides)) {
         const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual(value, fresh.stored.overrides[key as keyof SettingsInput])))

@@ -25,7 +25,7 @@ test("invalid settings and missing models notify before any completed session wi
       await settle()
       assert.equal(f.notices.length, 1)
       assert.equal(f.notices[0].severity, "error")
-      assert.match(f.notices[0].message, /configuration|provider|variant/)
+      assert.match(f.notices[0].message, /Predictions Setup|provider|variant/)
       assert.equal(f.calls, 0)
       await f.client.status()
       assert.match(f.views[0].summary, /State:/)

@@ -19,7 +19,7 @@ export default Plugin.define({
       home: homedir(), platform: process.platform, env: { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA },
       systemPaths: administrativePaths(process.platform, process.env, username),
     })
-    const runtime = createPreferencesRuntime(store, ctx.options, options => createService({
+    const runtime = createPreferencesRuntime(store, options => createService({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),
       context: (sessionID, signal) => ctx.session.context({ sessionID }, { signal }),
       contextFile: readContextFile,
@@ -35,7 +35,7 @@ export default Plugin.define({
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => runtime.predict(input as Request, signal(context.signal)),
       status: async (_input, context) => { await runtime.refresh(signal(context.signal)); return runtime.state().service.inspect(signal(context.signal)) },
-      settings: (_input, context) => setup.read(signal(context.signal)),
+      settingsV2: (_input, context) => setup.read(signal(context.signal)),
       saveSettings: (input, context) => setup.save(input as SaveInput, signal(context.signal)),
       previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, signal(context.signal)),
     })

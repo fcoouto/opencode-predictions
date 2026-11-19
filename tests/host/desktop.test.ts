@@ -66,7 +66,7 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
 for (const lines of [3, 9]) test(`real isolated Desktop reserves space for ${lines}-line predictions and restores it on typing`, { timeout: 100000 }, async () => {
   await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
   const text = Array.from({ length: lines }, (_, i) => `Line ${i + 1}: keep this complete prediction. 😀`).join("\n")
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { obsolete: undefined }, { predictionOutputs: { model: JSON.stringify({ prompt: text }) }, predictionDelayMs: { model: 1200 } })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, { predictionOutputs: { model: JSON.stringify({ prompt: text }) }, predictionDelayMs: { model: 1200 } })
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
   const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
   try {

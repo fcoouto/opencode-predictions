@@ -9,26 +9,29 @@ import { OpenCode } from "@opencode/client"
 
 const signal = () => new AbortController().signal
 const location = (f: Awaited<ReturnType<typeof createFixture>>) => ({ directory: f.directory })
-const read = (f: Awaited<ReturnType<typeof createFixture>>, at = location(f)) => f.api.rpc(Predictions).settings({}, { location: at }) as Promise<SetupSnapshot>
+const read = (f: Awaited<ReturnType<typeof createFixture>>, at = location(f)) => f.api.rpc(Predictions).settingsV2({}, { location: at }) as Promise<SetupSnapshot>
 const save = (f: Awaited<ReturnType<typeof createFixture>>, input: unknown, at = location(f)) => f.api.rpc(Predictions).saveSettings(input, { location: at }) as Promise<SaveResult>
 
-test("two locations inherit differently while two server processes share one preference root", { timeout: 60000 }, async () => {
-  await using a = await createFixture(process.env.PREDICTIONS_PACKAGE, { contextTurns: 2 }, {}, { projectConfig: true, configSource: "global-jsonc" })
+test("plugin options never affect two locations sharing one preference root", { timeout: 60000 }, async () => {
+  await using a = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, configSource: "global-jsonc", seedPreferences: false, legacyOptions: { models: "fixture/model", contextTurns: 2 } })
   const other = join(a.root, "other-project")
   await mkdir(other)
   await writeFile(join(other, "opencode.json"), JSON.stringify({ plugins: [{ package: a.config.plugins[0].package, options: { models: "fixture/model", contextTurns: 1 } }] }))
   const first = await read(a), second = await read(a, { directory: other })
-  assert.equal(first.effective?.contextTurns, 2)
-  assert.equal(second.effective?.contextTurns, 1)
-  assert.notEqual(first.revision, second.revision)
-  assert.equal((await save(a, { revision: first.revision, fields: { debug: true } }, { directory: other })).kind, "conflict")
-  assert.equal((await save(a, { revision: first.revision, fields: { automatic: false } })).kind, "saved")
+  await assert.rejects(a.api.rpc.call({ rpcID: Predictions.id, method: "settings", input: {}, location: location(a) }), (error: any) => error.type === "rpc.method_not_found")
+  assert.equal((await save(a, { revision: "a".repeat(64), fields: {}, reset: ["models"] })).kind, "conflict")
+  assert.equal(first.effective?.contextTurns, 3)
+  assert.equal(second.effective?.contextTurns, 3)
+  assert.equal(first.effective?.models, undefined)
+  assert.equal(second.effective?.models, undefined)
+  assert.equal(first.revision, second.revision)
+  assert.equal((await save(a, { revision: first.revision, fields: { automatic: false } }, { directory: other })).kind, "saved")
   assert.equal((await read(a, { directory: other })).effective?.automatic, false)
-  await using b = await createFixture(process.env.PREDICTIONS_PACKAGE, { contextTurns: 4 }, {}, { projectConfig: true, configHome: a.env.XDG_CONFIG_HOME })
+  await using b = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, configHome: a.env.XDG_CONFIG_HOME, legacyOptions: { contextTurns: 4 } })
   const peer = await read(b)
   assert.equal(peer.source, first.source)
   assert.equal(peer.effective?.automatic, false)
-  assert.equal(peer.effective?.contextTurns, 4)
+  assert.equal(peer.effective?.contextTurns, 3)
   assert.equal((await save(b, { revision: peer.revision, fields: { debug: true } })).kind, "saved")
   assert.equal((await read(a)).effective?.debug, true)
   await a.restart()
@@ -38,7 +41,7 @@ test("two locations inherit differently while two server processes share one pre
 
 test("distinct server roots and pinned clients never write to another selected server", { timeout: 60000 }, async () => {
   await using a = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
-  await using b = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+  await using b = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, seedPreferences: false })
   const before = await read(a)
   assert.equal((await save(a, { revision: before.revision, fields: { debug: true } })).kind, "saved")
   assert.equal((await read(b)).origins.debug, "default")
@@ -46,8 +49,8 @@ test("distinct server roots and pinned clients never write to another selected s
   assert.deepEqual(a.calls, []); assert.deepEqual(b.calls, [])
 })
 
-test("manual replacement and deletion invalidate stale drafts without changing fallback configuration", { timeout: 60000 }, async () => {
-  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, { debug: false }, {}, { configSource: "global-jsonc", projectConfig: true })
+test("manual replacement and deletion invalidate stale drafts without editing OpenCode configuration", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { configSource: "global-jsonc", projectConfig: true, legacyOptions: { debug: true } })
   const original = await readFile(f.configFile!), before = await read(f)
   assert.equal((await save(f, { revision: before.revision, fields: { debug: true } })).kind, "saved")
   const previous = await read(f), replacement = f.preferencesFile + ".external"
@@ -96,16 +99,17 @@ for (const field of ["timeoutMs", "contextTurns"]) test(`numeric-null ${field} d
   assert.deepEqual(f.calls, [])
 })
 
-test("explicit no-model suppression differs from reset and unwritable files remain inspectable", { timeout: 60000 }, async () => {
-  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true })
+test("clearing and resetting models never restores legacy models", { timeout: 60000 }, async () => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, legacyOptions: { models: "fixture/ignored" } })
   const before = await read(f)
   assert.equal((await save(f, { revision: before.revision, fields: {}, removeModels: true })).kind, "saved")
   const noModels = await read(f)
   assert.equal(noModels.fields.models, undefined)
   assert.equal(noModels.overrides.models, null)
   assert.equal((await save(f, { revision: noModels.revision, fields: {}, reset: ["models"] })).kind, "saved")
-  const inherited = await read(f)
-  assert.equal(inherited.fields.models, "fixture/model")
+  const reset = await read(f)
+  assert.equal(reset.fields.models, undefined)
+  assert.equal(reset.origins.models, "default")
   await chmod(f.preferencesFile, 0o400)
   const readonly = await read(f)
   assert.equal(readonly.writable, false)
@@ -127,7 +131,7 @@ test("a committed but lost HTTP acknowledgement reconciles through exactly one p
   } })
   const rpc = client.rpc(Predictions), at = location(f)
   const editor = createSetupEditor({
-    read: async () => await rpc.settings({}, { location: at }) as SetupSnapshot,
+    read: async () => await rpc.settingsV2({}, { location: at }) as SetupSnapshot,
     preview: async () => ({ groups: [], issues: [] }),
     save: async input => await rpc.saveSettings(input, { location: at }) as SaveResult,
   }, () => {})

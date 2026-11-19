@@ -28,7 +28,7 @@ var settingsFields = {
 var setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext", "contextFile"] },
     group: { type: "integer", minimum: 0 },
     entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] },
@@ -88,7 +88,8 @@ var Predictions = Rpc.define({
       input: { type: "object", additionalProperties: false },
       output: { type: "object" }
     },
-    settings: {
+    // Old Setup clients interpret reset as inheritance. Do not serve them a writable snapshot.
+    settingsV2: {
       input: { type: "object", additionalProperties: false },
       output: {
         type: "object",
@@ -100,15 +101,14 @@ var Predictions = Rpc.define({
           reason: { type: "string" },
           fields: settingsFields,
           overrides: settingsFields,
-          fallbackFields: settingsFields,
-          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
           activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
           serviceVersion: { type: "string" }
         },
-        required: ["revision", "scope", "writable", "fields", "overrides", "fallbackFields", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
+        required: ["revision", "scope", "writable", "fields", "overrides", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
         additionalProperties: false
       }
     },
@@ -353,7 +353,7 @@ var feedbackRevision = 1;
 function reasonNotice(reason) {
   if (!reason || ["cancelled", "stale", "escalation_refreshed"].includes(reason)) return;
   const info = {
-    disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
+    disabled: ["Predictions are turned off", "Enable predictions in Predictions Setup."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
     context_unavailable: ["Prediction unavailable for this response.", "Continue typing your next prompt."],
@@ -361,9 +361,9 @@ function reasonNotice(reason) {
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."]
   };
   if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] };
-  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model, or set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true };
+  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model.", persistent: true };
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true };
-  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in the global plugin options and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." };
+  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in predictions.json and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." };
   if (reason === "context_file_too_large") return { code: reason, severity: "error", title: "Prediction context file is too large", message: "Reduce the contextFile contents to at most 8192 UTF-8 bytes, then request a prediction again. No model was called." };
   if (reason === "context_file_invalid") return { code: reason, severity: "error", title: "Prediction context file is not valid text", message: "Save contextFile as UTF-8 text without binary control characters, then request a prediction again. No model was called." };
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." };
@@ -381,9 +381,9 @@ function statusNotice(status) {
   if (status.reason && status.reason !== "disabled") {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason);
     const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings.";
-    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct this plugin's options in your OpenCode configuration.`, persistent: true };
+    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct predictions.json on the server.`, persistent: true };
   }
-  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` };
+  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Check predictions.json on the server.` };
 }
 
 // src/github-prompt.ts
@@ -847,14 +847,16 @@ import { parseTree } from "jsonc-parser";
 
 // src/setup.ts
 var settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"];
-function validateSettings(fields) {
+function validateSettings(fields, contextFile) {
   if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.");
   if (Object.keys(fields).some((key) => !settingKeys.includes(key))) throw new Error("Unknown setting.");
   for (const field of ["timeoutMs", "contextTurns"]) {
     if (fields[field] === null) return [{ field, severity: "error", code: "invalid_value", message: "Enter a whole number." }];
   }
-  const parsed = parseOptions(fields);
-  return parsed.ok ? [] : [{ field: settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }];
+  const parsed = parseOptions({ ...fields, contextFile });
+  if (parsed.ok) return [];
+  const contextIssue = parsed.reason.startsWith("contextFile");
+  return [{ field: contextIssue ? "contextFile" : settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason + (contextIssue ? ". Correct it in predictions.json on the server." : "") }];
 }
 function readGroups(fields) {
   if (fields.models === void 0) return void 0;
@@ -898,20 +900,12 @@ function applyPreferenceChange(overrides, input) {
   if (validatePreferenceFields(next).length) throw invalid();
   return next;
 }
-function resolvePreferences(legacy, overrides) {
-  const valid = legacy === void 0 || !!legacy && typeof legacy === "object" && !Array.isArray(legacy);
-  const base = valid && legacy ? legacy : {};
-  const fallbackFields = preferenceFields(base);
-  for (const key of ["timeoutMs", "contextTurns"]) if (fallbackFields[key] === null) delete fallbackFields[key];
-  const known = preferenceFields(overrides);
-  const fields = { ...fallbackFields, ...known };
-  const rawOptions = valid ? { ...base, ...known } : legacy;
-  if (known.models === null) {
-    delete fields.models;
-    if (rawOptions && typeof rawOptions === "object") delete rawOptions.models;
-  }
-  const origins = Object.fromEntries(settingKeys.map((key) => [key, Object.hasOwn(known, key) ? "preferences" : Object.hasOwn(fallbackFields, key) ? "configuration" : "default"]));
-  return { rawOptions, fields, fallbackFields, origins, issues: validatePreferenceFields(known) };
+function resolvePreferences(overrides, contextFile) {
+  const fields = preferenceFields(overrides);
+  if (fields.models === null) delete fields.models;
+  const rawOptions = { ...fields, ...contextFile === void 0 ? {} : { contextFile } };
+  const origins = Object.fromEntries(settingKeys.map((key) => [key, Object.hasOwn(overrides, key) ? "preferences" : "default"]));
+  return { rawOptions, fields, origins, issues: validateSettings(fields, contextFile) };
 }
 
 // src/preferences-store.ts
@@ -1044,6 +1038,7 @@ function createPreferencesStore(host) {
       documentValid: true,
       policy: value.policy,
       overrides: preferenceFields(value.document.settings),
+      contextFile: value.document.settings.contextFile,
       ...value.policy === "managed" ? { reason: "Administrative configuration prevents user prediction preferences." } : !value.writable ? { reason: value.reason ?? "Prediction preferences are not writable." } : {}
     };
   }
@@ -1143,7 +1138,7 @@ function createPreferencesStore(host) {
 // src/preferences-runtime.ts
 import { createHash as createHash2 } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-function createPreferencesRuntime(store, legacy, make) {
+function createPreferencesRuntime(store, make) {
   const lifetime = new AbortController();
   let current, effective, generation = 0, adopted = 0;
   const state = () => {
@@ -1156,11 +1151,11 @@ function createPreferencesRuntime(store, legacy, make) {
     const stored = await abortable(() => store.read(signal), signal);
     signal.throwIfAborted();
     if (ticket < adopted) return;
-    const resolved = resolvePreferences(legacy, stored.policy === "managed" ? {} : stored.overrides);
+    const resolved = stored.policy === "managed" ? resolvePreferences({}) : resolvePreferences(stored.overrides, stored.contextFile);
     const parsed = parseOptions(resolved.rawOptions);
     const valid = stored.documentValid && !resolved.issues.length && parsed.ok;
     const next = valid && parsed.ok ? parsed.value : null;
-    const revision = createHash2("sha256").update(JSON.stringify([stored.revision, legacy, stored.policy])).digest("hex");
+    const revision = "v2:" + createHash2("sha256").update(JSON.stringify([stored.revision, stored.policy])).digest("hex");
     let service = current?.service;
     if (!service || !isDeepStrictEqual(effective, next)) {
       service?.dispose();
@@ -1246,7 +1241,6 @@ function createSetupService(store, models, runtime) {
         ...stored.reason ? { reason: stored.reason } : {},
         fields: resolved.fields,
         overrides: stored.overrides,
-        fallbackFields: resolved.fallbackFields,
         origins: resolved.origins,
         activeRevision: state.activeRevision,
         effective: state.activeRevision && parsed.ok ? parsed.value : null,
@@ -1275,11 +1269,8 @@ function createSetupService(store, models, runtime) {
       if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." };
       const prospective = { ...fresh.stored.overrides, ...edits };
       for (const key of input.reset ?? []) delete prospective[key];
-      const issues = validatePreferenceFields(prospective);
+      const issues = resolvePreferences(prospective, fresh.stored.contextFile).issues;
       if (issues.length) return { kind: "invalid", issues };
-      const expected = resolvePreferences(fresh.resolved.fallbackFields, prospective);
-      const inheritedIssues = validateSettings(expected.fields);
-      if (inheritedIssues.length) return { kind: "invalid", issues: inheritedIssues };
       let written = fresh.stored.revision;
       if (!isDeepStrictEqual2(prospective, fresh.stored.overrides)) {
         const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual2(value, fresh.stored.overrides[key])));
@@ -1452,7 +1443,7 @@ var index_default = Plugin.define({
       env: { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA },
       systemPaths: administrativePaths(process.platform, process.env, username)
     });
-    const runtime = createPreferencesRuntime(store, ctx.options, (options) => createService({
+    const runtime = createPreferencesRuntime(store, (options) => createService({
       session: (sessionID, signal2) => ctx.session.get({ sessionID }, { signal: signal2 }),
       context: (sessionID, signal2) => ctx.session.context({ sessionID }, { signal: signal2 }),
       contextFile: readContextFile,
@@ -1475,7 +1466,7 @@ var index_default = Plugin.define({
         await runtime.refresh(signal(context.signal));
         return runtime.state().service.inspect(signal(context.signal));
       },
-      settings: (_input, context) => setup.read(signal(context.signal)),
+      settingsV2: (_input, context) => setup.read(signal(context.signal)),
       saveSettings: (input, context) => setup.save(input, signal(context.signal)),
       previewSettings: (input, context) => setup.preview(input.fields, signal(context.signal))
     });

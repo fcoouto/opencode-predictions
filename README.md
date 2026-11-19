@@ -55,21 +55,12 @@ Open your existing global `~/.config/opencode/opencode.json` or
 `~/.config/opencode/opencode.jsonc`. Use whichever file you already have; do not
 create a second configuration file.
 
-Append **only this object** inside the existing top-level `"plugins": [ ... ]`
+Append **only this string** inside the existing top-level `"plugins": [ ... ]`
 array. Add a comma after the preceding entry, if there is one. Preserve all other
 plugins and settings.
 
 ```json
-{
-  "package": "github:fcoouto/opencode-predictions#main",
-  "options": {
-    "models": "opencode/*free*#low",
-    "timeoutMs": 20000,
-    "contextTurns": 3,
-    "automatic": true,
-    "enabled": true
-  }
-}
+"github:fcoouto/opencode-predictions#main"
 ```
 
 <details>
@@ -83,16 +74,7 @@ replacing the file.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    {
-      "package": "github:fcoouto/opencode-predictions#main",
-      "options": {
-        "models": "opencode/*free*#low",
-        "timeoutMs": 20000,
-        "contextTurns": 3,
-        "automatic": true,
-        "enabled": true
-      }
-    }
+    "github:fcoouto/opencode-predictions#main"
   ]
 }
 ```
@@ -105,10 +87,11 @@ The global entry loads both Desktop and CLI support. Do not put it only in `cli.
 
 ### 2. Choose a prediction model
 
-Connect your provider through OpenCode. No API keys belong in plugin options.
+Connect your provider through OpenCode. Open **Predictions Setup**, add a model
+or pattern, and choose **Save changes**. No predictions run until a model is configured.
 A selector is `provider/model`, optionally with a reasoning variant
-(`provider/model#low`), or a wildcard such as `provider/family-*`. The example
-above selects available `opencode` models whose ID or display name contains
+(`provider/model#low`), or a wildcard such as `provider/family-*`. For example,
+`opencode/*free*#low` selects available `opencode` models whose ID or display name contains
 `free` and which support the `low` variant.
 
 Check what matched: open **Prediction status and preview**, or look at the match
@@ -215,7 +198,7 @@ Changes stay in a draft until you choose **Save changes**; **Discard changes** r
 
 Settings apply to **user prediction preferences on the selected server**, across every project and server process using that configuration directory. Save never rewrites `opencode.json(c)`, its comments, other plugins, or credentials. Only changed settings are saved.
 
-The page shows **User preferences**, the actual server-side path, and each field's source: **Saved preference**, **OpenCode configuration**, or **Default**. Inherited values can differ between projects. **Use OpenCode configuration** stages removal of the saved overrides; choose **Save changes** to apply it. Reset asks before replacing unsaved draft edits.
+The page shows **User preferences**, the server-side path, and each editable field's source: **Saved preference** or **Default**. **Reset to defaults** stages removal of the saved editable settings; choose **Save changes** to apply it. Reset asks before replacing unsaved draft edits and leaves any server-configured `contextFile` intact.
 
 > [!NOTE]
 > Predictions use provider quota and may incur charges. A model's name does not mean it is free.
@@ -226,11 +209,11 @@ Use Desktop or launch the CLI normally with `opencode`. No special launch flags,
 
 Save uses the selected server's existing RPC access controls. Authorized remote clients can save that server's preferences, not their local computer's file. **The plugin adds no separate authentication layer: if a server allows unauthenticated access, reachable callers inherit that access to preferences.** Protect the OpenCode server accordingly. Tested OpenCode 2.2.6 HTTP servers generate credentials even when an empty password is supplied.
 
-Read-only mode means the server cannot safely verify/write storage, the preferences document needs repair, or administrative configuration prevents user overrides. System/managed configuration takes precedence: preferences are not applied or written while it is present or cannot be checked. Resolve the displayed server-side reason rather than changing launch flags.
+Read-only mode means the server cannot safely verify/write storage, the preferences document needs repair, or administrative configuration prevents user settings. Preferences are not applied or written while system/managed configuration is present or cannot be checked. Without applied preferences, no prediction models are configured. Resolve the displayed server-side reason rather than changing launch flags.
 
 Native qualification covers macOS Desktop **2.3.0** and CLI/server **2.2.6**, including shared-service and standalone use. Linux and Windows path tests are not native filesystem/ACL qualification. See the [qualification record](docs/research/2026-11-18-predictions-preferences-qualification.md).
 
-### Storage and precedence
+### Where settings are stored
 
 The file belongs to the **server's** account and environment:
 
@@ -242,7 +225,9 @@ The file belongs to the **server's** account and environment:
 
 An explicitly empty/relative `XDG_CONFIG_HOME`, or missing/nonabsolute Windows `APPDATA`, is refused. A trusted configuration-directory symlink is resolved on the server; symlinked active files, hard links, unsafe ownership/write permissions, and unsupported ACLs are refused.
 
-Precedence is **explicit saved preference → existing OpenCode plugin option → plugin default**. Missing fields inherit; explicit `false` stays false. `contextFile` remains an OpenCode option, not a file-path preference.
+`predictions.json` is the only prediction settings source. Missing fields use
+built-in defaults; explicit `false` stays false. `contextFile` can only be set by
+editing the file on the server, not through Desktop or CLI settings.
 
 The strict JSON format is:
 
@@ -256,9 +241,15 @@ The strict JSON format is:
 }
 ```
 
-`models: null` explicitly selects **no prediction models**, suppressing inherited models. Removing that preference restores inheritance. Numeric `null` is invalid, not a request for defaults. The file must be valid UTF-8, at most 65,536 bytes, without comments, trailing commas, or duplicate keys. Unknown members survive saves but never become effective options.
+Omitting `models` or setting it to `null` leaves no prediction models configured. Numeric `null` is invalid, not a request for defaults. The file must be valid UTF-8, at most 65,536 bytes, without comments, trailing commas, or duplicate keys. Unknown members survive saves but do not affect predictions.
 
-There is no automatic migration and no preferences file is created until Save. Existing OpenCode options remain untouched. To roll back to inherited configuration, remove the dedicated preferences file or save **Use OpenCode configuration**.
+**Upgrading from plugin `options`?** Those options are ignored and not imported.
+Configure them again in **Predictions Setup**. If you used `contextFile`, set it
+as described [below](#global-standing-context). Existing saved preferences still
+apply. Remove this plugin's `options` key from `opencode.json(c)` if present, but
+keep the plugin entry. The plugin never edits that file or creates `predictions.json` until Save.
+For remote use, update the Predictions plugin on both the client and server.
+Predictions Setup cannot edit settings across the old and new versions.
 
 ### Limits and recovery
 
@@ -300,20 +291,20 @@ supported. Only the explicitly configured global context file is read.
 
 Git installation stores plugin code in OpenCode's managed package cache
 (`~/.cache/opencode/npm/` by default, or under `XDG_CACHE_HOME`). Settings remain
-in `opencode.jsonc`. The plugin does not collect or copy project files into that
+in `predictions.json` on the server. The plugin does not collect or copy project files into that
 cache. Normal predictions write no plugin-owned context or suggestion files.
 The optional model-pilot tool writes a JSON report only when invoked, under
 `.test-artifacts/` or an explicit `--output` path.
 
 ## Settings
 
-Predictions Setup saves these fields as user preferences. To set inherited configuration by hand, use the plugin's `options` object. Saved preferences override those options; save **Use OpenCode configuration** to remove the overrides first. The installation example
-uses a `20000` ms timeout; the plugin default is `8000` ms.
+Predictions Setup saves these fields in `predictions.json`, except for `contextFile`,
+which you configure directly on the server.
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `models` | unset | Required. Selector text for one ranking group, or an ordered array of selector groups. |
-| `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. The installation example uses `20000`. |
+| `timeoutMs` | `8000` | Maximum wait per model attempt, in milliseconds. |
 | `contextTurns` | `3` | Recent interactions to consider, from `1` to `5`. The latest eligible human request is also retained when absent from that window. |
 | `contextFile` | unset | Optional absolute or `~/` path to one shared UTF-8 text/Markdown file on the OpenCode server. Maximum `8192` bytes. |
 | `includeGithubPRContext` | `false` | Opt in to sending bounded metadata from linked public and accessible private GitHub PRs to prediction models. |
@@ -331,8 +322,9 @@ Only enabled models supporting the requested variant are selected.
 
 ### Global standing context
 
-To supply stable preferences or work constraints, add this option inside the
-plugin's existing `options` object in your **global** `opencode.json(c)`:
+To supply standing guidance, add `contextFile` inside `settings` in the server's
+`predictions.json`. Keep any other saved settings. If the file does not exist,
+save your model selection in **Predictions Setup** first.
 
 ```json
 "contextFile": "~/.config/opencode/predictions.md"
@@ -346,7 +338,7 @@ Keep suggested prompts concise.
 Do not suggest publishing or deployment unless I explicitly request it.
 ```
 
-This first release uses **one shared file across projects**. It does not discover
+The plugin uses **one shared file across projects**. It does not discover
 project files, read `AGENTS.md`, or merge global and project context. Use an
 absolute path or `~/`; project-relative paths and URLs are rejected. `~/` refers
 to the **server user's home directory**, which may differ from the Desktop or
@@ -371,19 +363,15 @@ explicit user instructions take precedence. It does not authorize more work or
 replace the predictor's JSON output and abstention rules. Model compliance is
 best-effort. The file shares the existing **32768-byte total prompt budget** with
 conversation text, so larger guidance can reduce retained conversation context.
-Without `contextFile`, prediction behavior is unchanged.
+Remove `contextFile` from `settings` to stop including the file in new predictions.
 
 **Do not include secrets. Every attempted prediction model receives the file,
 including fallback providers and paid models—not only your main session model.**
 
 ### Linked GitHub PR context
 
-This feature is **off by default**. To opt in, add this to the plugin's existing
-`options` object:
-
-```json
-"includeGithubPRContext": true
-```
+This feature is **off by default**. To opt in, enable **Include GitHub PR context**
+under **Advanced** in **Predictions Setup**, then save.
 
 **Enabling this permits linked private PR descriptions to be sent to every
 attempted prediction provider, including fallback and paid models.** It does not
@@ -524,7 +512,8 @@ ordinary explicit refresh behavior.
 Text defines one group. An array defines groups in fixed priority order. Each
 entry can be selector text or an inner array of selector strings. Selectors can
 name one exact model or expand a wildcard into several models.
-These are individual lines to use inside your existing plugin `options` object:
+Use these patterns in **Predictions Setup**, or as `models` under `settings` in
+`predictions.json`:
 
 | Use case | Example |
 | --- | --- |
@@ -583,7 +572,6 @@ ranked candidates. Existing flat `models` and `candidates` fields remain availab
 Invalid settings, missing model selectors, zero matches, and service connection
 failures produce actionable notices even with debug off and before a completed
 assistant response. Notices explain the effect on predictions and the next step.
-Unknown options produce a warning rather than disappearing silently.
 
 Desktop error toasts offer **Open prediction status**. Configuration and access
 blockers stay until dismissed, replaced, or resolved. CLI notices use error/warning
@@ -611,7 +599,7 @@ failure. Technical details include package versions and feedback revision metada
 missing metadata means unknown/legacy compatibility, not proof of an outdated install.
 Status and failure memory stay in this client's memory; they are not a persistent log.
 
-Set `"debug": true` in plugin options to show detailed progress:
+Enable **Debug notices** under **Advanced** in **Predictions Setup** to show detailed progress:
 
 ```text
 [opencode-predictions] Predictions failed with [<model_display_name>], moving on with [<next_model>]...

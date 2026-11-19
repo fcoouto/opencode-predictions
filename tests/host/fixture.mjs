@@ -9,7 +9,7 @@ import { Service } from "@opencode/client/service"
 
 export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
 
-export async function createFixture(packagePath = resolve("."), options = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "" } = {}) {
+export async function createFixture(packagePath = resolve("."), settings = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "", seedPreferences = true, legacyOptions = {} } = {}) {
   if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
@@ -53,7 +53,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   let config = {
     $schema: "https://opencode.ai/config.json",
     model: "fixture/model",
-    plugins: [{ package: packagePath, options: { models: "fixture/model", timeoutMs: 8000, obsolete: true, ...options } }],
+    plugins: [{ package: packagePath, ...(Object.keys(legacyOptions).length ? { options: legacyOptions } : {}) }],
     providers: { fixture: { name: "Fixture", env: ["FIXTURE_API_KEY"], package: "@opencode/ai/providers/openai-compatible", settings: { baseURL: `http://127.0.0.1:${provider.address().port}/v1` }, models: Object.fromEntries([...new Set(["model", ...Object.keys(behavior.predictionOutputs ?? {})])].map(id => [id, { name: id === "model" ? "Fixture Flash" : "Fixture " + id, capabilities: { tools: false }, limit: { context: 32768, output: 2048 } }])) } },
   }
   /** @type {NodeJS.ProcessEnv} */
@@ -66,6 +66,7 @@ export async function createFixture(packagePath = resolve("."), options = {}, be
   const configDirectory = join(env.XDG_CONFIG_HOME, "opencode")
   const preferencesFile = join(configDirectory, "predictions.json")
   await mkdir(configDirectory, { recursive: true })
+  if (seedPreferences && !configHome) await writeFile(preferencesFile, JSON.stringify({ version: 1, settings: { models: "fixture/model", ...settings } }), { mode: 0o600 })
   const configFile = configSource === "inline" ? undefined : join(configDirectory, configSource === "global-jsonc" ? "opencode.jsonc" : "opencode.json")
   const writeConfig = async value => {
     if (configFile) {

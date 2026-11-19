@@ -14,7 +14,7 @@ export function createGUISetupAPI(ctx: Pick<Parameters<GUIPlugin.Setup>[0], "ser
   }
   return {
     async read(signal) {
-      const snapshot = await waitForSetupSnapshot(async signal => await selected().settings({}, { location: pinned.location, signal }) as SetupSnapshot, signal)
+      const snapshot = await waitForSetupSnapshot(async signal => await selected().settingsV2({}, { location: pinned.location, signal }) as SetupSnapshot, signal)
       selected()
       return snapshot
     },

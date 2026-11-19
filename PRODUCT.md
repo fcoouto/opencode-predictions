@@ -20,7 +20,7 @@ Suggest one useful next user prompt after a completed assistant response. Accept
 
 The plugin runs inside OpenCode V2, with server-side prediction generation and separate Desktop and CLI integrations. Users connect model providers through OpenCode.
 
-Existing OpenCode plugin options remain an inherited fallback. Explicit user preferences live in the selected server's `predictions.json`; defaults apply last. Save never edits OpenCode configuration and performs no automatic migration.
+User settings live only in the selected server's `predictions.json`; missing fields use built-in defaults. Save never edits OpenCode configuration or imports old plugin options.
 
 ## Capabilities and Constraints
 
@@ -31,7 +31,7 @@ Existing OpenCode plugin options remain an inherited fallback. Explicit user pre
 - The plugin excludes unsent drafts, tool output, reasoning, attachments, and instruction payloads from prediction context.
 - Predictions Setup supports a native Desktop settings page and equivalent section-based CLI menus, including ordinary shared-service CLI use.
 - The user selected a native Desktop settings page and an equivalent section-based CLI menu rather than a sequential wizard or compact dialog.
-- Settings apply across projects and server processes sharing the selected server's configuration root. Provenance is visible, and resetting to inherited configuration is staged until Save.
+- Settings apply across projects and server processes sharing the selected server's configuration root. Provenance is visible, and resetting editable settings to defaults is staged until Save. `contextFile` can only be set by editing `predictions.json` on the server.
 - The selected server's existing RPC access controls authorize Save, including authorized remote clients. There is no Desktop main-process bridge, local socket, or standalone-only gate.
 - Preferences use strict UTF-8/JSON validation, safe storage checks, atomic replacement, private backups, best-effort revision checks, and verified activation.
 - The user explicitly rejected write locking and accepted simultaneous-writer lost updates, including different-field edits. Backups do not guarantee recovery of concurrent changes. Interrupted writes require fresh readback, never automatic replay or manual lock cleanup.
@@ -53,4 +53,4 @@ Existing OpenCode plugin options remain an inherited fallback. Explicit user pre
 - Keep prediction acceptance separate from submission.
 - Make model choices and fallback behavior inspectable.
 - Keep configuration behavior consistent across Desktop and CLI.
-- Preserve existing manual configuration and unrelated OpenCode settings.
+- Preserve saved prediction preferences and unrelated OpenCode settings.
