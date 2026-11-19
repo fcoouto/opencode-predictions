@@ -15,6 +15,16 @@ test("preferences override only present known fields and preserve fallback prove
   assert.equal(parseOptions(value.rawOptions).ok, true)
 })
 
+test("preferences apply over omitted legacy options without replacing defaults or accepting invalid legacy roots", () => {
+  const value = resolvePreferences(undefined, { enabled: false, timeoutMs: 9000 })
+  const parsed = parseOptions(value.rawOptions)
+  assert.ok(parsed.ok)
+  assert.equal(parsed.value.enabled, false)
+  assert.equal(parsed.value.timeoutMs, 9000)
+  assert.equal(parsed.value.contextTurns, 3)
+  for (const legacy of [null, false, []]) assert.equal(parseOptions(resolvePreferences(legacy, { enabled: false }).rawOptions).ok, false)
+})
+
 test("numeric-null preferences are invalid before defaulting without changing legacy parsing", () => {
   for (const field of ["timeoutMs", "contextTurns"] as const) {
     const value = resolvePreferences({}, { [field]: null })

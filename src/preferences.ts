@@ -50,8 +50,8 @@ export function applyPreferenceChange(overrides: Record<string, unknown>, input:
 }
 
 export function resolvePreferences(legacy: unknown, overrides: SettingsInput): ResolvedPreferences {
-  const valid = !!legacy && typeof legacy === "object" && !Array.isArray(legacy)
-  const base = valid ? legacy as Record<string, unknown> : {}
+  const valid = legacy === undefined || !!legacy && typeof legacy === "object" && !Array.isArray(legacy)
+  const base = valid && legacy ? legacy as Record<string, unknown> : {}
   const fallbackFields = preferenceFields(base)
   // Legacy numeric nulls already mean defaults; only explicit preference nulls are invalid.
   for (const key of ["timeoutMs", "contextTurns"] as const) if (fallbackFields[key] === null) delete fallbackFields[key]
