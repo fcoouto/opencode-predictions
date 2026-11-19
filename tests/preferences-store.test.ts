@@ -7,7 +7,7 @@ import { fork, type ChildProcess } from "node:child_process"
 import { once } from "node:events"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { createPreferencesStore, decodePreferences, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
+import { administrativePaths, createPreferencesStore, decodePreferences, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
 
 const signal = () => new AbortController().signal
 async function fixture() {
@@ -34,6 +34,34 @@ test("preferences paths use server config roots, not the project", () => {
   for (const value of ["", "."]) assert.throws(() => preferencesPath({ home: "/u", platform: "linux", env: { XDG_CONFIG_HOME: value }, systemPaths: [] }))
   assert.equal(preferencesPath({ home: "C:\\Users\\u", platform: "win32", env: { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, systemPaths: [] }), "C:\\Users\\u\\AppData\\Roaming\\opencode\\predictions.json")
   assert.throws(() => preferencesPath({ home: "C:\\Users\\u", platform: "win32", env: {}, systemPaths: [] }))
+})
+
+test("administrative discovery uses ProgramData on Windows and fails closed when its root is unknown", async () => {
+  assert.deepEqual(administrativePaths("win32", { ProgramData: "D:\\Managed" }), ["D:\\Managed\\opencode"])
+  assert.deepEqual(administrativePaths("linux", {}), ["/etc/opencode"])
+  for (const ProgramData of [undefined, "", "relative"]) {
+    const f = await fixture()
+    await f.put({ debug: true })
+    f.host.systemPaths = administrativePaths("win32", { ProgramData })
+    const state = await f.store.read(signal())
+    assert.equal(state.policy, "managed")
+    assert.equal(state.writable, false)
+    assert.deepEqual(state.overrides, {})
+  }
+})
+
+test("missing preferences preserve legacy activation when ownership verification is unsupported", async () => {
+  const f = await fixture()
+  const getuid = process.getuid
+  try {
+    process.getuid = undefined as any
+    const state = await f.store.read(signal())
+    assert.equal(state.documentValid, true, "verified absence is not an unreadable preference document")
+    assert.equal(state.writable, false)
+    assert.deepEqual(state.overrides, {})
+    assert.equal((await f.store.write(state.revision, { fields: { debug: true } }, signal())).kind, "read_only")
+    assert.deepEqual(await readdir(f.home), [])
+  } finally { process.getuid = getuid }
 })
 
 test("strict byte decoding rejects malformed UTF-8 and oversize documents", () => {

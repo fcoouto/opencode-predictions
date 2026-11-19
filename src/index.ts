@@ -2,8 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import { Predictions } from "./rpc.ts"
 import { createService, type Request } from "./service.ts"
 import { homedir, userInfo } from "node:os"
-import { join } from "node:path"
-import { createPreferencesStore } from "./preferences-store.ts"
+import { administrativePaths, createPreferencesStore } from "./preferences-store.ts"
 import { createPreferencesRuntime } from "./preferences-runtime.ts"
 import { createSetupService } from "./setup-service.ts"
 import type { SaveInput, SettingsInput } from "./setup.ts"
@@ -14,12 +13,11 @@ export default Plugin.define({
   id: "opencode-predictions",
   async setup(ctx) {
     const lifetime = new AbortController()
+    let username: string | undefined
+    try { username = userInfo().username } catch {}
     const store = createPreferencesStore({
       home: homedir(), platform: process.platform, env: { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA },
-      systemPaths: process.platform === "darwin" ? [
-        "/Library/Application Support/opencode", "/Library/Managed Preferences/ai.opencode.managed.plist",
-        (() => { try { return join("/Library/Managed Preferences", userInfo().username, "ai.opencode.managed.plist") } catch { return "/Library/Managed Preferences" } })(),
-      ] : ["/etc/opencode"],
+      systemPaths: administrativePaths(process.platform, process.env, username),
     })
     const runtime = createPreferencesRuntime(store, ctx.options, options => createService({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto"
 import { constants, type Stats } from "node:fs"
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
-import { dirname, basename, join, posix, win32 } from "node:path"
+import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { applyPreferenceChange, parsePreferences, preferenceFields, type PreferenceDocument } from "./preferences.ts"
@@ -27,6 +27,15 @@ export function preferencesPath(host: PreferencesHost): string {
   return path.join(root, "opencode", "predictions.json")
 }
 
+export function administrativePaths(platform: NodeJS.Platform, env: PreferencesHost["env"], username?: string): readonly string[] {
+  if (platform === "win32") return [env.ProgramData && win32.isAbsolute(env.ProgramData) ? win32.join(env.ProgramData, "opencode") : ""]
+  if (platform === "darwin") return [
+    "/Library/Application Support/opencode", "/Library/Managed Preferences/ai.opencode.managed.plist",
+    username ? posix.join("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences",
+  ]
+  return ["/etc/opencode"]
+}
+
 export function decodePreferences(bytes: Uint8Array): PreferenceDocument {
   if (bytes.byteLength > limit) fail("Prediction preferences exceed 65536 bytes.")
   let text: string
@@ -37,6 +46,7 @@ export function decodePreferences(bytes: Uint8Array): PreferenceDocument {
 }
 
 async function exists(path: string) {
+  if (!isAbsolute(path)) fail("The administrative configuration path is unavailable.")
   try { await lstat(path); return true } catch (error) { if (missing(error)) return false; throw error }
 }
 async function canonical(directory: string): Promise<{ directory: string; ancestor: string }> {
@@ -68,9 +78,15 @@ export function createPreferencesStore(host: PreferencesHost) {
     for (const path of host.systemPaths) { try { managed ||= await exists(path) } catch { managed = true } }
     if (managed) return { source, directory, policy: "managed" as const, bytes: Buffer.alloc(0), document: { version: 1, settings: {} } as PreferenceDocument, info: undefined, parent: undefined, revision: hash([source, "managed"]), writable: false }
     const parent = await lstat(target.ancestor)
-    await safe(parent, target.ancestor, true)
     let info: Stats | undefined, bytes = Buffer.alloc(0), document: PreferenceDocument = { version: 1, settings: {} }
     try { info = await lstat(source) } catch (error) { if (!missing(error)) throw error }
+    let writable = true, reason: string | undefined
+    try { await safe(parent, target.ancestor, true) } catch (error) {
+      if (info) throw error
+      // An absent document cannot override legacy options, even when safe writes are unavailable.
+      writable = false
+      reason = error instanceof Refusal ? error.message : "Prediction preferences are not writable."
+    }
     if (info) {
       await safe(info, source)
       const handle = await open(source, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
@@ -84,13 +100,13 @@ export function createPreferencesStore(host: PreferencesHost) {
       } finally { await handle.close() }
     }
     const revision = hash([source, info ? identity(info) : null, bytes.toString("hex")])
-    const writable = !info || (info.mode & 0o600) === 0o600
+    writable &&= !info || (info.mode & 0o600) === 0o600
     signal.throwIfAborted()
-    return { source, directory, policy: "user" as const, bytes, document, info, parent: target.ancestor === directory ? parent : undefined, revision, writable }
+    return { source, directory, policy: "user" as const, bytes, document, info, parent: target.ancestor === directory ? parent : undefined, revision, writable, reason }
   }
   function snapshot(value: Awaited<ReturnType<typeof inspect>>): PreferenceRead {
     return { revision: value.revision, source: value.source, writable: value.writable, documentValid: true, policy: value.policy, overrides: preferenceFields(value.document.settings),
-      ...(value.policy === "managed" ? { reason: "Administrative configuration prevents user prediction preferences." } : !value.writable ? { reason: "Prediction preferences are not writable." } : {}) }
+      ...(value.policy === "managed" ? { reason: "Administrative configuration prevents user prediction preferences." } : !value.writable ? { reason: value.reason ?? "Prediction preferences are not writable." } : {}) }
   }
   return {
     async read(signal: AbortSignal): Promise<PreferenceRead> {

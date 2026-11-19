@@ -34,6 +34,7 @@ The shared-service proof checks the actual `serve --service` process and discove
 | Real server filesystem write failure preserves active bytes; readable unwritable files remain inspectable | `tests/host/persistence-activation.test.ts` |
 | Atomic staging, strict UTF-8/size/duplicate-key checks, ownership/link/ACL refusal, private backup, write/fsync/backup/commit failures | `tests/preferences-store.test.ts` |
 | Administrative precedence and uncheckable-policy refusal | `tests/preferences-store.test.ts`, `tests/preferences-runtime.test.ts`; fixture-owned administrative paths |
+| Windows administrative root uses absolute ProgramData; unknown roots fail closed; missing preferences do not disable legacy options when ownership verification is unsupported | `tests/preferences-store.test.ts`; simulated verifier/path cases, not native Windows qualification |
 | Composer stays untouched; old suggestion/offer and late replies cannot reappear; activation creates no surprise prediction | `tests/host/setup-ui.test.ts`, `tests/host/lifecycle.test.ts`, `tests/client.test.ts`, `tests/controller.test.ts`, `tests/preferences-runtime.test.ts` |
 
 Native settings cases check zero provider calls and unchanged OpenCode bytes. Service/runtime unit fixtures additionally count session, conversation-context, generation, and PR-context calls, all zero for settings operations.
