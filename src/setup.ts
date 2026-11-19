@@ -4,13 +4,14 @@ import { abortable } from "./service.ts"
 
 export const settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] as const
 export type SettingKey = typeof settingKeys[number]
+export type SettingOrigin = "preferences" | "configuration" | "default"
 export type SettingsInput = Partial<Record<SettingKey, unknown>>
 export type ConfigSnapshot = { revision: string; source?: string; scope: "global"; writable: boolean; reason?: string; fields: SettingsInput }
 export type SetupLocation = { directory: string; workspaceID?: string }
 export type SetupIssue = { field: SettingKey; group?: number; entry?: number; severity: "error" | "warning"; code: string; message: string }
 export type SetupSnapshot = ConfigSnapshot & { effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string; localAuthority?: { id: string } }
 export type SetupPreview = { groups: { selectors: string[]; candidates: Candidate[] }[]; issues: SetupIssue[] }
-export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true }
+export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true; reset?: SettingKey[] }
 export type SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }
 export type SetupAPI = {
   read(signal: AbortSignal): Promise<SetupSnapshot>
