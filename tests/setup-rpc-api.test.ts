@@ -10,7 +10,7 @@ import { syncBuiltinESMExports } from "node:module"
 
 const snapshot: SetupSnapshot = {
   revision: "r1", activeRevision: "r1", scope: "global", source: "/remote/predictions.json", writable: true,
-  fields: {}, overrides: {}, fallbackFields: {}, origins: resolvePreferences({}, {}).origins,
+  fields: {}, overrides: {}, origins: resolvePreferences({}).origins,
   effective: { enabled: true, automatic: true, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false },
   serviceVersion: "one", catalog: [], issues: [],
 }
@@ -19,9 +19,24 @@ const saved: SaveResult = { kind: "saved_not_active", revision: "r2", message: "
 const signal = () => new AbortController().signal
 
 for (const host of ["CLI", "Desktop"] as const) {
+  test(`${host} cannot edit a server that only offers the legacy settings RPC`, async () => {
+    let writes = 0
+    const client = { rpc: () => ({ settings: async () => structuredClone(snapshot), saveSettings: async () => { writes++; return saved } }) }
+    const location = { directory: "/project" }
+    const api = host === "CLI" ? createTUISetupAPI({ client } as any, location)
+      : createGUISetupAPI({ servers: { get: () => ({ client }) } } as any, { serverID: "remote", location })
+    const editor = createSetupEditor(api, () => {})
+    await editor.load()
+    assert.equal(editor.state().snapshot, undefined)
+    editor.resetPreferences()
+    assert.equal((await editor.save()).kind, "failed")
+    assert.equal(writes, 0)
+    editor.dispose()
+  })
+
   function fixture() {
     const calls: unknown[][] = []
-    const rpc = { settings: async () => structuredClone(snapshot), previewSettings: async () => preview,
+    const rpc = { settingsV2: async () => structuredClone(snapshot), previewSettings: async () => preview,
       saveSettings: async (...args: unknown[]) => { calls.push(args); return saved } }
     let client = { rpc: () => rpc }
     let mainCalls = 0
@@ -47,7 +62,7 @@ for (const host of ["CLI", "Desktop"] as const) {
   test(`${host} rejects a client change during read and before Save without retargeting`, async () => {
     const f = fixture()
     let finish!: (value: SetupSnapshot) => void
-    f.rpc.settings = () => new Promise(resolve => { finish = resolve })
+    f.rpc.settingsV2 = () => new Promise(resolve => { finish = resolve })
     const pending = f.api.read(signal())
     f.replace(); finish(snapshot)
     await assert.rejects(pending, /target changed/)

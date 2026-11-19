@@ -49,7 +49,7 @@ test("packed server API generates from a real session without changing its histo
   const status = await rpc.status({}, { location: session.location }) as Status
   assert.equal(status.enabled, true, JSON.stringify(status) + fixture.output())
   assert.equal(status.candidates?.[0].name, "Fixture Flash")
-  assert.ok(status.warnings.includes("Unknown option ignored: obsolete"))
+  assert.deepEqual(status.warnings, [])
   const reply = await rpc.predict({ sessionID: session.id, completion: completed.time.idle!, requestID: crypto.randomUUID() }, { location: session.location }) as Reply
   assert.deepEqual(reply, { text: "Run the targeted tests." }, fixture.output())
   assert.deepEqual(await fixture.api.session.context({ sessionID: session.id }), history)

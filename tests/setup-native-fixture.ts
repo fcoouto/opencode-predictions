@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { OpenCode } from "@opencode/client"
 import { parseOptions } from "../src/options.ts"
-import type { SaveInput, SetupSnapshot } from "../src/setup.ts"
+import type { SaveInput, SetupIssue, SetupSnapshot } from "../src/setup.ts"
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 const temporary = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
@@ -18,17 +18,18 @@ export async function nativeFixture(t: TestContext) {
   const parsed = parseOptions({})
   assert.ok(parsed.ok)
   const location = { directory: "/fixture/project" }
-  const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, fallbackFields: {}, origins: resolvePreferences({}, {}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
+  const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, origins: resolvePreferences({}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, metadataReads = 0, unavailable = 0
-  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean } = {}
+  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean; saveIssue?: SetupIssue } = {}
   const save = async (input: SaveInput) => {
       saves++
+      if (hooks.saveIssue) return { kind: "invalid" as const, issues: [hooks.saveIssue] }
       if (input.revision !== snapshot.revision) return { kind: "conflict" as const, message: "Configuration changed. Reload settings before trying again." }
       await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.()
       snapshot.fields = { ...snapshot.fields, ...input.fields }; if (input.removeModels) delete snapshot.fields.models
       const { revision: _, ...change } = input
       snapshot.overrides = applyPreferenceChange(snapshot.overrides, change)
-      const resolved = resolvePreferences(snapshot.fallbackFields, snapshot.overrides)
+      const resolved = resolvePreferences(snapshot.overrides)
       snapshot.fields = resolved.fields; snapshot.origins = resolved.origins
       snapshot.revision = "revision-two"
       return { kind: "saved_not_active" as const, revision: "revision-two", message: "Saved on disk." }
@@ -37,8 +38,8 @@ export async function nativeFixture(t: TestContext) {
     let raw = ""
     for await (const chunk of request) raw += chunk
     response.setHeader("content-type", "application/json")
-    if (request.url?.startsWith("/api/info")) response.end(JSON.stringify({ pid: process.pid, version: "2.2.6" }))
-    else if (request.url?.includes("/settings")) {
+    if (request.url?.startsWith("/api/info")) response.end(JSON.stringify({ pid: process.pid, version: "fixture" }))
+    else if (request.url?.includes("/settingsV2")) {
       metadataReads++
       if (hooks.settingsFails) { response.statusCode = 404; response.end(JSON.stringify({ type: "rpc.method_not_found", message: "PRIVATE missing method" })); return }
       if (unavailable-- > 0) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "RPC is starting." })); return }

@@ -32,8 +32,8 @@ test("global context path and fixed file errors stay readable without disclosing
 
 test("configuration blockers explain the cause and recovery without debug", () => {
   for (const [reason, title, recovery] of [
-    ["models must be selector text or a nonempty array of selector groups", "Prediction settings are invalid", /models.*Predictions Setup.*configuration/s],
-    ["models_required", "Predictions need a model", /Predictions Setup.*models.*provider\/model/s],
+    ["models must be selector text or a nonempty array of selector groups", "Prediction settings are invalid", /models.*Predictions Setup.*predictions\.json/s],
+    ["models_required", "Predictions need a model", /Predictions Setup.*choose a model/s],
     ["model_unavailable", "No prediction models match", /provider.*pattern.*variant/s],
   ] as const) {
     const notice = statusNotice({ ...ready, enabled: reason === "model_unavailable", reason })
@@ -59,7 +59,7 @@ test("queue exhaustion includes safe causes and future eligibility, never an aut
 test("warnings are actionable and legacy compatibility is unknown rather than diagnosed as outdated", () => {
   const notice = statusNotice({ ...ready, warnings: ["Unknown option ignored: typo"] })!
   assert.equal(notice.severity, "warning")
-  assert.match(notice.message, /typo.*Remove or correct/s)
+  assert.match(notice.message, /typo.*predictions\.json/s)
   const view = formatStatus(ready, {})
   assert.match(view.summary, /snapshot/i)
   assert.match(view.summary, /Ready/)

@@ -6,7 +6,7 @@ import { createSetupEditor, type SaveInput, type SettingsInput, type SetupAPI, t
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 function editorFixture() {
-  const snapshot: SetupSnapshot = { revision: "r1", activeRevision: "r1", overrides: { automatic: false, models: "local/a" }, fallbackFields: {}, origins: resolvePreferences({}, { automatic: false, models: "local/a" }).origins, source: "/server/config.jsonc", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
+  const snapshot: SetupSnapshot = { revision: "r1", activeRevision: "r1", overrides: { automatic: false, models: "local/a" }, origins: resolvePreferences({ automatic: false, models: "local/a" }).origins, source: "/server/predictions.json", scope: "global", writable: true, fields: { automatic: false, models: "local/a" }, effective: { enabled: true, automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false, models: ["local/a"] }, serviceVersion: "one", catalog: [], issues: [] }
   let writes = 0, reads = 0
   const api: SetupAPI = {
     read: async () => { reads++; return structuredClone(snapshot) },
@@ -63,11 +63,11 @@ test("setup editor stages changed keys, discards locally, and never saves unchan
   editor.dispose()
 })
 
-function preferenceEditorFixture({ legacy = {}, overrides = {} }: { legacy?: SettingsInput; overrides?: SettingsInput } = {}) {
-  const resolved = resolvePreferences(legacy, overrides), parsed = parseOptions(resolved.rawOptions)
+function preferenceEditorFixture(overrides: SettingsInput = {}) {
+  const resolved = resolvePreferences(overrides), parsed = parseOptions(resolved.rawOptions)
   assert.ok(parsed.ok)
   const snapshot: SetupSnapshot = { revision: "r1", activeRevision: "r1", source: "/server/predictions.json", scope: "global", writable: true,
-    fields: resolved.fields, overrides, fallbackFields: resolved.fallbackFields, origins: resolved.origins, effective: parsed.value,
+    fields: resolved.fields, overrides, origins: resolved.origins, effective: parsed.value,
     serviceVersion: "same-engine", catalog: [], issues: [] }
   const writes: SaveInput[] = []
   const api: SetupAPI = {
@@ -77,7 +77,7 @@ function preferenceEditorFixture({ legacy = {}, overrides = {} }: { legacy?: Set
       writes.push(structuredClone(input))
       const { revision: _, ...change } = input
       snapshot.overrides = applyPreferenceChange(snapshot.overrides, change)
-      const next = resolvePreferences(legacy, snapshot.overrides), parsed = parseOptions(next.rawOptions)
+      const next = resolvePreferences(snapshot.overrides), parsed = parseOptions(next.rawOptions)
       assert.ok(parsed.ok)
       Object.assign(snapshot, { fields: next.fields, origins: next.origins, effective: parsed.value, revision: "r2", activeRevision: "r2" })
       return { kind: "saved", revision: "r2", serviceVersion: "same-engine" }
@@ -87,13 +87,13 @@ function preferenceEditorFixture({ legacy = {}, overrides = {} }: { legacy?: Set
 }
 
 test("reset stages an origin-only change until Save without restarting an equal-value engine", async () => {
-  const f = preferenceEditorFixture({ legacy: { debug: false }, overrides: { debug: false } })
+  const f = preferenceEditorFixture({ debug: false })
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
   editor.resetPreferences()
   assert.equal(editor.state().dirty, true)
   assert.deepEqual(editor.state().reset, ["debug"])
-  assert.equal(editor.state().origins.debug, "configuration")
+  assert.equal(editor.state().origins.debug, "default")
   assert.equal(f.writes.length, 0)
   assert.equal((await editor.save()).kind, "saved")
   assert.deepEqual(f.writes[0], { revision: "r1", fields: {}, reset: ["debug"] })
@@ -102,11 +102,11 @@ test("reset stages an origin-only change until Save without restarting an equal-
 })
 
 test("Discard restores saved origins and editing after reset clears only the edited field's reset intent", async () => {
-  const f = preferenceEditorFixture({ legacy: { debug: false, timeoutMs: 9000 }, overrides: { debug: true, automatic: false, timeoutMs: 8000 } })
+  const f = preferenceEditorFixture({ debug: true, automatic: false, timeoutMs: 8000 })
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
   editor.resetPreferences()
-  assert.equal(editor.state().origins.debug, "configuration")
+  assert.equal(editor.state().origins.debug, "default")
   assert.equal(editor.state().origins.automatic, "default")
   editor.discard()
   assert.equal(editor.state().origins.debug, "preferences")
@@ -120,8 +120,8 @@ test("Discard restores saved origins and editing after reset clears only the edi
   editor.dispose()
 })
 
-test("last-model removal suppresses inherited models instead of resetting to them", async () => {
-  const f = preferenceEditorFixture({ legacy: { models: "local/fallback" }, overrides: { models: "local/first" } })
+test("last-model removal leaves no models configured", async () => {
+  const f = preferenceEditorFixture({ models: "local/first" })
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
   editor.setGroups([])
@@ -134,7 +134,7 @@ test("last-model removal suppresses inherited models instead of resetting to the
 })
 
 test("lost reply cannot claim Saved for matching effective values with different persisted intent", async () => {
-  const f = preferenceEditorFixture({ legacy: { debug: false }, overrides: { debug: false } })
+  const f = preferenceEditorFixture({ debug: false })
   f.api.save = async input => { f.writes.push(input); throw new Error("Disconnected") }
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
@@ -146,7 +146,7 @@ test("lost reply cannot claim Saved for matching effective values with different
 })
 
 test("administrative masking cannot prove a reset persisted after a lost acknowledgement", async () => {
-  const f = preferenceEditorFixture({ legacy: { debug: false }, overrides: { debug: false } })
+  const f = preferenceEditorFixture({ debug: false })
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
   editor.resetPreferences()
@@ -161,7 +161,7 @@ test("administrative masking cannot prove a reset persisted after a lost acknowl
 })
 
 for (const intent of ["edit", "reset"] as const) test(`unverified Save preserves ${intent} intent and original revision after another writer replaces preferences`, async () => {
-  const f = preferenceEditorFixture({ legacy: { automatic: false, debug: false }, overrides: { debug: false } })
+  const f = preferenceEditorFixture({ debug: false })
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
   const before = structuredClone(editor.state().snapshot)
@@ -171,7 +171,7 @@ for (const intent of ["edit", "reset"] as const) test(`unverified Save preserves
   let writes = 0
   f.api.save = async () => {
     writes++
-    const resolved = resolvePreferences(f.snapshot.fallbackFields, { automatic: true })
+    const resolved = resolvePreferences({ automatic: true })
     const parsed = parseOptions(resolved.rawOptions)
     assert.ok(parsed.ok)
     Object.assign(f.snapshot, { revision: "external", activeRevision: "external", overrides: { automatic: true }, fields: resolved.fields, origins: resolved.origins, effective: parsed.value })
@@ -189,7 +189,7 @@ for (const intent of ["edit", "reset"] as const) test(`unverified Save preserves
 })
 
 test("durable acknowledgement without readback retains the unresolved draft and reset", { timeout: 4000 }, async () => {
-  const f = preferenceEditorFixture({ legacy: { debug: false }, overrides: { debug: false } })
+  const f = preferenceEditorFixture({ debug: false })
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
   editor.resetPreferences()

@@ -8,7 +8,7 @@ import { applyPreferenceChange, parsePreferences, preferenceFields, type Prefere
 import type { SaveInput, SettingsInput } from "./setup.ts"
 
 export type PreferencesHost = { home: string; platform: NodeJS.Platform; env: Record<string, string | undefined>; systemPaths: readonly string[] }
-export type PreferenceRead = { revision: string; source: string; writable: boolean; documentValid: boolean; policy: "user" | "managed"; overrides: SettingsInput; reason?: string }
+export type PreferenceRead = { revision: string; source: string; writable: boolean; documentValid: boolean; policy: "user" | "managed"; overrides: SettingsInput; contextFile?: unknown; reason?: string }
 export type PreferencesWriteResult = { kind: "written"; revision: string } | { kind: "conflict" | "read_only" | "failed"; message: string }
 const limit = 65536, run = promisify(execFile)
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT"
@@ -83,7 +83,7 @@ export function createPreferencesStore(host: PreferencesHost) {
     let writable = true, reason: string | undefined
     try { await safe(parent, target.ancestor, true) } catch (error) {
       if (info) throw error
-      // An absent document cannot override legacy options, even when safe writes are unavailable.
+      // An absent document still uses defaults when safe writes are unavailable.
       writable = false
       reason = error instanceof Refusal ? error.message : "Prediction preferences are not writable."
     }
@@ -105,7 +105,7 @@ export function createPreferencesStore(host: PreferencesHost) {
     return { source, directory, policy: "user" as const, bytes, document, info, parent: target.ancestor === directory ? parent : undefined, revision, writable, reason }
   }
   function snapshot(value: Awaited<ReturnType<typeof inspect>>): PreferenceRead {
-    return { revision: value.revision, source: value.source, writable: value.writable, documentValid: true, policy: value.policy, overrides: preferenceFields(value.document.settings),
+    return { revision: value.revision, source: value.source, writable: value.writable, documentValid: true, policy: value.policy, overrides: preferenceFields(value.document.settings), contextFile: value.document.settings.contextFile,
       ...(value.policy === "managed" ? { reason: "Administrative configuration prevents user prediction preferences." } : !value.writable ? { reason: value.reason ?? "Prediction preferences are not writable." } : {}) }
   }
   return {

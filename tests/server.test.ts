@@ -7,6 +7,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { readContextFile } from "../src/context-file.ts"
+import metadata from "../package.json" with { type: "json" }
 
 async function contextFixture(t: { after(fn: () => Promise<void>): void }, extra = {}) {
   const { api, calls, advance } = fixture()
@@ -1121,7 +1122,7 @@ test("final structured notices preserve safe failure detail and compatibility me
   assert.match(reply.notice!.title, /authentication failed/)
   assert.match(reply.notice!.message, /Reconnect.*reload/)
   assert.deepEqual(final, reply.notice)
-  assert.equal(service.status().pluginVersion, "0.3.0")
+  assert.equal(service.status().pluginVersion, metadata.version)
   assert.equal(service.status().feedbackRevision, 1)
 })
 

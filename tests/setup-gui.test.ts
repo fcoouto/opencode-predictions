@@ -33,17 +33,18 @@ async function mount(options: Options = {}): Promise<Page> {
       { providerID: "paid", id: "long", name: "非常に長いモデル名 ".repeat(8) + "Ünïcødé", enabled: true, variants: [] },
     ]
     const defaults = { enabled: true, automatic: true, debug: false, includeGithubPRContext: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3 }
-    const snapshot: any = { revision: "r1", source: "/server/opencode.jsonc", scope: "global", writable: !opts.readOnly, fields: opts.fields ?? { automatic: false, models: [["local/family/a#low"], ["local/b"]] }, catalog, issues: [], serviceVersion: "v1" }
-    Object.assign(snapshot, { overrides: { ...snapshot.fields }, fallbackFields: {}, activeRevision: "r1", origins: Object.fromEntries(["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"].map(key => [key, Object.hasOwn(snapshot.fields, key) ? "preferences" : "default"])) })
+    const snapshot: any = { revision: "r1", source: "/server/predictions.json", scope: "global", writable: !opts.readOnly, fields: opts.fields ?? { automatic: false, models: [["local/family/a#low"], ["local/b"]] }, catalog, issues: [], serviceVersion: "v1" }
+    Object.assign(snapshot, { overrides: { ...snapshot.fields }, activeRevision: "r1", origins: Object.fromEntries(["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"].map(key => [key, Object.hasOwn(snapshot.fields, key) ? "preferences" : "default"])) })
     const effective = () => ({ ...defaults, ...snapshot.fields, ...(snapshot.fields.models ? { models: snapshot.fields.models.map((group: string[]) => group.join(", ")) } : {}) })
     const view = () => ({ ...snapshot, effective: effective(), ...(opts.readOnly ? { reason: "This configuration source is not verified for setup writes." } : {}) })
     const clients: any = {}
     const client = (id: string) => clients[id] ??= { rpc: () => ({
-      settings: async () => { log.reads++; return { ...view(), ...(log.reads <= (opts.readOnlyReads ?? 0) ? { writable: false, reason: "Server preferences are temporarily read-only." } : {}) } },
+      settingsV2: async () => { log.reads++; return { ...view(), ...(log.reads <= (opts.readOnlyReads ?? 0) ? { writable: false, reason: "Server preferences are temporarily read-only." } : {}) } },
       saveSettings: async (input: any) => {
         log.saves.push({ serverID: id, input: JSON.parse(JSON.stringify(input)) })
         if (opts.saveKind === "conflict") return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
         if (opts.saveKind === "failed") return { kind: "failed", message: "Settings were not saved. Reopen settings and try again." }
+        if (opts.saveKind === "invalid_context") return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "invalid_value", message: "Correct contextFile in predictions.json on the server." }] }
         snapshot.fields = { ...snapshot.fields, ...input.fields }
         if (input.removeModels) delete snapshot.fields.models
         snapshot.overrides = { ...snapshot.overrides, ...input.fields, ...(input.removeModels ? { models: null } : {}) }
@@ -141,7 +142,8 @@ test("page orders Behavior, Models, Advanced with exact labels and Advanced coll
     await page.getByRole("button", { name: "Show advanced settings" }).click()
     assert.equal(await page.getByRole("switch", { name: "Include GitHub PR context" }).isChecked(), false, "omitted means off")
     const advanced = await page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-advanced-"] [data-title]')].map(node => node.textContent))
-    assert.deepEqual(advanced, ["Timeout per model", "Recent interactions", "Include GitHub PR context", "Debug notices"])
+    assert.deepEqual(advanced, ["Timeout per model", "Recent interactions", "Context file", "Include GitHub PR context", "Debug notices"])
+    assert.match((await row(page, "predictions-advanced-context-file").textContent())!, /predictions\.json on the OpenCode server/)
     const warning = (await row(page, "predictions-advanced-github").textContent())!
     assert.match(warning, /private/i)
     assert.match(warning, /fallback and paid/i)
@@ -471,19 +473,29 @@ test("user preferences show path, provenance, reset intent and simultaneous-writ
     await idle(page)
     const body = await page.locator("body").textContent() ?? ""
     assert.match(body, /User preferences/)
-    assert.match(body, /\/server\/opencode\.jsonc/)
+    assert.match(body, /\/server\/predictions\.json/)
     assert.match(body, /Saved preference/)
-    assert.match(body, /OpenCode configuration/)
+    assert.doesNotMatch(body, /OpenCode configuration/)
     assert.match(body, /Default/)
     assert.match(body, /Simultaneous saves can overwrite each other's changes, including different settings/)
     assert.match(body, /recovery copy may not contain those changes/)
     await page.screenshot({ path: ".test-artifacts/preferences-gui.png", fullPage: true })
-    await page.getByRole("button", { name: "Use OpenCode configuration", exact: true }).click()
+    await page.getByRole("button", { name: "Reset to defaults", exact: true }).click()
     assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0)
     assert.equal(await save(page).isDisabled(), false)
     await save(page).click()
     await page.waitForFunction(() => (window as any).log.saves.length === 1)
     assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input.reset), ["models", "automatic"])
+  } finally { await page.close() }
+})
+
+test("Save shows the server-only context file repair beside the Save action", async () => {
+  const page = await mount({ saveKind: "invalid_context" })
+  try {
+    await idle(page)
+    await page.getByRole("button", { name: "Reset to defaults", exact: true }).click()
+    await save(page).click()
+    await page.waitForFunction(() => /Correct contextFile in predictions\.json on the server/.test(document.body.textContent ?? ""), undefined, { timeout: 1500 })
   } finally { await page.close() }
 })
 

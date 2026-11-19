@@ -30,12 +30,13 @@ test("packed contents include working entries and exclude local data and install
 test("packed setup surface: selected-server Save, no local bridge, writer only in the server bundle", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8"))
   const rpc = (await import(pathToFileURL(resolve(pkg.exports["./rpc"])).href)).Predictions
-  assert.deepEqual(Object.keys(rpc.methods).sort(), ["predict", "previewSettings", "saveSettings", "settings", "status"], "only the selected-server settings contract is public")
+  assert.deepEqual(Object.keys(rpc.methods).sort(), ["predict", "previewSettings", "saveSettings", "settingsV2", "status"], "only the selected-server settings contract is public")
   const gui = await readFile(pkg.exports["./gui-experimental"], "utf8")
   const server = await readFile(pkg.exports["."], "utf8")
   const tui = await readFile(pkg.exports["./tui"], "utf8")
-  // The server constructs predictions.json.backup by appending ".backup" to its resolved source.
-  for (const marker of ["predictions.json", ".predictions.tmp-", ".backup"]) {
+  // Clients may name predictions.json in help text, but only the server constructs the write paths.
+  assert.ok(server.includes("predictions.json"))
+  for (const marker of [".predictions.tmp-", ".backup", "node:fs/promises"]) {
     assert.ok(server.includes(marker), `server bundle owns ${marker}`)
     assert.equal(gui.includes(marker), false, `GUI bundle must not contain ${marker}`)
     assert.equal(tui.includes(marker), false, `CLI bundle must not contain ${marker}`)

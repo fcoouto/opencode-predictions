@@ -32,7 +32,7 @@ const choose = async (page: Page, label: string, option: string) => {
 const flip = (page: Page, name: string) => page.getByRole("switch", { name }).click({ force: true })
 const status = async (page: Page) => (await page.locator('[data-footer] [role="status"], [role="status"]').allTextContents()).join(" ")
 const stored = async (fixture: Awaited<ReturnType<typeof createFixture>>) => { const text = await readFile(fixture.preferencesFile, "utf8"); return { text, config: JSON.parse(text) as any } }
-const settings = (fixture: Awaited<ReturnType<typeof createFixture>>) => fixture.api.rpc(Predictions).settings({}, { location: { directory: fixture.directory } }) as Promise<SetupSnapshot>
+const settings = (fixture: Awaited<ReturnType<typeof createFixture>>) => fixture.api.rpc(Predictions).settingsV2({}, { location: { directory: fixture.directory } }) as Promise<SetupSnapshot>
 
 test("setup ui: Desktop configures all eight settings through the page, reorders groups, saves, reloads and reopens", { timeout: 150000, skip }, async () => {
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] }, {}, { configSource: "global-jsonc", projectConfig: true })
@@ -40,9 +40,10 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
   try {
     await show()
     const original = await readFile(fixture.configFile!)
-    assert.equal(await page.evaluate(() => (window as any).__predictionFixture.setupServerVersion()), "2.3.0")
     const service = JSON.parse(await readFile(join(fixture.root, "state/opencode/service.json"), "utf8"))
-    assert.equal(service.version, "2.3.0")
+    assert.ok(service.version, "Desktop reports its server version")
+    assert.equal(await page.evaluate(() => (window as any).__predictionFixture.setupServerVersion()), service.version)
+    assert.notEqual(service.pid, (await fixture.api.server.info()).pid, "Desktop is not using the fixture CLI server")
     for (const authorization of ["", "Basic " + Buffer.from("opencode:wrong").toString("base64")]) {
       const denied = await fetch(service.url + "/api/rpc/fcoouto.predictions/saveSettings", {
         method: "POST", headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
@@ -50,7 +51,7 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
       })
       assert.equal(denied.status, 401, "Desktop's bundled server rejects unauthenticated preference writes")
       await denied.arrayBuffer()
-      await assert.rejects(readFile(fixture.preferencesFile), { code: "ENOENT" })
+      assert.deepEqual((await stored(fixture)).config.settings, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] })
     }
     // A zero-match selector is warned about but kept.
     await page.getByText("0 models match now", { exact: true }).waitFor({ state: "visible", timeout: 15000 })
@@ -101,8 +102,8 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
   } finally { await app.close() }
 })
 
-test("setup ui: inline configuration supports first Save and staged reset", { timeout: 90000, skip }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] }, {}, { projectConfig: true })
+test("setup ui: inline plugin registration supports first Save and staged reset", { timeout: 90000, skip }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, seedPreferences: false })
   const { app, page, show } = await open(fixture, "inline-profile")
   try {
     await show()
@@ -110,7 +111,7 @@ test("setup ui: inline configuration supports first Save and staged reset", { ti
     await page.getByRole("button", { name: "Save changes" }).click()
     await page.getByText("Saved. The new settings are active.", { exact: true }).waitFor()
     assert.deepEqual((await stored(fixture)).config.settings, { enabled: false })
-    await page.getByRole("button", { name: "Use OpenCode configuration", exact: true }).click()
+    await page.getByRole("button", { name: "Reset to defaults", exact: true }).click()
     assert.deepEqual((await stored(fixture)).config.settings, { enabled: false }, "reset is staged")
     await page.getByRole("button", { name: "Save changes" }).click()
     await page.getByText("Saved. The new settings are active.", { exact: true }).waitFor()

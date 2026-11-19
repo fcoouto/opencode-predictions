@@ -3,14 +3,15 @@ import type { Candidate, CatalogModel } from "./models.ts"
 import { abortable } from "./service.ts"
 import { applyPreferenceChange, resolvePreferences } from "./preferences.ts"
 
+// Setup RPC must not let clients select files for the server to read and send to providers.
 export const settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] as const
 export type SettingKey = typeof settingKeys[number]
-export type SettingOrigin = "preferences" | "configuration" | "default"
+export type SettingOrigin = "preferences" | "default"
 export type SettingsInput = Partial<Record<SettingKey, unknown>>
 export type ConfigSnapshot = { revision: string; source?: string; scope: "global"; writable: boolean; reason?: string; fields: SettingsInput }
 export type SetupLocation = { directory: string; workspaceID?: string }
-export type SetupIssue = { field: SettingKey; group?: number; entry?: number; severity: "error" | "warning"; code: string; message: string }
-export type SetupSnapshot = ConfigSnapshot & { overrides: SettingsInput; fallbackFields: SettingsInput; origins: Record<SettingKey, SettingOrigin>; activeRevision: string | null; effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string }
+export type SetupIssue = { field: SettingKey | "contextFile"; group?: number; entry?: number; severity: "error" | "warning"; code: string; message: string }
+export type SetupSnapshot = ConfigSnapshot & { overrides: SettingsInput; origins: Record<SettingKey, SettingOrigin>; activeRevision: string | null; effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string }
 export type SetupPreview = { groups: { selectors: string[]; candidates: Candidate[] }[]; issues: SetupIssue[] }
 export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true; reset?: SettingKey[] }
 export type SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }
@@ -35,18 +36,20 @@ export async function waitForSetupSnapshot(read: SetupAPI["read"], signal: Abort
   }
 }
 
-export function validateSettings(fields: SettingsInput): SetupIssue[] {
+export function validateSettings(fields: SettingsInput, contextFile?: unknown): SetupIssue[] {
   if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.")
   if (Object.keys(fields).some(key => !(settingKeys as readonly string[]).includes(key))) throw new Error("Unknown setting.")
   for (const field of ["timeoutMs", "contextTurns"] as const) {
     if (fields[field] === null) return [{ field, severity: "error", code: "invalid_value", message: "Enter a whole number." }]
   }
-  const parsed = parseOptions(fields)
-  return parsed.ok ? [] : [{ field: settingKeys.find(key => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason }]
+  const parsed = parseOptions({ ...fields, contextFile })
+  if (parsed.ok) return []
+  const contextIssue = parsed.reason.startsWith("contextFile")
+  return [{ field: contextIssue ? "contextFile" : settingKeys.find(key => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason + (contextIssue ? ". Correct it in predictions.json on the server." : "") }]
 }
 
 export function createSetupEditor(api: SetupAPI, changed: () => void) {
-  const state: SetupState = { fields: {}, reset: [], origins: resolvePreferences({}, {}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false }
+  const state: SetupState = { fields: {}, reset: [], origins: resolvePreferences({}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false }
   const lifetime = new AbortController()
   let generation = 0, previewAbort: AbortController | undefined
   const notify = () => { if (!lifetime.signal.aborted) changed() }
@@ -59,12 +62,11 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     const edits = snapshot ? changedFields(snapshot.fields, state.fields) : {}
     state.dirty = !!snapshot && (state.reset.length > 0 || Object.keys(edits).length > 0)
     if (snapshot) state.origins = Object.fromEntries(settingKeys.map(key => [key, state.reset.includes(key)
-      ? Object.hasOwn(snapshot.fallbackFields, key) ? "configuration" : "default"
+      ? "default"
       : Object.hasOwn(edits, key) ? "preferences" : snapshot.origins[key]])) as Record<SettingKey, SettingOrigin>
     groups(); notify()
   }
-  // A read-only target (inline, project or unverified source) may store nothing in the file setup could edit while predictions still
-  // run on effective values. Show those values so the page never claims "No models configured" over a working override.
+  // Show the active settings when the file is readable but cannot be saved here.
   const displayed = (snapshot: SetupSnapshot): SetupSnapshot => {
     const effective = snapshot.effective
     if (snapshot.writable || !effective) return snapshot
@@ -110,7 +112,7 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     resetPreferences() {
       if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot?.writable) return
       resetPreview()
-      state.fields = structuredClone(state.snapshot.fallbackFields)
+      state.fields = {}
       state.reset = settingKeys.filter(key => Object.hasOwn(state.snapshot!.overrides, key))
       state.lastSave = undefined
       update()

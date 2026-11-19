@@ -3,10 +3,10 @@ import assert from "node:assert/strict"
 import { createSetupService } from "../src/setup-service.ts"
 import { createPreferencesRuntime } from "../src/preferences-runtime.ts"
 import { createPreferencesStore, type PreferenceRead, type PreferencesStore } from "../src/preferences-store.ts"
-import { mkdir, mkdtemp, readFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import type { CatalogModel } from "../src/models.ts"
-import { changedFields, type SettingsInput } from "../src/setup.ts"
+import { changedFields, type SaveInput, type SettingsInput } from "../src/setup.ts"
 import { Predictions } from "../src/rpc.ts"
 import { createService, type ServiceAPI } from "../src/service.ts"
 import { JsonSchema, Schema, SchemaRepresentation } from "effect"
@@ -63,15 +63,14 @@ function fixture(fields: SettingsInput = { models: "local/family/a#low", automat
   let metadataCalls = 0, writes = 0
   const snapshot: PreferenceRead = { revision: "r1", source: "/server/predictions.json", writable: true, documentValid: true, policy: "user", overrides: fields }
   const store: PreferencesStore = { read: async () => structuredClone(snapshot), write: async () => { writes++; throw new Error("Unexpected write") } }
-  const current = { options: { ...fields, unknown: "PRIVATE_OPTION" } as unknown, version: "mount-one" }
-  const runtime = createPreferencesRuntime(store, { unknown: "PRIVATE_OPTION" }, options => createService({
+  const runtime = createPreferencesRuntime(store, options => createService({
     session: async () => { throw new Error("Unexpected session") },
     context: async () => { throw new Error("Unexpected context") },
     models: async () => catalog,
     generate: async () => { throw new Error("Unexpected generation") },
   }, options, "/server"))
   const service = createSetupService(store, async () => { metadataCalls++; return catalog }, runtime)
-  return { service, store, snapshot, current, runtime, counts: () => ({ metadataCalls, writes }) }
+  return { service, store, snapshot, runtime, counts: () => ({ metadataCalls, writes }) }
 }
 
 test("setup reads stored and effective fields separately and returns only safe model metadata", async () => {
@@ -84,7 +83,6 @@ test("setup reads stored and effective fields separately and returns only safe m
   assert.equal(snapshot.activeRevision, snapshot.revision)
   assert.equal(snapshot.origins.models, "preferences")
   assert.deepEqual(snapshot.overrides, snapshot.fields)
-  assert.deepEqual(snapshot.fallbackFields, {})
   assert.deepEqual(snapshot.effective, { enabled: true, models: ["local/family/a#low"], automatic: false, escalation: "manual", timeoutMs: 8000, contextTurns: 3, debug: false, includeGithubPRContext: false })
   assert.deepEqual(snapshot.catalog, catalog.map(({ providerID, id, name, enabled, variants }) => ({ providerID, id, name, enabled, variants: variants.map(({ id }) => ({ id })) })))
   assert.doesNotMatch(JSON.stringify(snapshot), /PRIVATE/)
@@ -171,7 +169,7 @@ test("setup metadata leaves runtime queue, session context and provider generati
     models: async () => catalog,
     generate: async () => { providerGenerateCalls++; return '{"prompt":null}' },
   }
-  const owner = createPreferencesRuntime(f.store, {}, options => createService(api, options, "/server"))
+  const owner = createPreferencesRuntime(f.store, options => createService(api, options, "/server"))
   await owner.refresh(signal())
   const runtime = owner.state().service, before = runtime.status()
   const setup = createSetupService(f.store, api.models, owner)
@@ -183,7 +181,7 @@ test("setup metadata leaves runtime queue, session context and provider generati
 })
 
 test("public RPC declares Save without a client-supplied target", () => {
-  assert.ok("settings" in Predictions.methods)
+  assert.ok("settingsV2" in Predictions.methods)
   assert.ok("previewSettings" in Predictions.methods)
   assert.equal("saveSettings" in Predictions.methods, true)
 })
@@ -191,10 +189,10 @@ test("public RPC declares Save without a client-supplied target", () => {
 test("snapshot RPC requires complete valid provenance and accepts inactive revisions", async () => {
   const f = fixture()
   const snapshot = await f.service.read(signal())
-  const schema = SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(Predictions.methods.settings.output)) as Schema.Codec<unknown>
+  const schema = SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(Predictions.methods.settingsV2.output)) as Schema.Codec<unknown>
   const read = Schema.decodeUnknownSync(schema, { onExcessProperty: "error" })
   read({ ...snapshot, activeRevision: null, effective: null })
-  for (const key of ["overrides", "fallbackFields", "origins", "activeRevision"]) {
+  for (const key of ["overrides", "origins", "activeRevision"]) {
     const value = { ...snapshot } as Record<string, unknown>
     delete value[key]
     assert.throws(() => read(value))
@@ -235,12 +233,12 @@ test("GitHub PR context participates in changed-field detection and saved-not-ac
   assert.equal(result.kind, "saved_not_active", "unchanged effective value means activation is unverified")
 })
 
-async function preferencesServiceFixture(legacy: Record<string, unknown> = { models: "local/family/a#low" }) {
+async function preferencesServiceFixture() {
   await mkdir(".test-artifacts", { recursive: true })
   const home = await mkdtemp(resolve(".test-artifacts/preferences-service-"))
   const store = createPreferencesStore({ home, platform: process.platform, env: {}, systemPaths: [] })
   const calls = { session: 0, context: 0, generate: 0, pr: 0 }
-  const runtime = createPreferencesRuntime(store, legacy, options => createService({
+  const runtime = createPreferencesRuntime(store, options => createService({
     session: async () => { calls.session++; throw new Error("Unexpected session") },
     context: async () => { calls.context++; return [] },
     generate: async () => { calls.generate++; return '{"prompt":null}' },
@@ -248,7 +246,7 @@ async function preferencesServiceFixture(legacy: Record<string, unknown> = { mod
     models: async () => catalog,
   }, options, "/server"))
   const setup = createSetupService(store, async () => catalog, runtime)
-  return { store, runtime, setup, calls, file: join(home, ".config/opencode/predictions.json"), legacy }
+  return { store, runtime, setup, calls, file: join(home, ".config/opencode/predictions.json") }
 }
 
 test("normal server saves preferences without source qualification", async () => {
@@ -265,6 +263,27 @@ test("normal server saves preferences without source qualification", async () =>
   f.runtime.dispose()
 })
 
+test("server context path activates from disk and cannot be changed through Setup", async () => {
+  const f = await preferencesServiceFixture()
+  const before = await f.setup.read(signal())
+  assert.equal((await f.setup.save({ revision: before.revision, fields: { debug: true } }, signal())).kind, "saved")
+  const text = '{"version":1,"settings":{"contextFile":"/server/prediction-context.md","debug":true}}\n'
+  await writeFile(f.file, text)
+  const after = await f.setup.read(signal())
+  assert.equal(f.runtime.state().service.status().contextFile, "/server/prediction-context.md")
+  await assert.rejects(f.setup.save({ revision: after.revision, fields: { contextFile: "/server/private.txt" } as SettingsInput }, signal()), /Unknown setting/)
+  await assert.rejects(f.setup.save({ revision: after.revision, fields: {}, reset: ["contextFile"] } as unknown as SaveInput, signal()), /changes are invalid/)
+  assert.equal(await readFile(f.file, "utf8"), text)
+  assert.equal((await f.setup.save({ revision: after.revision, fields: {}, reset: ["debug"] }, signal())).kind, "saved")
+  assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, { contextFile: "/server/prediction-context.md" })
+  await writeFile(f.file, '{"version":1,"settings":{"contextFile":"relative.md"}}\n')
+  const invalid = await f.setup.read(signal())
+  assert.equal(invalid.effective, null)
+  assert.equal(invalid.issues[0]?.field, "contextFile")
+  assert.equal((await f.setup.save({ revision: invalid.revision, fields: { debug: true } }, signal())).kind, "invalid")
+  f.runtime.dispose()
+})
+
 test("Save never accepts a path or unknown setting", async () => {
   const f = await preferencesServiceFixture()
   const { revision } = await f.setup.read(signal())
@@ -278,22 +297,23 @@ test("Save never accepts a path or unknown setting", async () => {
   f.runtime.dispose()
 })
 
-test("fallback changes conflict with a stale draft", async () => {
+test("external preference changes conflict with a stale draft", async () => {
   const f = await preferencesServiceFixture()
   const before = await f.setup.read(signal())
-  f.legacy.debug = true
+  await f.store.write((await f.store.read(signal())).revision, { fields: { debug: true } }, signal())
   assert.equal((await f.setup.save({ revision: before.revision, fields: { automatic: false } }, signal())).kind, "conflict")
-  await assert.rejects(readFile(f.file), { code: "ENOENT" })
+  assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, { debug: true })
   f.runtime.dispose()
 })
 
-test("reset validates the prospective inherited options", async () => {
-  const f = await preferencesServiceFixture({ timeoutMs: "invalid" })
+test("reset restores the default and clears the saved value", async () => {
+  const f = await preferencesServiceFixture()
   let raw = await f.store.read(signal())
   assert.equal((await f.store.write(raw.revision, { fields: { timeoutMs: 8000 } }, signal())).kind, "written")
-  const before = await f.setup.read(signal()), bytes = await readFile(f.file)
-  assert.equal((await f.setup.save({ revision: before.revision, fields: {}, reset: ["timeoutMs"] }, signal())).kind, "invalid")
-  assert.deepEqual(await readFile(f.file), bytes)
+  const before = await f.setup.read(signal())
+  assert.equal((await f.setup.save({ revision: before.revision, fields: {}, reset: ["timeoutMs"] }, signal())).kind, "saved")
+  assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, {})
+  assert.equal((await f.setup.read(signal())).effective?.timeoutMs, 8000)
   f.runtime.dispose()
 })
 

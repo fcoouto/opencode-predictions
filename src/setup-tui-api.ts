@@ -10,7 +10,7 @@ export function createTUISetupAPI(ctx: Pick<TUIPlugin.Context, "client">, locati
   }
   return {
     async read(signal) {
-      const snapshot = await waitForSetupSnapshot(async signal => await selected().settings({}, { location: pinned, signal }) as SetupSnapshot, signal)
+      const snapshot = await waitForSetupSnapshot(async signal => await selected().settingsV2({}, { location: pinned, signal }) as SetupSnapshot, signal)
       selected()
       return snapshot
     },

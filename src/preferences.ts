@@ -2,7 +2,7 @@ import { parseTree, type Node, type ParseError } from "jsonc-parser"
 import { settingKeys, validateSettings, type SaveInput, type SettingsInput, type SettingKey, type SettingOrigin, type SetupIssue } from "./setup.ts"
 
 export type PreferenceDocument = { version: 1; settings: Record<string, unknown>; [key: string]: unknown }
-export type ResolvedPreferences = { rawOptions: unknown; fields: SettingsInput; fallbackFields: SettingsInput; origins: Record<SettingKey, SettingOrigin>; issues: SetupIssue[] }
+export type ResolvedPreferences = { rawOptions: SettingsInput & { contextFile?: unknown }; fields: SettingsInput; origins: Record<SettingKey, SettingOrigin>; issues: SetupIssue[] }
 
 export function parsePreferences(text: string): PreferenceDocument {
   const invalid = () => new Error("Prediction preferences must be a version 1 JSON document with a settings object.")
@@ -49,16 +49,10 @@ export function applyPreferenceChange(overrides: Record<string, unknown>, input:
   return next
 }
 
-export function resolvePreferences(legacy: unknown, overrides: SettingsInput): ResolvedPreferences {
-  const valid = legacy === undefined || !!legacy && typeof legacy === "object" && !Array.isArray(legacy)
-  const base = valid && legacy ? legacy as Record<string, unknown> : {}
-  const fallbackFields = preferenceFields(base)
-  // Legacy numeric nulls already mean defaults; only explicit preference nulls are invalid.
-  for (const key of ["timeoutMs", "contextTurns"] as const) if (fallbackFields[key] === null) delete fallbackFields[key]
-  const known = preferenceFields(overrides)
-  const fields = { ...fallbackFields, ...known }
-  const rawOptions = valid ? { ...base, ...known } : legacy
-  if (known.models === null) { delete fields.models; if (rawOptions && typeof rawOptions === "object") delete (rawOptions as Record<string, unknown>).models }
-  const origins = Object.fromEntries(settingKeys.map(key => [key, Object.hasOwn(known, key) ? "preferences" : Object.hasOwn(fallbackFields, key) ? "configuration" : "default"])) as Record<SettingKey, SettingOrigin>
-  return { rawOptions, fields, fallbackFields, origins, issues: validatePreferenceFields(known) }
+export function resolvePreferences(overrides: SettingsInput, contextFile?: unknown): ResolvedPreferences {
+  const fields = preferenceFields(overrides)
+  if (fields.models === null) delete fields.models
+  const rawOptions = { ...fields, ...(contextFile === undefined ? {} : { contextFile }) }
+  const origins = Object.fromEntries(settingKeys.map(key => [key, Object.hasOwn(overrides, key) ? "preferences" : "default"])) as Record<SettingKey, SettingOrigin>
+  return { rawOptions, fields, origins, issues: validateSettings(fields, contextFile) }
 }

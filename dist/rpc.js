@@ -25,7 +25,7 @@ var settingsFields = {
 var setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext", "contextFile"] },
     group: { type: "integer", minimum: 0 },
     entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] },
@@ -85,7 +85,8 @@ var Predictions = Rpc.define({
       input: { type: "object", additionalProperties: false },
       output: { type: "object" }
     },
-    settings: {
+    // Old Setup clients interpret reset as inheritance. Do not serve them a writable snapshot.
+    settingsV2: {
       input: { type: "object", additionalProperties: false },
       output: {
         type: "object",
@@ -97,15 +98,14 @@ var Predictions = Rpc.define({
           reason: { type: "string" },
           fields: settingsFields,
           overrides: settingsFields,
-          fallbackFields: settingsFields,
-          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "configuration", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
           activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
           serviceVersion: { type: "string" }
         },
-        required: ["revision", "scope", "writable", "fields", "overrides", "fallbackFields", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
+        required: ["revision", "scope", "writable", "fields", "overrides", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
         additionalProperties: false
       }
     },

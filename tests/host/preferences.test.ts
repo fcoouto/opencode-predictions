@@ -13,12 +13,12 @@ import type { SetupSnapshot } from "../../src/setup.ts"
 
 for (const [configSource, pluginReference] of [["inline", "object"], ["global-jsonc", "object"], ["global-json", "string"]] as const) {
   test(`authorized normal server saves ${configSource}/${pluginReference} preferences without editing OpenCode`, { timeout: 60000 }, async t => {
-    await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { configSource, projectConfig: true, pluginReference })
+    await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { configSource, projectConfig: true, pluginReference, seedPreferences: false })
     assert.equal(f.env.OPENCODE_DISABLE_PROJECT_CONFIG, undefined)
     await mkdir(join(f.root, "config/opencode/plugins"), { recursive: true })
     const original = f.configFile ? await readFile(f.configFile) : undefined
     const rpc = f.api.rpc(Predictions), location = { directory: f.directory }
-    const before = await rpc.settings({}, { location }) as SetupSnapshot
+    const before = await rpc.settingsV2({}, { location }) as SetupSnapshot
     assert.equal(before.writable, true, f.output())
     assert.equal(before.source, f.preferencesFile)
     assert.equal("localAuthority" in before, false)
@@ -31,7 +31,7 @@ for (const [configSource, pluginReference] of [["inline", "object"], ["global-js
     const result = await rpc.saveSettings({ revision: before.revision, fields: { automatic: false } }, { location }) as any
     assert.equal(result.kind, "saved", JSON.stringify(result) + f.output())
     assert.deepEqual(JSON.parse(await readFile(f.preferencesFile, "utf8")), { version: 1, settings: { automatic: false } })
-    const after = await rpc.settings({}, { location }) as SetupSnapshot
+    const after = await rpc.settingsV2({}, { location }) as SetupSnapshot
     assert.equal(after.activeRevision, after.revision)
     assert.equal(after.effective?.automatic, false)
     assert.equal(after.origins.automatic, "preferences")
@@ -40,6 +40,8 @@ for (const [configSource, pluginReference] of [["inline", "object"], ["global-js
     for (const input of [
       { revision: after.revision, fields: {}, source: "/client/target" },
       { revision: after.revision, fields: { path: "/client/target" } },
+      { revision: after.revision, fields: { contextFile: "/server/private.txt" } },
+      { revision: after.revision, fields: {}, reset: ["contextFile"] },
       { revision: after.revision, fields: { debug: "x".repeat(65537) } },
       { revision: after.revision, fields: {}, reset: ["debug", "debug"] },
     ]) {
@@ -55,18 +57,18 @@ for (const [configSource, pluginReference] of [["inline", "object"], ["global-js
   })
 }
 
-test("empty password still requires host-generated credentials on OpenCode 2.2.6", { timeout: 60000 }, async t => {
-  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, emptyPassword: true })
+test("empty password still requires host-generated credentials", { timeout: 60000 }, async t => {
+  await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, emptyPassword: true, seedPreferences: false })
   const client = OpenCode.make({ baseUrl: f.address }), rpc = f.api.rpc(Predictions), location = { directory: f.directory }
-  await assert.rejects(client.rpc(Predictions).settings({}, { location }), (error: any) => error._tag === "UnauthorizedError")
-  const before = await rpc.settings({}, { location }) as SetupSnapshot
+  await assert.rejects(client.rpc(Predictions).settingsV2({}, { location }), (error: any) => error._tag === "UnauthorizedError")
+  const before = await rpc.settingsV2({}, { location }) as SetupSnapshot
   assert.equal((await rpc.saveSettings({ revision: before.revision, fields: { debug: true } }, { location }) as any).kind, "saved")
   assert.deepEqual(JSON.parse(await readFile(f.preferencesFile, "utf8")).settings, { debug: true })
   assert.deepEqual(f.calls, [])
   t.diagnostic("Host version: " + (await f.api.server.info()).version)
 })
 
-for (const launch of ["shared", "standalone"]) test(`ordinary ${launch} CLI edits all eight settings without OpenCode config changes`, { timeout: 90000 }, async () => {
+for (const launch of ["shared", "standalone"]) test(`ordinary ${launch} CLI edits all eight settings without OpenCode config changes`, { timeout: 90000 }, async t => {
   await using f = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] }, {}, { configSource: "global-jsonc", projectConfig: true })
   const session = await f.api.session.create({ location: { directory: f.directory }, model: { providerID: "fixture", id: "model" } })
   await f.writeConfig({ ...f.config, plugins: [...f.config.plugins, { package: resolve("tests/host/observer"), options: {} }] })
@@ -77,11 +79,13 @@ for (const launch of ["shared", "standalone"]) test(`ordinary ${launch} CLI edit
   })
   const result = JSON.parse(stdout)
   assert.equal(result.fullSetup, true)
-  assert.equal(result.host.hostVersion, "2.2.6")
+  assert.ok(result.host.hostVersion)
+  assert.equal(result.host.serverVersion, result.host.hostVersion, "the CLI uses its own OpenCode version")
+  t.diagnostic(`Host version: ${result.host.hostVersion}`)
   assert.equal(result.host.sharedService, launch === "shared")
   assert.equal(result.host.standalone, launch === "standalone")
   if (launch === "shared") {
-    const endpoint = await Service.discover({ file: join(f.root, "state/opencode/service.json"), version: "2.2.6" })
+    const endpoint = await Service.discover({ file: join(f.root, "state/opencode/service.json"), version: result.host.hostVersion })
     assert.ok(endpoint, "the ordinary shared service remains discoverable after the CLI exits")
     assert.equal(JSON.parse(await readFile(join(f.root, "state/opencode/service.json"), "utf8")).pid, result.host.serverPid)
   }

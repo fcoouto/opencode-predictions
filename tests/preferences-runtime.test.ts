@@ -5,8 +5,8 @@ import { createService, type ServiceAPI } from "../src/service.ts"
 import type { PreferenceRead, PreferencesStore } from "../src/preferences-store.ts"
 
 const signal = () => new AbortController().signal
-function fixture(legacy: unknown = { models: "local/a", debug: false }) {
-  let stored: PreferenceRead = { source: "/server/predictions.json", revision: "one", writable: true, documentValid: true, policy: "user", overrides: {} }
+function fixture(overrides: PreferenceRead["overrides"] = { models: "local/a" }) {
+  let stored: PreferenceRead = { source: "/server/predictions.json", revision: "one", writable: true, documentValid: true, policy: "user", overrides }
   const calls = { construct: 0, dispose: 0, generate: 0, pr: 0 }
   const api: ServiceAPI = {
     session: async id => ({ id, time: { idle: 2 }, location: { directory: "/project" } }),
@@ -16,7 +16,7 @@ function fixture(legacy: unknown = { models: "local/a", debug: false }) {
     generate: async () => { calls.generate++; return '{"prompt":"Run tests."}' },
   }
   const store: PreferencesStore = { read: async () => structuredClone(stored), write: async () => { throw new Error("Unexpected write") } }
-  const runtime = createPreferencesRuntime(store, legacy, options => {
+  const runtime = createPreferencesRuntime(store, options => {
     calls.construct++
     const engine = createService(api, options, "/project"), dispose = engine.dispose
     engine.dispose = () => { calls.dispose++; dispose() }
@@ -36,7 +36,7 @@ test("origin-only reset advances active revision without replacing the engine or
     f.set({ overrides: {} }); await f.runtime.refresh(signal())
     assert.notEqual(f.runtime.state().revision, before.revision)
     assert.equal(f.runtime.state().activeRevision, f.runtime.state().revision)
-    assert.equal(f.runtime.state().resolved.origins.debug, "configuration")
+    assert.equal(f.runtime.state().resolved.origins.debug, "default")
     assert.equal(f.calls.construct, 1)
     assert.equal(f.calls.generate, 0)
   } finally { f.runtime.dispose() }
@@ -63,8 +63,8 @@ for (const field of ["timeoutMs", "contextTurns"] as const) test(`numeric-null $
   } finally { f.runtime.dispose() }
 })
 
-test("missing preferences retain legacy null defaults and readable unwritable values remain active", async () => {
-  const f = fixture({ models: "local/a", timeoutMs: null, contextTurns: null })
+test("missing preferences use defaults and readable unwritable values remain active", async () => {
+  const f = fixture({})
   try {
     await f.runtime.refresh(signal())
     assert.equal(f.runtime.state().service.status().timeoutMs, 8000)
@@ -93,13 +93,14 @@ test("corrupt or unreadable replacement disables predictions instead of restorin
   } finally { f.runtime.dispose() }
 })
 
-test("administrative configuration ignores preferences and uses legacy options", async () => {
+test("administrative configuration masks preferences and uses defaults", async () => {
   const f = fixture()
   try {
     f.set({ policy: "managed", writable: false, overrides: { debug: true } })
     await f.runtime.refresh(signal())
     assert.equal(f.runtime.state().service.status().debug, false)
-    assert.equal(f.runtime.state().resolved.origins.debug, "configuration")
+    assert.equal(f.runtime.state().resolved.origins.debug, "default")
+    assert.equal(f.runtime.state().service.status().models, undefined)
   } finally { f.runtime.dispose() }
 })
 

@@ -3,11 +3,11 @@ import assert from "node:assert/strict"
 import { parsePreferences, resolvePreferences, validatePreferenceFields } from "../src/preferences.ts"
 import { parseOptions } from "../src/options.ts"
 
-test("preferences override only present known fields and preserve fallback provenance", () => {
-  const value = resolvePreferences({ models: "local/a#low", automatic: true, contextFile: "/server/context.md" }, { automatic: false })
+test("preferences use only present known fields and built-in defaults", () => {
+  const value = resolvePreferences({ automatic: false }, "/server/context.md")
   assert.equal(value.fields.automatic, false)
   assert.equal(value.origins.automatic, "preferences")
-  assert.equal(value.origins.models, "configuration")
+  assert.equal(value.origins.models, "default")
   assert.equal(value.origins.debug, "default")
   assert.equal((value.rawOptions as any).contextFile, "/server/context.md")
   assert.equal(Object.hasOwn(value.fields, "debug"), false)
@@ -15,36 +15,31 @@ test("preferences override only present known fields and preserve fallback prove
   assert.equal(parseOptions(value.rawOptions).ok, true)
 })
 
-test("preferences apply over omitted legacy options without replacing defaults or accepting invalid legacy roots", () => {
-  const value = resolvePreferences(undefined, { enabled: false, timeoutMs: 9000 })
+test("preferences leave other defaults intact", () => {
+  const value = resolvePreferences({ enabled: false, timeoutMs: 9000 })
   const parsed = parseOptions(value.rawOptions)
   assert.ok(parsed.ok)
   assert.equal(parsed.value.enabled, false)
   assert.equal(parsed.value.timeoutMs, 9000)
   assert.equal(parsed.value.contextTurns, 3)
-  for (const legacy of [null, false, []]) assert.equal(parseOptions(resolvePreferences(legacy, { enabled: false }).rawOptions).ok, false)
 })
 
 test("numeric-null preferences are invalid before defaulting without changing legacy parsing", () => {
   for (const field of ["timeoutMs", "contextTurns"] as const) {
-    const value = resolvePreferences({}, { [field]: null })
+    const value = resolvePreferences({ [field]: null })
     assert.equal(value.fields[field], null)
     assert.equal(value.issues.some(issue => issue.field === field && issue.severity === "error"), true)
     assert.equal(parseOptions({ [field]: null }).ok, true)
   }
-  const inherited = resolvePreferences({ timeoutMs: null, contextTurns: null }, {})
-  assert.deepEqual(inherited.issues, [])
-  assert.deepEqual(inherited.fields, {})
 })
 
-test("explicit no models suppresses fallback whereas an absent override inherits it", () => {
-  const legacy = { models: [["local/a#low"], ["local/*"]] }
-  const empty = resolvePreferences(legacy, { models: null })
+test("existing explicit no-model preferences remain valid", () => {
+  const empty = resolvePreferences({ models: null })
   assert.equal(Object.hasOwn(empty.fields, "models"), false)
   assert.equal(Object.hasOwn(empty.rawOptions as object, "models"), false)
   assert.equal(empty.origins.models, "preferences")
   assert.deepEqual(empty.issues, [])
-  assert.deepEqual(resolvePreferences(legacy, {}).fields.models, legacy.models)
+  assert.equal(resolvePreferences({}).fields.models, undefined)
 })
 
 test("strict JSON structure rejects duplicate keys, comments, trailing commas and future versions", () => {
@@ -62,7 +57,7 @@ test("unknown document members survive parsing but never become effective option
   assert.deepEqual(doc.future, { keep: true })
   assert.equal(doc.settings.future, "PRIVATE")
   assert.equal(Object.hasOwn(doc.settings, "__proto__"), true)
-  const value = resolvePreferences({}, doc.settings)
+  const value = resolvePreferences(doc.settings)
   assert.deepEqual(value.fields, { debug: false })
   assert.doesNotMatch(JSON.stringify(value), /PRIVATE|polluted/)
   assert.equal(({} as any).polluted, undefined)
@@ -79,6 +74,6 @@ test("known preference fields retain exact validation bounds and explicit false"
   assert.deepEqual(validatePreferenceFields({ timeoutMs: 2147483647, contextTurns: 5, escalation: "automatic", models: [["local/*#low"], ["other/model"]] }), [])
   assert.deepEqual(validatePreferenceFields({ timeoutMs: 1, contextTurns: 1, escalation: "off" }), [])
   assert.deepEqual(validatePreferenceFields({ models: null }), [])
-  const value = resolvePreferences({ enabled: true, automatic: true, debug: true, includeGithubPRContext: true }, { enabled: false, automatic: false, debug: false, includeGithubPRContext: false })
+  const value = resolvePreferences({ enabled: false, automatic: false, debug: false, includeGithubPRContext: false })
   assert.deepEqual(value.fields, { enabled: false, automatic: false, debug: false, includeGithubPRContext: false })
 })
