@@ -53,7 +53,7 @@ export default Plugin.define({
         const last = available && value ? value.server.data.session.message?.list(value.id).findLast(message => message.type === "user" || message.type === "assistant" || message.type === "compaction" && message.status !== "failed") : undefined
         const completed = last?.type === "assistant" && last.time.completed !== undefined && last.finish !== "tool-calls" && last.content.some(part => part.type === "text" && part.text.trim())
         const keys = completed ? ctx.keybinds?.keybind("opencode-predictions.request-shortcut") : undefined
-        adapter.hint(keys?.length ? `Press ${keys.map(key => names[key] ?? key).join(" + ")} to request a prediction.` : undefined)
+        adapter.hint(keys?.length ? `${keys.map(key => names[key] ?? key).join(" + ")} for a Prediction.` : undefined)
       },
       insert: adapter.insert,
       communicate: adapter.communicate,

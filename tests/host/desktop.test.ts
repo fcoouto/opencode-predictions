@@ -30,7 +30,7 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
       assert.equal(fixture.calls.filter(isPredictionCall).length, 0)
       const hint = page.locator("[data-opencode-prediction-hint]")
       await hint.waitFor({ state: "visible", timeout: 5000 })
-      assert.equal(await hint.textContent(), "Press Option + Shift + P to request a prediction.")
+      assert.equal(await hint.textContent(), "Option + Shift + P for a Prediction.")
       assert.equal(await editor.innerText(), "")
       await page.screenshot({ path: resolve(".test-artifacts/manual-hint-desktop.png") })
       await editor.press("Alt+Shift+P")

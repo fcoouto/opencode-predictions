@@ -79,7 +79,7 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
       left: `${bounds.left}px`, top: `${bounds.top}px`, width: `${bounds.width}px`, minHeight: isStatus && !isHint ? `${bounds.height}px` : "0px",
       boxSizing: "border-box", padding: style.padding, font: style.font, lineHeight: style.lineHeight,
       letterSpacing: style.letterSpacing, direction: style.direction, textAlign: style.textAlign, whiteSpace: "pre-wrap", overflowWrap: "anywhere",
-      color: isHint ? style.color : "var(--v2-text-text-muted, #888)", opacity: isHint ? "1" : "0.7",
+      color: "var(--v2-text-text-muted, #888)", opacity: "0.7",
     })
     if (!isStatus || isHint) {
       sizing ??= { element, value: element.style.minHeight, priority: element.style.getPropertyPriority("min-height"), applied: "", minimum: bounds.height }
