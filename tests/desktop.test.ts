@@ -98,11 +98,11 @@ test("Desktop manual prediction hint stays outside the draft and wraps above com
   try {
     const hint = page.locator("[data-opencode-prediction-hint]")
     await hint.waitFor({ state: "visible", timeout: 2000 })
-    assert.equal(await hint.textContent(), "Press Option + Shift + P to request a prediction.")
+    assert.equal(await hint.textContent(), "Option + Shift + P for a Prediction.")
     assert.equal(await page.locator('[contenteditable="true"]').innerText(), "")
     assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 0)
     assert.equal(await page.evaluate(() => (window as any).hintCommands.get("accept").run()), false)
-    assert.equal(await page.locator("[data-opencode-announcement]").textContent(), "Press Option + Shift + P to request a prediction.")
+    assert.equal(await page.locator("[data-opencode-announcement]").textContent(), "Option + Shift + P for a Prediction.")
     for (const width of [900, 360]) {
       await page.setViewportSize({ width, height: 700 })
       await page.waitForFunction(() => {
@@ -127,7 +127,7 @@ test("Desktop manual prediction hint follows the effective shortcut and hides wh
     const hint = page.locator("[data-opencode-prediction-hint]")
     await hint.waitFor({ state: "visible", timeout: 2000 })
     await page.evaluate(() => (window as any).applyHintState({ keys: ["⌃", "P"] }))
-    await page.waitForFunction(() => document.querySelector("[data-opencode-prediction-hint]")?.textContent === "Press Control + P to request a prediction.")
+    await page.waitForFunction(() => document.querySelector("[data-opencode-prediction-hint]")?.textContent === "Control + P for a Prediction.")
     await page.evaluate(() => (window as any).applyHintState({ keys: [] }))
     await hint.waitFor({ state: "hidden", timeout: 2000 })
     assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 0)
@@ -141,6 +141,8 @@ test("Desktop manual prediction hint shrinks after widening and shorter remappin
     const hint = page.locator("[data-opencode-prediction-hint]")
     const editor = page.locator('[contenteditable="true"]')
     await hint.waitFor({ state: "visible", timeout: 2000 })
+    await page.evaluate(() => (window as any).applyHintState({ keys: ["⌘", "⌃", "⌥", "⇧", "P"] }))
+    await page.waitForFunction(() => document.querySelector("[data-opencode-prediction-hint]")?.textContent === "Command + Control + Option + Shift + P for a Prediction.")
     const height = await editor.evaluate(element => element.getBoundingClientRect().height)
     await page.setViewportSize({ width: 360, height: 700 })
     await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height > height, height)
@@ -150,7 +152,7 @@ test("Desktop manual prediction hint shrinks after widening and shorter remappin
     await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height > height, height)
     await page.evaluate(() => (window as any).applyHintState({ keys: ["P"] }))
     await page.waitForFunction(height => document.querySelector('[contenteditable="true"]')!.getBoundingClientRect().height === height, height, { timeout: 2000 })
-    assert.equal(await hint.textContent(), "Press P to request a prediction.")
+    assert.equal(await hint.textContent(), "P for a Prediction.")
     await page.evaluate(() => (window as any).stopGUI())
   } finally { await page.close() }
 })
@@ -220,13 +222,20 @@ test("Desktop manual prediction hint withdraws when context or composer cannot r
 test("Desktop manual prediction hint yields to pending requests and real suggestions", async () => {
   const page = await manualHintFixture()
   try {
+    const appearance = (selector: string) => page.locator(selector).evaluate(element => {
+      const { color, opacity } = getComputedStyle(element)
+      return { color, opacity }
+    })
     const hint = page.locator("[data-opencode-prediction-hint]")
     await hint.waitFor({ state: "visible", timeout: 2000 })
+    const hintAppearance = await appearance("[data-opencode-prediction-hint]")
     await page.evaluate(() => (window as any).hintCommands.get("request-shortcut").run())
     await page.locator("[data-opencode-communication]").waitFor({ state: "visible", timeout: 2000 })
+    assert.deepEqual(hintAppearance, await appearance("[data-opencode-communication]"))
     assert.equal(await hint.count(), 0)
     await page.evaluate(() => (window as any).finishHintRequest({ text: "Run the tests." }))
     await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 2000 })
+    assert.deepEqual(hintAppearance, await appearance("[data-opencode-prediction]"))
     assert.equal(await hint.count(), 0)
     assert.equal(await page.locator('[contenteditable="true"]').innerText(), "")
     assert.equal(await page.evaluate(() => (window as any).hintRequests.length), 1)
