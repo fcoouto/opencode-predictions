@@ -1,4 +1,4 @@
-import { parseOptions, type ModelRef } from "./options.ts"
+import { defaultTimeoutMs, parseOptions, type ModelRef } from "./options.ts"
 import { buildPrompt, collectTurns, parseSuggestion } from "./predict.ts"
 import { resolveModelGroups, type Candidate, type CatalogModel } from "./models.ts"
 import { statusNotice, reasonNotice, pluginVersion, feedbackRevision, type Notice } from "./feedback.ts"
@@ -147,7 +147,7 @@ export function createService(api: ServiceAPI, rawOptions: unknown, directory: s
       ...(options?.contextFile ? { contextFile: options.contextFile } : {}),
       includeGithubPRContext: options?.includeGithubPRContext ?? false,
       ...(groups ? { groups: groups.map((queue, index) => ({ selectors: options!.models![index], candidates: queue.map(queueEntry) })), candidates: candidates!.map(queueEntry) } : {}),
-      automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? 8000, contextTurns: options?.contextTurns ?? 3,
+      automatic: options?.automatic ?? true, debug: options?.debug ?? false, timeoutMs: options?.timeoutMs ?? defaultTimeoutMs, contextTurns: options?.contextTurns ?? 3,
       escalation: options?.escalation ?? "off",
       version, warnings: parsed.warnings, pluginVersion, feedbackRevision,
       ...(!parsed.ok ? { reason: parsed.reason } : !options?.enabled ? { reason: "disabled" } : !options.models ? { reason: "models_required" } : candidates?.length === 0 ? { reason: "model_unavailable" } : candidates?.every(model => !!skip(model)) ? { reason: "no_models_eligible" } : {}),

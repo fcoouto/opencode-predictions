@@ -64,3 +64,5 @@
 - Final verification: `npm run check` passed 482/482 tests with zero skips, typecheck, and bundle. Package tests passed 2/2. The real isolated Desktop manual flow passed 1/1 again after both fixes.
 - Final review limits: no independent screen-reader session or full installed-host matrix was run. No minor findings deferred; no production preferences work performed. Changes remain uncommitted.
 - Publication: the user subsequently authorized a new branch and pull request. This supersedes the earlier leave-uncommitted ruling for the manual-hint change only; the separate preferences proposal remains excluded.
+- PR #27 integration on 2026-11-20: merged `main` at `f8319d5` into the feature branch. Only generated bundles conflicted; regenerated them from the merged source without changing feature behavior.
+- Integrated verification: 483/483 unit tests, typecheck, bundle generation, 2/2 package tests, whitespace checks, and 1/1 focused real Desktop manual-hint test passed. The native test verified hint visibility, shortcut activation, hint withdrawal, and Tab insertion without submission.

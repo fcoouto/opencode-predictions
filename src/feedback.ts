@@ -11,7 +11,7 @@ export type StatusView = { summary: string; details: string }
 export function reasonNotice(reason: string | undefined): Notice | undefined {
   if (!reason || ["cancelled", "stale", "escalation_refreshed"].includes(reason)) return
   const info: Record<string, [string, string]> = {
-    disabled: ["Predictions are turned off", "Set enabled to true in this plugin's configuration to request predictions."],
+    disabled: ["Predictions are turned off", "Enable predictions in Predictions Setup."],
     no_suggestion: ["No suggestion for this response", "Continue typing your next prompt."],
     escalation_unavailable: ["This second opinion is no longer available", "The prediction context or available models changed. Request a fresh prediction."],
     context_unavailable: ["Prediction unavailable for this response.", "Continue typing your next prompt."],
@@ -19,9 +19,9 @@ export function reasonNotice(reason: string | undefined): Notice | undefined {
     location_unavailable: ["No prediction location selected", "Open a project or session, then open Prediction status and preview again."],
   }
   if (info[reason]) return { code: reason, severity: "info", title: info[reason][0], message: info[reason][1] }
-  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model, or set models to a provider/model selector in this plugin's OpenCode configuration.", persistent: true }
+  if (reason === "models_required") return { code: reason, severity: "error", title: "Predictions need a model", message: "Open Predictions Setup to choose a model.", persistent: true }
   if (reason === "model_unavailable") return { code: reason, severity: "error", title: "No prediction models match", message: "Check the provider, model pattern, and requested variant in Prediction status and preview. No model was called.", persistent: true }
-  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in the global plugin options and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." }
+  if (reason === "context_file_unavailable") return { code: reason, severity: "error", title: "Prediction context file could not be read", message: "Check contextFile in predictions.json and ensure the file is readable on the OpenCode server, then request a prediction again. No model was called." }
   if (reason === "context_file_too_large") return { code: reason, severity: "error", title: "Prediction context file is too large", message: "Reduce the contextFile contents to at most 8192 UTF-8 bytes, then request a prediction again. No model was called." }
   if (reason === "context_file_invalid") return { code: reason, severity: "error", title: "Prediction context file is not valid text", message: "Save contextFile as UTF-8 text without binary control characters, then request a prediction again. No model was called." }
   if (reason === "wrong_location") return { code: reason, severity: "error", title: "Prediction location changed", message: "Open the intended project and request a prediction again." }
@@ -43,9 +43,9 @@ export function statusNotice(status: Status): Notice | undefined {
     if (["models_required", "model_unavailable", "service_unavailable"].includes(status.reason)) return reasonNotice(status.reason)
     // Validation messages describe field types, never the supplied option values.
     const validation = /^(Plugin options|enabled|automatic|debug|includeGithubPRContext|escalation|timeoutMs|contextTurns|contextFile|models|each models group) must /.test(status.reason) ? status.reason : "The service rejected these settings."
-    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct this plugin's options in your OpenCode configuration.`, persistent: true }
+    return { code: "invalid_options", severity: "error", title: "Prediction settings are invalid", message: `${validation}. Open Predictions Setup or correct predictions.json on the server.`, persistent: true }
   }
-  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Remove or correct these options in your OpenCode configuration.` }
+  if (status.warnings.length) return { code: "options_warning", severity: "warning", title: "Some prediction settings were ignored", message: `${status.warnings.join(". ")}. Check predictions.json on the server.` }
 }
 
 export function formatStatus(status: Status | undefined, details: { lastNotice?: Notice; suggestion?: string; diagnostics?: Record<string, unknown>; currentNotice?: Notice }): StatusView {

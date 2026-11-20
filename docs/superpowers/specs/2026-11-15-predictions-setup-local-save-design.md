@@ -1,5 +1,7 @@
 # Predictions Setup: Local Save Boundary
 
+> Historical boundary. The approved [prediction preferences design](2026-11-18-predictions-preferences-design.md) replaces local-only IPC with selected-server RPC access and a dedicated file. The original findings below are preserved.
+
 Status: approved. The user explicitly approved this revised design and the narrower initial `--standalone` CLI writable scope. Implementation and qualification are still pending; approval is not evidence that either host passes its origin gate.
 
 Parent design: `docs/superpowers/specs/2026-11-15-predictions-setup-design.md`.

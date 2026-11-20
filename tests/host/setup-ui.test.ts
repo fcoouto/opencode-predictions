@@ -4,7 +4,6 @@ import { readFile, writeFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
 import { _electron as electron, type Page } from "playwright"
 import { build } from "esbuild"
-import { parse } from "jsonc-parser"
 import { createFixture, isPredictionCall } from "./fixture.mjs"
 import { Predictions } from "../../src/rpc.ts"
 import type { SetupSnapshot } from "../../src/setup.ts"
@@ -13,8 +12,8 @@ const executablePath = process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCo
 const skip = process.platform !== "darwin"
 
 async function open(fixture: Awaited<ReturnType<typeof createFixture>>, profile: string) {
-  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
-  await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] })
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
+  await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory, setupProbe: true } }] })
   const app = await electron.launch({ executablePath, args: ["--user-data-dir=" + join(fixture.root, profile)], env: fixture.env as Record<string, string>, timeout: 30000 })
   const page = await app.firstWindow()
   const show = async () => {
@@ -32,14 +31,28 @@ const choose = async (page: Page, label: string, option: string) => {
 // The native switch input is visually hidden; a forced click lands on the visible track that wraps it.
 const flip = (page: Page, name: string) => page.getByRole("switch", { name }).click({ force: true })
 const status = async (page: Page) => (await page.locator('[data-footer] [role="status"], [role="status"]').allTextContents()).join(" ")
-const stored = async (fixture: Awaited<ReturnType<typeof createFixture>>) => { const text = await readFile(fixture.configFile!, "utf8"); return { text, config: parse(text) as any } }
-const settings = (fixture: Awaited<ReturnType<typeof createFixture>>) => fixture.api.rpc(Predictions).settings({}, { location: { directory: fixture.directory } }) as Promise<SetupSnapshot>
+const stored = async (fixture: Awaited<ReturnType<typeof createFixture>>) => { const text = await readFile(fixture.preferencesFile, "utf8"); return { text, config: JSON.parse(text) as any } }
+const settings = (fixture: Awaited<ReturnType<typeof createFixture>>) => fixture.api.rpc(Predictions).settingsV2({}, { location: { directory: fixture.directory } }) as Promise<SetupSnapshot>
 
 test("setup ui: Desktop configures all eight settings through the page, reorders groups, saves, reloads and reopens", { timeout: 150000, skip }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] }, {}, { configSource: "global-jsonc" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] }, {}, { configSource: "global-jsonc", projectConfig: true })
   const { app, page, show } = await open(fixture, "ui-profile")
   try {
     await show()
+    const original = await readFile(fixture.configFile!)
+    const service = JSON.parse(await readFile(join(fixture.root, "state/opencode/service.json"), "utf8"))
+    assert.ok(service.version, "Desktop reports its server version")
+    assert.equal(await page.evaluate(() => (window as any).__predictionFixture.setupServerVersion()), service.version)
+    assert.notEqual(service.pid, (await fixture.api.server.info()).pid, "Desktop is not using the fixture CLI server")
+    for (const authorization of ["", "Basic " + Buffer.from("opencode:wrong").toString("base64")]) {
+      const denied = await fetch(service.url + "/api/rpc/fcoouto.predictions/saveSettings", {
+        method: "POST", headers: { "content-type": "application/json", ...(authorization ? { authorization } : {}) },
+        body: JSON.stringify({ input: { revision: "unauthorized", fields: { debug: true } }, location: { directory: fixture.directory } }),
+      })
+      assert.equal(denied.status, 401, "Desktop's bundled server rejects unauthenticated preference writes")
+      await denied.arrayBuffer()
+      assert.deepEqual((await stored(fixture)).config.settings, { automatic: false, models: [["fixture/model"], ["nomatch/*"]] })
+    }
     // A zero-match selector is warned about but kept.
     await page.getByText("0 models match now", { exact: true }).waitFor({ state: "visible", timeout: 15000 })
     await page.getByText("No current models match this selector.").waitFor({ state: "visible" })
@@ -58,13 +71,13 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
     await flip(page, "Include GitHub PR context")
     await flip(page, "Debug notices")
     await page.getByRole("button", { name: "Save changes" }).click()
-    await page.getByText(/Saved/).first().waitFor({ state: "visible", timeout: 20000 })
+    await page.getByText("Saved. The new settings are active.", { exact: true }).waitFor({ state: "visible", timeout: 20000 })
     const { text, config } = await stored(fixture)
-    const options = config.plugins.find((plugin: any) => typeof plugin === "object" && plugin.options?.models).options
+    const options = config.settings
     assert.deepEqual(options.models, [["nomatch/*"], ["fixture/model"]], "group order is saved")
     assert.deepEqual({ enabled: options.enabled, automatic: options.automatic, escalation: options.escalation, timeoutMs: options.timeoutMs, contextTurns: options.contextTurns, includeGithubPRContext: options.includeGithubPRContext, debug: options.debug }, { enabled: false, automatic: true, escalation: "automatic", timeoutMs: 9000, contextTurns: 5, includeGithubPRContext: true, debug: true })
-    assert.match(text, /Synthetic global fixture configuration/, "JSONC comments survive")
-    assert.ok(config.plugins.some((plugin: any) => typeof plugin === "object" && plugin.package === resolve("tests/host/observer")), "other plugins survive")
+    assert.equal(config.version, 1)
+    assert.deepEqual(await readFile(fixture.configFile!), original, "OpenCode bytes, comments and other plugins remain untouched")
     // A second client against the same server sees the saved values once the watcher activates them.
     let seen!: SetupSnapshot
     const until = Date.now() + 15000
@@ -83,48 +96,53 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
     assert.equal(await page.getByRole("switch", { name: "Debug notices" }).isChecked(), true)
     assert.equal(await page.getByRole("button", { name: "Save changes" }).isDisabled(), true, "a freshly opened page is clean")
     assert.equal(fixture.calls.length, 0)
+    await page.getByText("0 models match now", { exact: true }).waitFor()
+    await page.locator('[data-action="predictions-preferences"]').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: ".test-artifacts/preferences-native-desktop.png", fullPage: true })
   } finally { await app.close() }
 })
 
-test("setup ui: an inline configuration override keeps Desktop setup inspectable and read-only", { timeout: 90000, skip }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] })
-  const { app, page } = await open(fixture, "inline-profile")
+test("setup ui: inline plugin registration supports first Save and staged reset", { timeout: 90000, skip }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, {}, { projectConfig: true, seedPreferences: false })
+  const { app, page, show } = await open(fixture, "inline-profile")
   try {
-    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
-    await page.evaluate(() => (window as any).__predictionFixture.openSetup())
-    await page.getByText("Group 1 — Tried first").waitFor({ state: "visible", timeout: 20000 })
-    await page.getByText("Read-only", { exact: true }).waitFor({ state: "visible", timeout: 15000 })
-    assert.equal(await page.getByRole("button", { name: "Save changes" }).isDisabled(), true)
-    assert.equal(await page.getByRole("switch", { name: "Enable Predictions" }).isDisabled(), true)
+    await show()
+    await flip(page, "Enable Predictions")
+    await page.getByRole("button", { name: "Save changes" }).click()
+    await page.getByText("Saved. The new settings are active.", { exact: true }).waitFor()
+    assert.deepEqual((await stored(fixture)).config.settings, { enabled: false })
+    await page.getByRole("button", { name: "Reset to defaults", exact: true }).click()
+    assert.deepEqual((await stored(fixture)).config.settings, { enabled: false }, "reset is staged")
+    await page.getByRole("button", { name: "Save changes" }).click()
+    await page.getByText("Saved. The new settings are active.", { exact: true }).waitFor()
+    assert.deepEqual((await stored(fixture)).config.settings, {})
     assert.equal(fixture.calls.length, 0)
   } finally { await app.close() }
 })
 
 test("setup ui: an edit made elsewhere while the page is open is never overwritten by the stale page", { timeout: 120000, skip }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] }, {}, { configSource: "global-jsonc" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] }, {}, { configSource: "global-jsonc", projectConfig: true })
   const { app, page, show } = await open(fixture, "conflict-profile")
   try {
     await show()
     await page.getByRole("button", { name: "Show advanced settings" }).click()
     await flip(page, "Debug notices")
     assert.equal(await page.getByRole("button", { name: "Save changes" }).isEnabled(), true, "the page holds an unsaved draft")
-    // Another client edits the same file after this page loaded it; the server then reloads the plugin and this page with it.
-    const changed = { ...fixture.config, plugins: fixture.config.plugins.map((plugin: any, index: number) => index === 0 ? { ...plugin, options: { ...plugin.options, timeoutMs: 7000 } } : plugin) }
-    await fixture.writeConfig(changed)
+    // Another client edits preferences without remounting the plugin or dropping this page's dirty draft.
+    const before = await settings(fixture)
+    assert.equal((await fixture.api.rpc(Predictions).saveSettings({ revision: before.revision, fields: { timeoutMs: 7000 } }, { location: { directory: fixture.directory } }) as any).kind, "saved")
     const until = Date.now() + 20000
     let seen: SetupSnapshot | undefined
     while (Date.now() < until && seen?.effective?.timeoutMs !== 7000) { seen = await settings(fixture).catch(() => seen); await page.waitForTimeout(150) }
     assert.equal(seen?.effective?.timeoutMs, 7000, "the server activated the other client's edit")
     await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
-    // Known limit: the reload drops the draft. Whichever state the page is in, a Save from it must not overwrite the edit.
     const save = page.getByRole("button", { name: "Save changes" })
-    const visible = await save.isVisible().catch(() => false)
-    if (visible && await save.isEnabled()) {
-      await save.click()
-      await page.getByText(/Configuration changed|Reload settings/).first().waitFor({ state: "visible", timeout: 20000 })
-    } else assert.ok(!visible || await save.isDisabled(), "a clean page cannot save")
+    assert.equal(await save.isEnabled(), true, "the dirty draft survives external preference activation")
+    await save.click()
+    await page.getByText(/Configuration changed|Reload settings/).first().waitFor({ state: "visible", timeout: 20000 })
+    assert.equal(await page.getByRole("switch", { name: "Debug notices" }).isChecked(), true, "conflict preserves the draft")
     const { config } = await stored(fixture)
-    const options = config.plugins.find((plugin: any) => typeof plugin === "object" && plugin.options?.models).options
+    const options = config.settings
     assert.equal(options.timeoutMs, 7000, "the other client's edit is kept")
     assert.equal(options.debug, undefined, "the stale draft was not written")
     assert.equal(fixture.calls.filter(isPredictionCall).length, 0)
@@ -132,7 +150,7 @@ test("setup ui: an edit made elsewhere while the page is open is never overwritt
 })
 
 test("setup ui: after moving an entry the real host's menu names the entry that is now in each position", { timeout: 120000, skip }, async () => {
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model", "fixture/second"]] }, {}, { configSource: "global-jsonc" })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model", "fixture/second"]] }, {}, { configSource: "global-jsonc", projectConfig: true })
   const { app, page, show } = await open(fixture, "entry-menu-profile")
   try {
     await show()
@@ -155,5 +173,32 @@ test("setup ui: after moving an entry the real host's menu names the entry that 
     assert.equal(await page.getByRole("menuitem", { name: "Move up", exact: true }).getAttribute("aria-disabled"), "true")
     await page.keyboard.press("Escape")
     assert.equal(fixture.calls.length, 0)
+  } finally { await app.close() }
+})
+
+test("setup ui: preference activation preserves the Desktop composer and suppresses its current suggestion", { timeout: 90000, skip }, async () => {
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: true }, {}, { projectConfig: true })
+  const { app, page } = await open(fixture, "composer-profile")
+  try {
+    await page.waitForFunction(() => (window as any).__predictionFixture?.ready(), undefined, { timeout: 20000 })
+    await page.evaluate(() => (window as any).__predictionFixture.launch())
+    const editor = page.locator('[data-component="composer-editor"][contenteditable="true"]')
+    await editor.waitFor({ state: "visible", timeout: 20000 })
+    await page.waitForFunction(() => document.querySelector('[data-component="composer-editor"]')?.textContent === "Fix the assertion.")
+    await page.getByRole("button", { name: "Fixture / Fixture Flash", exact: true }).waitFor()
+    await editor.press("Enter")
+    await page.locator("[data-opencode-prediction]").waitFor({ state: "visible", timeout: 15000 })
+    const before = fixture.calls.filter(isPredictionCall).length
+    await editor.fill("my existing draft")
+    const result = await page.evaluate(async () => {
+      await (window as any).__predictionFixture.setupRead()
+      return (window as any).__predictionFixture.setupSave()
+    })
+    assert.equal(result.kind, "saved")
+    assert.equal(await editor.innerText(), "my existing draft")
+    await editor.fill("")
+    await page.waitForTimeout(2300)
+    assert.equal(fixture.calls.filter(isPredictionCall).length, before)
+    assert.equal(await page.locator("[data-opencode-prediction]").count(), 0)
   } finally { await app.close() }
 })

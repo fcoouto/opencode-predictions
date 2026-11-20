@@ -1,16 +1,15 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
-import type { StandaloneRuntime } from "./setup-origin.ts"
-import { setupText, setupTUIText } from "./setup-copy.ts"
-import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { setupText, setupTUIText, originLabels, contextFileIssue } from "./setup-copy.ts"
+import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { defaultTimeoutMs } from "./options.ts"
 
 type TUIContext = TUIPlugin.Context
 type Catalog = SetupSnapshot["catalog"][number]
 const title = "Predictions Setup"
 const escalationNames: Record<string, string> = { off: "Off", manual: "Manually", automatic: "Automatically once after no suggestion" }
 
-// `runtime` is a test seam for the standalone-origin guard; production passes nothing and the guard inspects the real process.
-export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void>, runtime?: StandaloneRuntime): () => void {
+export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void>): () => void {
   const dialog = ctx.ui.dialog
   let running = false, disposed = false
 
@@ -28,9 +27,9 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     try {
       const target = location()
       if (!target) { await alert("Open a project, or connect to an OpenCode server, before changing prediction settings."); return }
-      editor = createSetupEditor(createTUISetupAPI(ctx, target, runtime), () => {})
+      editor = createSetupEditor(createTUISetupAPI(ctx, target), () => {})
       await editor.load()
-      if (editor.state().error || !editor.state().snapshot) { await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on this server."); return }
+      if (editor.state().error || !editor.state().snapshot) { await alert((editor.state().error ?? "Settings are unavailable.") + " If this persists, update the Predictions plugin on both this client and the server."); return }
       await root(editor)
     } finally { editor?.dispose(); running = false }
   }
@@ -42,8 +41,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   const readOnly = (editor: SetupEditor) => !editor.state().snapshot?.writable
   const readOnlyReason = (editor: SetupEditor) => {
     const snapshot = editor.state().snapshot
-    // A server that advertises a local authority is otherwise qualified; the missing piece is this CLI session's provenance.
-    return snapshot?.localAuthority ? setupTUIText.standalone : (snapshot?.reason ?? "This configuration cannot be edited here.")
+    return snapshot?.reason ?? "This configuration cannot be edited here."
   }
   // Returns false (after explaining) when the target cannot be edited, so no draft diverges from what Save may do.
   async function editable(editor: SetupEditor) {
@@ -65,7 +63,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   const summary = {
     behavior: (editor: SetupEditor) => `${onOff(flag(editor, "enabled", true))} · After replies ${onOff(flag(editor, "automatic", true)).toLowerCase()} · ${escalationShort[String(fields(editor).escalation ?? "manual")] ?? "manual"}`,
     models: (editor: SetupEditor) => { const all = groups(editor); return all.length ? `${all.length} ${all.length === 1 ? "group" : "groups"}, ${all.flat().length} ${all.flat().length === 1 ? "entry" : "entries"}` : "No models configured" },
-    advanced: (editor: SetupEditor) => `${fields(editor).timeoutMs ?? 8000} ms · ${fields(editor).contextTurns ?? 3} recent · PR ${onOff(flag(editor, "includeGithubPRContext", false)).toLowerCase()}`,
+    advanced: (editor: SetupEditor) => `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms · ${fields(editor).contextTurns ?? 3} recent · PR ${onOff(flag(editor, "includeGithubPRContext", false)).toLowerCase()}`,
   }
 
   async function root(editor: SetupEditor) {
@@ -82,6 +80,8 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
           { title: "Advanced", description: summary.advanced(editor), value: "advanced", category: "Settings" },
           { title: "Save changes", description: invalid ? "Fix invalid settings first." : "Can overwrite other edits.", value: "save", disabled: !state.dirty || readOnly(editor) || invalid || state.saving, category: "Changes" },
           { title: "Discard changes", description: "Restore saved values.", value: "discard", disabled: !state.dirty, category: "Changes" },
+          { title: "Reset to defaults", value: "reset", disabled: readOnly(editor) || !Object.keys(state.snapshot?.overrides ?? {}).length, category: "Changes" },
+          { title: "Preference sources", description: "Path and origins.", value: "sources", category: "More" },
           { title: "Prediction status and preview", description: "Diagnostics.", value: "status", category: "More" },
           { title: "About saving", description: "Scope and limits.", value: "about", category: "More" },
         ],
@@ -96,6 +96,11 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       else if (choice === "advanced") await advanced(editor)
       else if (choice === "save") await save(editor)
       else if (choice === "discard") editor.discard()
+      else if (choice === "reset") {
+        if (state.dirty && !await dialog.confirm({ title, message: "Replace your unsaved draft with defaults? Save to apply the reset.", label: { confirm: "Replace draft", cancel: "Keep editing" } })) continue
+        editor.resetPreferences()
+      }
+      else if (choice === "sources") await alert(`User preferences\n${state.snapshot?.source ?? "Server preferences"}\n\n${settingKeys.map(key => `${key}: ${originLabels[state.origins[key]]}`).join("\n")}\n\n${setupText.defaults}`)
       else if (choice === "status") await openStatus()
       else if (choice === "readonly") await alert(`Read-only. ${readOnlyReason(editor)} Current values are shown; edit the configuration file manually to change them.`)
       else if (choice === "about") await alert(`${setupTUIText.scope}\n\n${setupTUIText.fuller}`)
@@ -106,7 +111,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     const result = await editor.save()
     const message = result.kind === "saved" ? "Saved. The new settings are active."
       : result.kind === "saved_not_active" ? "Saved on disk, but activation is not verified. Reopen settings to check the active values."
-      : result.kind === "invalid" ? "Fix the invalid settings before saving."
+      : result.kind === "invalid" ? result.issues.find(issue => issue.field === "contextFile")?.message ?? "Fix the invalid settings before saving."
       : result.message
     await alert(message)
   }
@@ -139,22 +144,22 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       const choice = await dialog.select<string>({
         title: "Advanced",
         options: [
-          { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? 8000} ms`, value: "timeout" },
+          { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms`, value: "timeout" },
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} · private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
-          { title: "About Advanced", description: "GitHub data sent.", value: "about" },
+          { title: "About Advanced", description: "PR and context file data.", value: "about" },
         ],
       })
       if (choice === undefined) return
-      if (choice === "about") { await alert(setupText.github); continue }
+      if (choice === "about") { await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n")); continue }
       if (!await editable(editor)) continue
       if (choice === "github" || choice === "debug") edit(editor, { [choice === "github" ? "includeGithubPRContext" : "debug"]: !flag(editor, choice === "github" ? "includeGithubPRContext" : "debug", false) })
       else if (choice === "context") {
         const next = await dialog.select<string>({ title: "Recent interactions", current: String(fields(editor).contextTurns ?? 3), options: ["1", "2", "3", "4", "5"].map(value => ({ title: value, value })) })
         if (next !== undefined) edit(editor, { contextTurns: Number(next) })
       } else {
-        let value = String(fields(editor).timeoutMs ?? 8000)
+        let value = String(fields(editor).timeoutMs ?? defaultTimeoutMs)
         for (;;) {
           const answer = await dialog.prompt({ title: "Timeout per model", description: "Milliseconds, a whole number from 1 to 2147483647.", value })
           if (answer === undefined) break

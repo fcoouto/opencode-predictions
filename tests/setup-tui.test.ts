@@ -3,6 +3,7 @@ import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
 import { registerSetupTUI } from "../src/setup-tui.ts"
 import { nativeFixture } from "./setup-native-fixture.ts"
+import { resolvePreferences } from "../src/preferences.ts"
 
 type Call = { kind: "select" | "prompt" | "confirm" | "alert"; options: any }
 type Step = (call: Call) => unknown
@@ -28,8 +29,9 @@ async function harness(t: TestContext, options: { argv?: string[]; fields?: obje
   const f = await nativeFixture(t)
   f.snapshot.catalog = catalog as any
   if (options.fields) f.snapshot.fields = options.fields as any
+  f.snapshot.overrides = { ...f.snapshot.fields }
+  f.snapshot.origins = resolvePreferences(f.snapshot.overrides).origins
   f.snapshot.effective = { ...f.snapshot.effective, ...f.snapshot.fields } as any
-  if (options.argv) f.runtime.argv = options.argv
   f.hooks.settingsFails = options.settingsFails
   f.hooks.previewFails = options.previewFails
   const script: Step[] = []
@@ -43,7 +45,7 @@ async function harness(t: TestContext, options: { argv?: string[]; fields?: obje
   }
   let command: any, statusOpened = 0
   const ctx: any = {
-    app: { version: "2.2.6" }, client: f.client, location: options.noSession ? { directory: f.location.directory } : undefined,
+    app: { version: "fixture" }, client: f.client, location: options.noSession ? { directory: f.location.directory } : undefined,
     options: {},
     ui: {
       router: { current: () => options.noSession ? { type: "home" } : { type: "session", sessionID: "ses_1" } },
@@ -52,7 +54,7 @@ async function harness(t: TestContext, options: { argv?: string[]; fields?: obje
     data: { session: { get: () => ({ location: { directory: f.location.directory } }) }, location: { default: () => ({ directory: f.location.directory }) } },
     keymap: { layer: (factory: () => any) => { command = factory().commands[0] } },
   }
-  const stop = registerSetupTUI(ctx, async () => { statusOpened++ }, f.runtime)
+  const stop = registerSetupTUI(ctx, async () => { statusOpened++ })
   t.after(stop)
   const run = async (...steps: Step[]) => {
     script.push(...steps)
@@ -77,20 +79,47 @@ test("palette command is Predictions Setup in the Predictions group with no defa
   assert.equal(h.command().bind, undefined)
 })
 
+test("CLI sources show user preferences path and concurrent-save limits", async t => {
+  const h = await harness(t, { fields: { debug: false, models: "local/a" } })
+  await h.run(pick("Preference sources"), call => {
+    assert.match(call.options.message, /User preferences/)
+    assert.ok(call.options.message.includes(h.f.file))
+    for (const label of ["Saved preference", "Default"]) assert.ok(call.options.message.includes(label))
+    assert.doesNotMatch(call.options.message, /OpenCode configuration/)
+    return undefined
+  }, pick("About saving"), call => {
+    assert.match(call.options.message, /Simultaneous saves can overwrite each other's changes, including different settings/)
+    assert.match(call.options.message, /recovery copy may not contain those changes/)
+    return undefined
+  }, pick("Reset to defaults"), call => {
+    assert.equal(option(call, "Save changes").disabled, false)
+    return undefined
+  }, yes(true))
+  assert.equal(saves(h), 0)
+})
+
 test("root menu orders Behavior, Models, Advanced with current values and keeps the narrow CLI scope visible", async t => {
   const h = await harness(t, { fields: { automatic: false, models: [["local/family/a#low"], ["local/b"]] } })
   await h.run(cancel)
   const root = h.calls[0]
   assert.equal(root.options.title, "Predictions Setup")
-  assert.deepEqual(titles(root), ["Behavior", "Models", "Advanced", "Save changes", "Discard changes", "Prediction status and preview", "About saving"])
+  assert.deepEqual(titles(root), ["Behavior", "Models", "Advanced", "Save changes", "Discard changes", "Reset to defaults", "Preference sources", "Prediction status and preview", "About saving"])
   for (const row of root.options.options) assert.ok(row.title.length + String(row.description ?? "").length <= 44, `row fits the CLI dialog without truncation: ${row.title}: ${row.description}`)
-  assert.ok(root.options.options.every((row: any) => row.disabled !== true || row.title.includes("Save") || row.title.includes("Discard")), "informational rows are never disabled: disabled rows do not render")
+  assert.ok(root.options.options.every((row: any) => row.disabled !== true || row.title.includes("Save") || row.title.includes("Discard") || row.title === "Reset to defaults"), "informational rows are never disabled: disabled rows do not render")
   assert.equal(option(root, "Behavior").description, "On · After replies off · manual")
   assert.match(option(root, "Models").description, /2 groups, 2 entries/)
-  assert.equal(option(root, "Advanced").description, "8000 ms · 3 recent · PR off")
+  assert.equal(option(root, "Advanced").description, "30000 ms · 3 recent · PR off")
   assert.equal(option(root, "Save changes").disabled, true, "nothing to save yet")
   assert.equal(option(root, "Discard changes").disabled, true)
   assert.equal(root.options.options.some((row: any) => row.title === "Read-only"), false, "a verified standalone session shows no read-only row")
+})
+
+test("Save shows the server-only context file repair in the CLI", async t => {
+  const h = await harness(t, { fields: { timeoutMs: 9000 } })
+  h.f.hooks.saveIssue = { field: "contextFile", severity: "error", code: "invalid_value", message: "Correct contextFile in predictions.json on the server." }
+  await h.run(pick("Reset to defaults"), pick("Save changes"), call => {
+    assert.match(call.options.message, /Correct contextFile in predictions\.json on the server/)
+  }, cancel, yes(true))
 })
 
 test("editing Behavior and Advanced stages only edited fields; nested cancel keeps the draft; Save writes once", async t => {
@@ -130,7 +159,11 @@ test("GitHub PR context is off by default in Advanced with the private-data disc
   globalThis.fetch = (async (input: any, init: any) => { if (/github/i.test(String(input?.url ?? input))) { fetches++; throw new Error("PRIVATE") } return realFetch(input, init) }) as typeof fetch
   t.after(() => { globalThis.fetch = realFetch })
   const h = await harness(t)
-  await h.run(pick("Advanced"), pick("Include GitHub PR context"), pick("About Advanced"), call => { assert.match(call.options.message, /private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models/); return undefined }, cancel, cancel, yes(true))
+  await h.run(pick("Advanced"), pick("Include GitHub PR context"), pick("About Advanced"), call => {
+    assert.match(call.options.message, /private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models/)
+    assert.match(call.options.message, /Set contextFile in predictions\.json on the OpenCode server/)
+    return undefined
+  }, cancel, cancel, yes(true))
   const before = option(h.calls[1], "Include GitHub PR context")
   assert.match(before.description, /^Off\b/)
   assert.match(before.description, /private/i, "the private-data note is short enough to render")
@@ -211,21 +244,16 @@ test("leaving with unsaved edits asks first; Keep editing preserves the draft an
   assert.equal(saves(h), 0)
 })
 
-test("explicit-server, shared and conflicting launches keep inspection but cannot save, and explain the standalone requirement", async t => {
-  const standalone = "Local setup writes currently require a verified opencode --standalone session."
+test("explicit-server and shared launches can edit and save through their server", async t => {
   for (const argv of [["/native/opencode", "/native/opencode", "--server", "http://remote"], ["/native/opencode", "/native/opencode"], ["/native/opencode", "/native/opencode", "--standalone", "--server", "http://remote"]]) {
     const h = await harness(t, { argv })
-    const before = await readFile(h.f.file, "utf8")
     await h.run(
-      call => { assert.equal(option(call, "Read-only").title.length + option(call, "Read-only").description.length <= 44, true); assert.equal(option(call, "Read-only").disabled, undefined, "enabled so it renders"); assert.equal(option(call, "Save changes").disabled, true); return "readonly" },
-      call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, new RegExp(standalone.replaceAll(".", "\\.").replaceAll("--", "\\-\\-"))); return undefined },
       pick("Behavior"),
       pick("Enable Predictions"),
-      call => { assert.match(call.options.message, new RegExp("Read-only\\. " + standalone.replaceAll(".", "\\.").replaceAll("--", "\\-\\-"))); return undefined },
-      cancel, cancel,
+      cancel, pick("Save changes"), ok, cancel,
     )
-    assert.equal(saves(h), 0)
-    assert.equal(await readFile(h.f.file, "utf8"), before, "no client configuration write")
+    assert.equal(saves(h), 1)
+    assert.equal(await readFile(h.f.file, "utf8"), '{"enabled":false}')
     assert.equal(h.calls.some(call => call.kind === "confirm"), false, "nothing was drafted, so leaving needs no confirmation")
   }
 })
@@ -247,7 +275,7 @@ test("a connection lost during Save reports a safe message, keeps the draft and 
   const h = await harness(t)
   await h.run(
     pick("Behavior"), pick("Enable Predictions"), cancel,
-    async () => { await h.f.authority.dispose(); return "save" },
+    () => { h.f.hooks.saveFails = true; return "save" },
     call => { assert.match(call.options.message, /Changes may have been saved/); assert.doesNotMatch(call.options.message, /PRIVATE|\/var\/|\.sock/); return undefined },
     cancel, yes(true),
   )
@@ -267,7 +295,7 @@ test("the external-editor warning sits beside Save and About saving gives the fu
   await h.run(
     pick("Behavior"), pick("Enable Predictions"), cancel,
     call => { const save = option(call, "Save changes"); assert.match(save.description, /overwrite/); assert.ok(save.title.length + save.description.length <= 44, save.description); assert.doesNotMatch(save.description, /conflict-proof/); return "about" },
-    call => { assert.match(call.options.message, /another editor during a save can be overwritten, including unrelated settings/); assert.match(call.options.message, /Recovery copies hold the file as it was just before a save/); assert.match(call.options.message, /global OpenCode configuration/); assert.match(call.options.message, /not conflict-proof/); return undefined },
+    call => { assert.match(call.options.message, /Simultaneous saves can overwrite each other's changes, including different settings/); assert.match(call.options.message, /recovery copy may not contain those changes/); assert.match(call.options.message, /user prediction preferences on the selected server/); return undefined },
     cancel, yes(true),
   )
   assert.equal(h.calls.filter(call => call.kind === "confirm").length, 1, "only the unsaved-exit confirmation, never a save consent")

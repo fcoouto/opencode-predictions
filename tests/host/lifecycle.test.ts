@@ -30,6 +30,7 @@ for (const automatic of [true, false]) test(`setup lifecycle: standalone Save pr
   }
   const observer = { package: resolve("tests/host/observer"), options: {} }
   await fixture.writeConfig({ ...fixture.config, plugins: [...fixture.config.plugins, observer] })
+  const original = await readFile(fixture.configFile!)
   const observation = join(fixture.root, "save-observation.json")
   const { stdout } = await promisify(execFile)("python3", [resolve("tests/host/terminal.py"), process.env.OPENCODE_BIN ?? "opencode", session.id, fixture.directory, observation], {
     env: { ...fixture.env, PREDICTIONS_OBSERVER: observation, PREDICTIONS_SAVE_TEST: "1", PREDICTIONS_SAVE_AUTOMATIC: String(automatic), PREDICTIONS_SAVE_MODULE: join(packagePath, "dist/tui.js") },
@@ -41,11 +42,12 @@ for (const automatic of [true, false]) test(`setup lifecycle: standalone Save pr
   assert.equal(result.predictionRemounted, true)
   assert.equal(result.noSurprisePrediction, true)
   assert.equal(fixture.calls.filter(isPredictionCall).length, automatic ? 2 : 1, "only the initial (automatic) prediction and one for the later completed turn")
-  assert.match(await readFile(fixture.configFile!, "utf8"), /"debug": true/)
+  assert.match(await readFile(fixture.preferencesFile, "utf8"), /"debug": true/)
+  assert.deepEqual(await readFile(fixture.configFile!), original)
 })
 
 for (const automatic of [false, true]) test(`setup lifecycle: Desktop memory handoff preserves composer and suppresses current completion, automatic=${automatic}`, { timeout: 100000, skip: process.platform !== "darwin" }, async () => {
-  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic }, {}, { configSource: "global-jsonc" })
   const observer = { package: resolve("tests/host/observer"), options: { directory: fixture.directory, reloadProbe: 1 } }
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, observer] }

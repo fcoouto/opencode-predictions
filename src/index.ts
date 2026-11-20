@@ -2,18 +2,24 @@ import { Plugin } from "@opencode/plugin"
 import { Predictions } from "./rpc.ts"
 import { createService, type Request } from "./service.ts"
 import { homedir, userInfo } from "node:os"
-import { join } from "node:path"
-import { createConfigStore } from "./config.ts"
+import { administrativePaths, createPreferencesStore } from "./preferences-store.ts"
+import { createPreferencesRuntime } from "./preferences-runtime.ts"
 import { createSetupService } from "./setup-service.ts"
-import type { SettingsInput } from "./setup.ts"
-import { lazyLocalSetup, startLocalSetup } from "./setup-local.ts"
+import type { SaveInput, SettingsInput } from "./setup.ts"
 import { readContextFile } from "./context-file.ts"
 import { createGitHubContext } from "./github.ts"
 
 export default Plugin.define({
   id: "opencode-predictions",
   async setup(ctx) {
-    const service = createService({
+    const lifetime = new AbortController()
+    let username: string | undefined
+    try { username = userInfo().username } catch {}
+    const store = createPreferencesStore({
+      home: homedir(), platform: process.platform, env: { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA },
+      systemPaths: administrativePaths(process.platform, process.env, username),
+    })
+    const runtime = createPreferencesRuntime(store, options => createService({
       session: (sessionID, signal) => ctx.session.get({ sessionID }, { signal }),
       context: (sessionID, signal) => ctx.session.context({ sessionID }, { signal }),
       contextFile: readContextFile,
@@ -22,42 +28,20 @@ export default Plugin.define({
       generate: async (model, prompt, signal) => (await ctx.experimental.generate.text({ model, prompt }, { signal })).text,
       notice: async (message, request, notice) => { if (request.requestID) await registration.events.emit("progress", { message, requestID: request.requestID, sessionID: request.sessionID, ...(notice ? { notice } : {}) }) },
       progress: async (modelName, request) => { if (request.requestID) await registration.events.emit("progress", { message: "", modelName, requestID: request.requestID, sessionID: request.sessionID }) },
-    }, ctx.options, ctx.location.directory)
-    let username: string | undefined
-    try { username = userInfo().username } catch {}
-    const store = createConfigStore({
-      version: ctx.app.version, home: homedir(), directory: ctx.location.directory,
-      env: Object.fromEntries(["XDG_CONFIG_HOME", "OPENCODE_CONFIG", "OPENCODE_CONFIG_CONTENT", "OPENCODE_CONFIG_DIR", "OPENCODE_DISABLE_PROJECT_CONFIG"].map(key => [key, process.env[key]])),
-      systemPaths: process.platform === "darwin" ? [
-        "/Library/Application Support/opencode", "/Library/Managed Preferences/ai.opencode.managed.plist",
-        username ? join("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences",
-      ] : ["/etc/opencode"],
-      source: async signal => {
-        if (!username) return
-        const plugin = (await ctx.plugin.list(undefined, { signal })).data.find(entry => entry.id === "opencode-predictions")
-        return plugin?.source.type === "local" && plugin.state.status === "active" ? plugin.source : undefined
-      },
-      options: () => ctx.options,
-    })
-    const setup = createSetupService(store, async signal => (await ctx.model.list(undefined, { signal })).data, () => ({ options: ctx.options, version: service.status().version }))
-    let closing = false
-    let location: { directory: string; workspaceID?: string } | undefined
-    const local = lazyLocalSetup(() => startLocalSetup(location!, setup))
+    }, options, ctx.location.directory))
+    await runtime.refresh(lifetime.signal)
+    const setup = createSetupService(store, async signal => (await ctx.model.list(undefined, { signal })).data, runtime)
+    const signal = (parent: AbortSignal) => AbortSignal.any([parent, lifetime.signal])
     const registration = await ctx.rpc.register(Predictions, {
-      predict: (input, context) => service.predict(input as Request, context.signal),
-      status: (_input, context) => service.inspect(context.signal),
-      settings: async (_input, context) => {
-        const snapshot = await setup.read(context.signal)
-        location ??= { directory: ctx.location.directory, ...("workspaceID" in ctx.location && typeof ctx.location.workspaceID === "string" ? { workspaceID: ctx.location.workspaceID } : {}) }
-        const authority = snapshot.writable && !closing ? await local.get() : undefined
-        return { ...snapshot, ...(authority && !closing ? { localAuthority: { id: authority.id } } : {}), writable: false, reason: snapshot.reason ?? "Saving requires a verified local setup connection." }
-      },
-      previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, context.signal),
+      predict: (input, context) => runtime.predict(input as Request, signal(context.signal)),
+      status: async (_input, context) => { await runtime.refresh(signal(context.signal)); return runtime.state().service.inspect(signal(context.signal)) },
+      settingsV2: (_input, context) => setup.read(signal(context.signal)),
+      saveSettings: (input, context) => setup.save(input as SaveInput, signal(context.signal)),
+      previewSettings: (input, context) => setup.preview((input as { fields: SettingsInput }).fields, signal(context.signal)),
     })
     return async () => {
-      closing = true
-      service.dispose()
-      await local.dispose()
+      lifetime.abort()
+      runtime.dispose()
       await registration.dispose()
     }
   },

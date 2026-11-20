@@ -1,6 +1,7 @@
 export type ModelRef = { providerID: string; id: string; variant?: string }
 export type Options = { enabled: boolean; models?: readonly string[]; contextFile?: string; includeGithubPRContext: boolean; timeoutMs: number; contextTurns: number; automatic: boolean; debug: boolean; escalation: "off" | "manual" | "automatic" }
 export type OptionsResult = { ok: true; value: Options; warnings: string[] } | { ok: false; reason: string; warnings: string[] }
+export const defaultTimeoutMs = 30_000
 
 export function parseOptions(input: unknown = {}): OptionsResult {
   if (!input || typeof input !== "object" || Array.isArray(input)) return { ok: false, reason: "Plugin options must be an object", warnings: [] }
@@ -13,7 +14,7 @@ export function parseOptions(input: unknown = {}): OptionsResult {
   for (const name of ["enabled", "automatic", "debug", "includeGithubPRContext"]) {
     if (raw[name] !== undefined && typeof raw[name] !== "boolean") return invalid(`${name} must be a boolean`)
   }
-  const timeoutMs = raw.timeoutMs ?? 8000
+  const timeoutMs = raw.timeoutMs ?? defaultTimeoutMs
   const escalation = raw.escalation === undefined ? "manual" : raw.escalation
   if (escalation !== "off" && escalation !== "manual" && escalation !== "automatic") return invalid('escalation must be "off", "manual", or "automatic"')
   const contextTurns = raw.contextTurns ?? 3

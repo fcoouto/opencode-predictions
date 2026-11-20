@@ -6,7 +6,7 @@ import { build } from "esbuild"
 import { createFixture, isPredictionCall } from "./fixture.mjs"
 
 for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ? "automatically" : "via Alt+Shift+P"} shows predictions and Tab edits without sending`, { timeout: 100000 }, async () => {
-  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic })
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
   const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
@@ -70,9 +70,9 @@ for (const automatic of [true, false]) test(`real isolated Desktop ${automatic ?
 })
 
 for (const lines of [3, 9]) test(`real isolated Desktop reserves space for ${lines}-line predictions and restores it on typing`, { timeout: 100000 }, async () => {
-  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
   const text = Array.from({ length: lines }, (_, i) => `Line ${i + 1}: keep this complete prediction. 😀`).join("\n")
-  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { obsolete: undefined }, { predictionOutputs: { model: JSON.stringify({ prompt: text }) }, predictionDelayMs: { model: 1200 } })
+  await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, {}, { predictionOutputs: { model: JSON.stringify({ prompt: text }) }, predictionDelayMs: { model: 1200 } })
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
   const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
   try {
@@ -119,7 +119,7 @@ for (const lines of [3, 9]) test(`real isolated Desktop reserves space for ${lin
 })
 
 for (const kind of ["invalid", "temporary"] as const) test(`real isolated Desktop exposes ${kind} prediction failures and reopenable status`, { timeout: 100000 }, async () => {
-  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, kind === "invalid" ? { models: 42 } : {}, kind === "temporary" ? { predictionStatus: 503 } : {})
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
   const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })
@@ -155,7 +155,7 @@ for (const kind of ["invalid", "temporary"] as const) test(`real isolated Deskto
 })
 
 for (const outcome of ["success", "abstention", "error", "timeout", "typing", "empty", "fallback"]) test(`real isolated Desktop compact alternative status and ${outcome} recovery`, { timeout: 100000 }, async () => {
-  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", packages: "external" })
+  await build({ entryPoints: ["tests/host/observer/gui.ts"], outfile: "tests/host/observer/gui-experimental.cjs", bundle: true, format: "cjs", platform: "browser", external: ["@opencode/*", "solid-js", "solid-js/*", "effect"] })
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { models: [outcome === "fallback" ? ["fixture/model", "fixture/second", "fixture/third"] : ["fixture/model", "fixture/second"]], escalation: "manual", timeoutMs: outcome === "timeout" ? 1000 : 8000 }, { predictionOutputs: { model: outcome === "empty" ? '{"prompt":null}' : '{"prompt":"Original prediction."}', second: outcome === "abstention" ? '{"prompt":null}' : '{"prompt":"Run the targeted tests."}', third: '{"prompt":"Run the targeted tests."}' }, predictionDelayMs: { model: 600, second: 2000, third: 1500 }, predictionStatuses: outcome === "error" ? { second: 503 } : outcome === "fallback" ? { second: 401 } : {} })
   const config = { ...fixture.config, plugins: [...fixture.config.plugins, { package: resolve("tests/host/observer"), options: { directory: fixture.directory } }] }
   const app = await electron.launch({ executablePath: process.env.OPENCODE_DESKTOP_BIN ?? "/Applications/OpenCode.app/Contents/MacOS/OpenCode", env: { ...fixture.env, OPENCODE_CONFIG_CONTENT: JSON.stringify(config) } as Record<string, string>, timeout: 45000 })

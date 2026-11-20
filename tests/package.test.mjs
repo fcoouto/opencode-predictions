@@ -4,8 +4,9 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { readFile } from "node:fs/promises"
 import { pathToFileURL } from "node:url"
-import { resolve } from "node:path"
+import { dirname, resolve } from "node:path"
 import { builtinModules } from "node:module"
+import { runInNewContext } from "node:vm"
 
 test("packed contents include working entries and exclude local data and install-time builds", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8"))
@@ -26,38 +27,48 @@ test("packed contents include working entries and exclude local data and install
   assert.equal(typeof (await import(pathToFileURL(resolve(pkg.exports["./rpc"])).href)).Predictions.methods.predict, "object")
 })
 
-test("packed setup surface: inspection-only RPC, no network Save or proof signing, writer only in the server bundle", async () => {
+test("packed setup surface: selected-server Save, no local bridge, writer only in the server bundle", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8"))
   const rpc = (await import(pathToFileURL(resolve(pkg.exports["./rpc"])).href)).Predictions
-  assert.deepEqual(Object.keys(rpc.methods).sort(), ["predict", "previewSettings", "settings", "status"], "no public Save, challenge or proof-signing method")
+  assert.deepEqual(Object.keys(rpc.methods).sort(), ["predict", "previewSettings", "saveSettings", "settingsV2", "status"], "only the selected-server settings contract is public")
   const gui = await readFile(pkg.exports["./gui-experimental"], "utf8")
   const server = await readFile(pkg.exports["."], "utf8")
-  // The config writer and its recovery copy belong to the server bundle alone.
-  for (const marker of [".predictions-backup", ".predictions.tmp-", ".predictions-setup.lock", "editSetting", "jsonc-parser"]) {
+  const tui = await readFile(pkg.exports["./tui"], "utf8")
+  // Clients may name predictions.json in help text, but only the server constructs the write paths.
+  assert.ok(server.includes("predictions.json"))
+  for (const marker of [".predictions.tmp-", ".backup", "node:fs/promises"]) {
     assert.ok(server.includes(marker), `server bundle owns ${marker}`)
     assert.equal(gui.includes(marker), false, `GUI bundle must not contain ${marker}`)
+    assert.equal(tui.includes(marker), false, `CLI bundle must not contain ${marker}`)
   }
-  // The Desktop main-process bridge is the only Node socket client; window modules perform no Node I/O.
-  assert.match(gui, /require\("node:net"\)/, "private-socket client ships for the Desktop main process")
-  assert.match(gui, /main:/, "the Desktop main entry is registered")
-  // Walk the window's static import graph from the GUI entry. The Desktop main bridge is loaded with a dynamic import,
-  // so it is deliberately outside this graph.
+  for (const marker of [".predictions-backup", ".predictions-setup.lock", "createConfigStore", "editSetting", "createStandaloneSetupOrigin", "createDesktopSetupOrigin", "localAuthority", "node:net"]) {
+    for (const [entry, code] of [["server", server], ["GUI", gui], ["CLI", tui]]) assert.equal(code.includes(marker), false, `${entry} must not retain ${marker}`)
+  }
+  // Evaluate the actual GUI artifact with only the app's shared modules, rejecting any filesystem/socket import.
+  const shared = {
+    "@opencode/plugin/gui": { Plugin: { define: value => value }, Command: {}, SettingsPage: {}, createKeyed() {} },
+    "@opencode/plugin/rpc": await import("@opencode/plugin/rpc"),
+    "solid-js": await import("solid-js"),
+    "solid-js/web": await import("solid-js/web"),
+  }
+  const module = { exports: {} }
+  runInNewContext(gui, { module, exports: module.exports, TextEncoder, require(name) { assert.ok(Object.hasOwn(shared, name), `GUI attempted an unshared import: ${name}`); return shared[name] } })
+  assert.equal(typeof module.exports.default.setup, "function")
+  assert.equal(module.exports.default.main, undefined, "settings do not register a Desktop main-process bridge")
+  // Walk every local import, including parent-relative and dynamic imports.
   const seen = new Set(), pending = ["src/gui.ts"]
   // Every import specifier counts: static, side-effect, dynamic and require, across lines, with single or double quotes.
   const builtin = new Set([...builtinModules, ...builtinModules.map(name => "node:" + name)])
   const specifiers = source => [...source.matchAll(/(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)["']([^"']+)["']/g)].map(match => match[1])
-  const staticLocal = source => [...source.matchAll(/(?:\bfrom\s*|\bimport\s+)["'](\.\/[^"']+)["']/g)].map(match => match[1])
   while (pending.length) {
     const file = pending.pop()
     if (seen.has(file)) continue
     seen.add(file)
     const source = await readFile(file, "utf8")
     for (const specifier of specifiers(source)) assert.equal(builtin.has(specifier) || specifier.startsWith("node:"), false, `${file} runs in the window and must not import ${specifier}`)
-    for (const local of staticLocal(source)) pending.push("src/" + local.replace(/^\.\//, ""))
+    for (const local of specifiers(source).filter(name => name.startsWith("."))) pending.push(resolve(dirname(file), local))
   }
-  for (const file of ["src/gui.ts", "src/setup-gui.ts", "src/setup-gui-api.ts", "src/setup.ts"]) assert.ok(seen.has(file), `${file} is part of the window graph`)
-  assert.equal(seen.has("src/setup-main.ts"), false, "the main-process bridge is not part of the window graph")
-  const tui = await readFile(pkg.exports["./tui"], "utf8")
+  for (const file of ["src/gui.ts", "src/setup-gui.ts", "src/setup-gui-api.ts", "src/setup.ts"]) assert.ok(seen.has(file) || seen.has(resolve(file)), `${file} is part of the window graph`)
+  assert.equal(seen.has(resolve("src/preferences-store.ts")), false, "the window never owns the preference writer")
   assert.match(tui, /predictions\.setup/, "the CLI setup command ships")
-  assert.equal(tui.includes(".predictions-backup"), false, "the CLI never writes the configuration itself")
 })

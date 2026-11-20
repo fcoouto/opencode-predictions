@@ -9,21 +9,19 @@ import type { SetupSnapshot, SetupPreview } from "../../src/setup.ts"
 
 for (const configSource of ["global-jsonc", "inline"] as const) {
   test(`setup settings and previews use public RPC without generating or editing ${configSource}`, { timeout: 60000 }, async () => {
-    await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false }, {}, { configSource })
+    await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false }, {}, { configSource, projectConfig: true })
     const location = { directory: fixture.directory }
     const original = fixture.configFile ? await readFile(fixture.configFile, "utf8") : undefined
     const api = fixture.api.rpc(Predictions)
     let snapshot: SetupSnapshot | undefined
-    await assert.doesNotReject(async () => { snapshot = await api.settings({}, { location }) as SetupSnapshot })
+    await assert.doesNotReject(async () => { snapshot = await api.settingsV2({}, { location }) as SetupSnapshot })
     assert.ok(snapshot)
     assert.equal(snapshot.scope, "global")
     assert.equal(snapshot.effective?.automatic, false)
     assert.equal(snapshot.serviceVersion, (await api.status({}, { location }) as Status).version)
-    assert.equal(snapshot.writable, false, "Network inspection must not advertise local write permission")
-    if (configSource !== "inline" && process.platform === "darwin") {
-      assert.equal(snapshot.source, fixture.configFile)
-      assert.equal(snapshot.fields.models, "fixture/model")
-    }
+    assert.equal(snapshot.writable, true, "the selected server owns preference writes")
+    assert.equal(snapshot.source, fixture.preferencesFile)
+    assert.equal(snapshot.fields.models, "fixture/model")
     for (const model of snapshot.catalog) {
       assert.ok(Object.keys(model).every(key => ["providerID", "id", "name", "enabled", "variants"].includes(key)))
       assert.ok(model.variants.every(variant => Object.keys(variant).every(key => key === "id")))
@@ -36,9 +34,9 @@ for (const configSource of ["global-jsonc", "inline"] as const) {
     assert.equal(preview.issues.some(issue => issue.code === "no_match" && issue.group === 1 && issue.entry === 1), true)
     const invalid = await api.previewSettings({ fields: { timeoutMs: null } }, { location }) as SetupPreview
     assert.equal(invalid.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error"), true)
-    await assert.rejects(api.settings({ source: "/client/home/never-write.json" }, { location }))
+    await assert.rejects(api.settingsV2({ source: "/client/home/never-write.json" }, { location }))
     await assert.rejects(api.previewSettings({ fields: { source: "/client/home/never-write.json" } }, { location }))
-    for (const method of ["saveSettings", "proveLocalSettings"]) {
+    for (const method of ["proveLocalSettings"]) {
       await assert.rejects(fixture.api.rpc.call({ rpcID: Predictions.id, method, input: {}, location }), (error: any) => error.type === "rpc.method_not_found")
     }
     if (fixture.configFile) assert.equal(await readFile(fixture.configFile, "utf8"), original)

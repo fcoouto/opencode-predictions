@@ -25,7 +25,7 @@ var settingsFields = {
 var setupIssue = {
   type: "object",
   properties: {
-    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] },
+    field: { type: "string", enum: ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext", "contextFile"] },
     group: { type: "integer", minimum: 0 },
     entry: { type: "integer", minimum: 0 },
     severity: { type: "string", enum: ["error", "warning"] },
@@ -85,7 +85,8 @@ var Predictions = Rpc.define({
       input: { type: "object", additionalProperties: false },
       output: { type: "object" }
     },
-    settings: {
+    // Old Setup clients interpret reset as inheritance. Do not serve them a writable snapshot.
+    settingsV2: {
       input: { type: "object", additionalProperties: false },
       output: {
         type: "object",
@@ -96,14 +97,38 @@ var Predictions = Rpc.define({
           writable: { type: "boolean" },
           reason: { type: "string" },
           fields: settingsFields,
-          localAuthority: { type: "object", properties: { id: { type: "string", minLength: 16, maxLength: 16 } }, required: ["id"], additionalProperties: false },
+          overrides: settingsFields,
+          origins: { type: "object", properties: Object.fromEntries(Object.keys(settingsFields.properties).map((key) => [key, { type: "string", enum: ["preferences", "default"] }])), required: Object.keys(settingsFields.properties), additionalProperties: false },
+          activeRevision: { anyOf: [{ type: "string" }, { type: "null" }] },
           effective: { anyOf: [{ type: "null" }, effectiveOptions] },
           catalog: { type: "array", items: catalogModel },
           issues: { type: "array", items: setupIssue },
           serviceVersion: { type: "string" }
         },
-        required: ["revision", "scope", "writable", "fields", "effective", "catalog", "issues", "serviceVersion"],
+        required: ["revision", "scope", "writable", "fields", "overrides", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"],
         additionalProperties: false
+      }
+    },
+    saveSettings: {
+      // Preserve unknown keys at both levels for explicit rejection by the server.
+      input: {
+        type: "object",
+        properties: {
+          revision: { type: "string", minLength: 1 },
+          fields: { ...settingsFields, additionalProperties: true },
+          reset: { type: "array", items: { type: "string" } },
+          removeModels: { type: "boolean" }
+        },
+        required: ["revision", "fields"],
+        additionalProperties: true
+      },
+      output: {
+        anyOf: [
+          { type: "object", properties: { kind: { const: "saved", type: "string" }, revision: { type: "string" }, serviceVersion: { type: "string" } }, required: ["kind", "revision", "serviceVersion"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "saved_not_active", type: "string" }, revision: { type: "string" }, message: { type: "string" } }, required: ["kind", "revision", "message"], additionalProperties: false },
+          { type: "object", properties: { kind: { const: "invalid", type: "string" }, issues: { type: "array", items: setupIssue } }, required: ["kind", "issues"], additionalProperties: false },
+          { type: "object", properties: { kind: { type: "string", enum: ["conflict", "read_only", "failed"] }, message: { type: "string" } }, required: ["kind", "message"], additionalProperties: false }
+        ]
       }
     },
     previewSettings: {
