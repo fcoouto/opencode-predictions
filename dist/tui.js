@@ -662,6 +662,7 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
       void controller.request(true, action.escalation ?? null, !!cache?.escalation && cache.escalation !== "off");
       requestingManual = false;
     } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic && !suppressed.has(completionKey())) void controller.request();
+    host.hint?.(available && cache?.automatic === false && !!current?.eligible && !current.draft && !manual && !activePrediction());
   };
   const request = (fromShortcut = false) => {
     if (disposed) return;
@@ -719,6 +720,7 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
       clearInterval(interval);
       loading?.abort.abort();
       controller.dispose();
+      host.hint?.(false);
       host.clearNotice?.();
     }
   };

@@ -12,6 +12,7 @@ export type ClientHost = {
   status(signal: AbortSignal): Promise<Status>
   predict(state: ClientState, requestID: string, signal: AbortSignal, notice: (message: string, final?: Notice, modelName?: string) => void, manual?: boolean, escalation?: string): Promise<Reply>
   paint(text: string | undefined): boolean
+  hint?(available: boolean): void
   insert(text: string): boolean
   focus(): void
   show(notice: Notice): void
@@ -232,6 +233,7 @@ export function startClient(host: ClientHost) {
       void controller.request(true, action.escalation ?? null, !!cache?.escalation && cache.escalation !== "off")
       requestingManual = false
     } else if (!manual && available && current?.eligible && current.automaticEligible !== false && !current.draft && cache?.automatic && !suppressed.has(completionKey()!)) void controller.request()
+    host.hint?.(available && cache?.automatic === false && !!current?.eligible && !current.draft && !manual && !activePrediction())
   }
   const request = (fromShortcut = false) => {
     if (disposed) return
@@ -272,6 +274,6 @@ export function startClient(host: ClientHost) {
       else controller.update({ eligible: false, draft: "" })
       tick()
     },
-    dispose() { suppress(); disposed = true; clearInterval(interval); loading?.abort.abort(); controller.dispose(); host.clearNotice?.() },
+    dispose() { suppress(); disposed = true; clearInterval(interval); loading?.abort.abort(); controller.dispose(); host.hint?.(false); host.clearNotice?.() },
   }
 }

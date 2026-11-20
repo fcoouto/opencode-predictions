@@ -7,6 +7,7 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
   let composing = false
   let overlay: HTMLDivElement | undefined
   let status = false
+  let hinting = false
   let announcement: HTMLDivElement | undefined
   let placeholder: HTMLElement | undefined
   let originalVisibility = ""
@@ -20,6 +21,7 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
   const clear = () => {
     resize?.disconnect(); resize = undefined
     overlay?.remove(); overlay = undefined
+    hinting = false
     if (sizing && sizing.element.style.minHeight === sizing.applied && sizing.element.style.getPropertyPriority("min-height") === "important") {
       if (sizing.value) sizing.element.style.setProperty("min-height", sizing.value, sizing.priority)
       else sizing.element.style.removeProperty("min-height")
@@ -46,18 +48,19 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
     return !!current && !!element && !composing && current.quotable() && current.focused() && current.text() === "" && !(element.textContent ?? "").replace(/\u200B/g, "") && (!selection || selection.isCollapsed) &&
       ![...document.querySelectorAll('[role="dialog"], [role="menu"], [role="listbox"], [data-component="composer-suggestions"]')].some(visible)
   }
-  const draw = (text: string, isStatus: boolean): boolean => {
+  const draw = (text: string, isStatus: boolean, isHint = false): boolean => {
     const element = anchor(!isStatus)
-    if (!element || composing || !composer()?.quotable() || composer()?.text() || (!isStatus && !eligible())) { clear(); return false }
+    if (!element || composing || !composer()?.quotable() || composer()?.text() || ((!isStatus || isHint) && !eligible())) { clear(); return false }
     if (!isStatus && status) announce("Prediction ready.")
-    if (overlay && (status !== isStatus || (sizing && sizing.element !== element))) clear()
+    if (overlay && (status !== isStatus || hinting !== isHint || (sizing && sizing.element !== element))) clear()
     if (sizing && (element.style.minHeight !== sizing.applied || element.style.getPropertyPriority("min-height") !== "important")) sizing = undefined
     status = isStatus
+    hinting = isHint
     const bounds = element.getBoundingClientRect()
     const style = window.getComputedStyle(element)
     if (!overlay) {
       overlay = document.createElement("div")
-      overlay.setAttribute(isStatus ? "data-opencode-communication" : "data-opencode-prediction", "")
+      overlay.setAttribute(isHint ? "data-opencode-prediction-hint" : isStatus ? "data-opencode-communication" : "data-opencode-prediction", "")
       overlay.setAttribute("aria-hidden", "true")
       const visual = document.createElement("span")
       visual.setAttribute("aria-hidden", "true")
@@ -73,12 +76,12 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
     if (!isStatus) Object.assign(visual.style, { display: "-webkit-box", webkitBoxOrient: "vertical", webkitLineClamp: "6", overflow: "hidden" })
     Object.assign(overlay.style, {
       position: "fixed", pointerEvents: "none", userSelect: "none", zIndex: "20", overflow: "hidden",
-      left: `${bounds.left}px`, top: `${bounds.top}px`, width: `${bounds.width}px`, minHeight: isStatus ? `${bounds.height}px` : "0px",
+      left: `${bounds.left}px`, top: `${bounds.top}px`, width: `${bounds.width}px`, minHeight: isStatus && !isHint ? `${bounds.height}px` : "0px",
       boxSizing: "border-box", padding: style.padding, font: style.font, lineHeight: style.lineHeight,
       letterSpacing: style.letterSpacing, direction: style.direction, textAlign: style.textAlign, whiteSpace: "pre-wrap", overflowWrap: "anywhere",
-      color: "var(--v2-text-text-muted, #888)", opacity: "0.7",
+      color: isHint ? style.color : "var(--v2-text-text-muted, #888)", opacity: isHint ? "1" : "0.7",
     })
-    if (!isStatus) {
+    if (!isStatus || isHint) {
       sizing ??= { element, value: element.style.minHeight, priority: element.style.getPropertyPriority("min-height"), applied: "", minimum: bounds.height }
       const padding = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom)
       const border = parseFloat(style.borderTopWidth) + parseFloat(style.borderBottomWidth)
@@ -89,7 +92,7 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
       const current = element.getBoundingClientRect()
       Object.assign(overlay.style, { left: `${current.left}px`, top: `${current.top}px`, width: `${current.width}px` })
       if (!resize) {
-        resize = new window.ResizeObserver(() => { if (overlay && !status) draw(overlay.textContent ?? "", false) })
+        resize = new window.ResizeObserver(() => { if (overlay && (!status || hinting)) draw(overlay.textContent ?? "", isStatus, isHint) })
         resize.observe(element)
       }
     }
@@ -97,16 +100,21 @@ export function createDesktopAdapter(document: Document, composer: () => Compose
   }
   const compositionStart = () => { composing = true; clear() }
   const compositionEnd = () => { composing = false }
-  const input = (event: Event) => { if (event.target === anchor(false) && overlay) { clear(); announce("Prediction dismissed.") } }
+  const input = (event: Event) => { if (event.target === anchor(false) && overlay) { const wasHint = hinting; clear(); if (!wasHint) announce("Prediction dismissed.") } }
   document.addEventListener("input", input, true)
   document.addEventListener("compositionstart", compositionStart, true)
   document.addEventListener("compositionend", compositionEnd, true)
   return {
     eligible,
     read: () => composer()?.text() ?? "",
+    hint(text: string | undefined) {
+      if (!text || !eligible()) { if (hinting) clear(); return }
+      if (overlay && !hinting) return
+      if (draw(text, true, true)) announce(text)
+    },
     communicate(value: Communication | undefined) {
       const text = value && communicationText(value, window.matchMedia("(prefers-reduced-motion: reduce)").matches, /Mac|iPhone|iPad/.test(window.navigator.platform) ? "Option+Shift+P" : "Alt+Shift+P")
-      if (!text) { if (status && overlay) { clear(); announce("Prediction finished.") } return }
+      if (!text) { if (status && overlay && !hinting) { clear(); announce("Prediction finished.") } return }
       if (draw(text, true) && overlay) {
         const label = value!.activity ? value!.activity.kind === "alternative" ? `Requesting prediction from ${value!.activity.name}.` : "Requesting prediction." : text
         if (overlay.getAttribute("aria-label") !== label) overlay.setAttribute("aria-label", label)
