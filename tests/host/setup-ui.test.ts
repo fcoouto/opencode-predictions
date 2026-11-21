@@ -97,7 +97,7 @@ test("setup ui: Desktop configures all eight settings through the page, reorders
     assert.equal(await page.getByRole("button", { name: "Save changes" }).isDisabled(), true, "a freshly opened page is clean")
     assert.equal(fixture.calls.length, 0)
     await page.getByText("0 models match now", { exact: true }).waitFor()
-    await page.locator('[data-action="predictions-preferences"]').scrollIntoViewIfNeeded()
+    await page.locator('[data-action="predictions-reset"]').scrollIntoViewIfNeeded()
     await page.screenshot({ path: ".test-artifacts/preferences-native-desktop.png", fullPage: true })
   } finally { await app.close() }
 })
