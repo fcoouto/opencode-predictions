@@ -3,8 +3,8 @@ import type { Plugin as GUIPlugin } from "@opencode/plugin/gui"
 import { Index, Show, createComponent, createRenderEffect, createSignal, untrack } from "solid-js"
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
-import { setupText, originLabels, contextFileIssue } from "./setup-copy.ts"
-import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { setupText, contextFileIssue } from "./setup-copy.ts"
+import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
 type GUIContext = Parameters<GUIPlugin.Setup>[0]
@@ -333,21 +333,6 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
         })),
         when(() => !!state()?.snapshot, () => [
           createComponent(ui.SettingsSection, {
-            title: "User preferences",
-            get children() {
-              return createComponent(ui.SettingsRow, {
-                id: "predictions-preferences", title: text(() => state()?.snapshot?.source ?? "Server preferences"),
-                get description() { return column(note(() => setupText.defaults), note(() => settingKeys.map(key => `${key}: ${originLabels[state()!.origins[key]]}`).join("\n"))) },
-                get children() {
-                  return button(() => "Reset to defaults", async () => {
-                    if (state()?.dirty && !await ctx.dialogs.confirm({ title: "Replace unsaved prediction settings?", description: "This replaces your draft with defaults. Save to apply the reset.", confirm: "Reset to defaults" })) return
-                    current()?.resetPreferences(); setTimeoutText(undefined)
-                  }, { disabled: () => locked() || !Object.keys(state()?.snapshot?.overrides ?? {}).length })
-                },
-              })
-            },
-          }),
-          createComponent(ui.SettingsSection, {
             title: "Behavior",
             get footer() { return note(() => flag("enabled", true) ? undefined : setupText.disabled) },
             get children() {
@@ -393,6 +378,22 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-debug", title: "Debug notices", description: "Show safe progress and failure notices, never raw provider errors.", get children() { return createComponent(ui.Switch, { get checked() { return flag("debug", false) }, onChange: (checked: boolean) => edit({ debug: checked }), label: "Debug notices", hideLabel: true, get disabled() { return locked() } }) } }),
                 ]),
               ]
+            },
+          }),
+          // Reset edits the draft across every section, so it sits just before the Save row that commits it.
+          createComponent(ui.SettingsSection, {
+            get children() {
+              const saved = () => Object.keys(state()?.snapshot?.overrides ?? {}).length > 0
+              return createComponent(ui.SettingsRow, {
+                id: "predictions-reset", title: "Reset to defaults",
+                get description() { return note(() => saved() ? "Replace every setting on this page with its default. Nothing changes until you save." : "Every setting already uses its default.") },
+                get children() {
+                  return button(() => "Reset to defaults", async () => {
+                    if (state()?.dirty && !await ctx.dialogs.confirm({ title: "Replace unsaved prediction settings?", description: "This replaces your draft with defaults. Save to apply the reset.", confirm: "Reset to defaults" })) return
+                    current()?.resetPreferences(); setTimeoutText(undefined)
+                  }, { disabled: () => locked() || !saved() })
+                },
+              })
             },
           }),
           createComponent(ui.SettingsSection, {

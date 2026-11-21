@@ -198,7 +198,7 @@ Changes stay in a draft until you choose **Save changes**; **Discard changes** r
 
 Settings apply to **user prediction preferences on the selected server**, across every project and server process using that configuration directory. Save never rewrites `opencode.json(c)`, its comments, other plugins, or credentials. Only changed settings are saved.
 
-The page shows **User preferences**, the server-side path, and each editable field's source: **Saved preference** or **Default**. **Reset to defaults** stages removal of the saved editable settings; choose **Save changes** to apply it. Reset asks before replacing unsaved draft edits and leaves any server-configured `contextFile` intact.
+**Reset to defaults**, just above **Save changes**, stages removal of the saved editable settings; choose **Save changes** to apply it. Reset asks before replacing unsaved draft edits and leaves any server-configured `contextFile` intact.
 
 > [!NOTE]
 > Predictions use provider quota and may incur charges. A model's name does not mean it is free.

@@ -134,7 +134,7 @@ test("page orders Behavior, Models, Advanced with exact labels and Advanced coll
   const page = await mount()
   try {
     await idle(page)
-    assert.deepEqual(await titles(page), ["User preferences", "Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"], "each fallback group is its own section under Models, in the order it is tried")
+    assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"], "each fallback group is its own section under Models, in the order it is tried")
     const labels = await page.evaluate(() => [...document.querySelectorAll('[data-section="Behavior"] [data-title]')].map(node => node.textContent))
     assert.deepEqual(labels, ["Enable Predictions", "Predict After Replies", "Escalation Mode"])
     assert.equal(await row(page, "predictions-advanced-github").count(), 0, "GitHub PR context lives only in the collapsed Advanced section")
@@ -351,7 +351,7 @@ test("Add group and the per-group Add menu open the model and pattern dialogs an
     await add.getByRole("button", { name: /Family A/ }).click()
     await add.getByRole("button", { name: "Add model" }).click()
     assert.deepEqual(await entryTitles(page), ["1. Model B", "2. local/family-*", "1. Family A"])
-    assert.deepEqual(await titles(page), ["User preferences", "Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"])
+    assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"])
   } finally { await page.close() }
 })
 
@@ -469,18 +469,18 @@ test("a missing main bridge does not prevent server-authorized Save", async () =
   } finally { await page.close() }
 })
 
-test("user preferences show path, provenance, reset intent and simultaneous-writer limits", async () => {
+test("Reset to defaults sits above Save, stages removal of saved settings and carries the simultaneous-writer limits", async () => {
   const page = await mount()
   try {
     await idle(page)
     const body = await page.locator("body").textContent() ?? ""
-    assert.match(body, /User preferences/)
-    assert.match(body, /\/server\/predictions\.json/)
-    assert.match(body, /Saved preference/)
-    assert.doesNotMatch(body, /OpenCode configuration/)
-    assert.match(body, /Default/)
+    assert.doesNotMatch(body, /User preferences/)
+    assert.doesNotMatch(body, /\/server\/predictions\.json/)
+    assert.doesNotMatch(body, /Saved preference/)
     assert.match(body, /Simultaneous saves can overwrite each other's changes, including different settings/)
     assert.match(body, /recovery copy may not contain those changes/)
+    assert.match(await row(page, "predictions-reset").textContent() ?? "", /Nothing changes until you save/)
+    assert.equal(await page.evaluate(() => { const reset = document.querySelector('[data-action="predictions-reset"]')!, save = document.querySelector('[data-action="predictions-save"]')!; return !!(reset.compareDocumentPosition(save) & Node.DOCUMENT_POSITION_FOLLOWING) }), true, "Reset comes before Save")
     await page.screenshot({ path: ".test-artifacts/preferences-gui.png", fullPage: true })
     await page.getByRole("button", { name: "Reset to defaults", exact: true }).click()
     assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0)
