@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <a href="https://www.npmjs.com/package/opencode-predictions"><img src="https://img.shields.io/npm/v/opencode-predictions?style=flat-square&amp;color=b9efcb&amp;labelColor=27352d" alt="npm version" /></a>
   <a href="https://github.com/fcoouto/opencode-predictions/actions/workflows/check.yml"><img src="https://github.com/fcoouto/opencode-predictions/actions/workflows/check.yml/badge.svg" alt="Build and test status" /></a>
   <a href="#compatibility"><img src="https://img.shields.io/badge/OpenCode-V2-b9efcb?style=flat-square&amp;labelColor=27352d" alt="Requires OpenCode V2" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9efcb?style=flat-square&amp;labelColor=27352d" alt="MIT license" /></a>
@@ -60,7 +61,7 @@ array. Add a comma after the preceding entry, if there is one. Preserve all othe
 plugins and settings.
 
 ```json
-"github:fcoouto/opencode-predictions#main"
+"opencode-predictions"
 ```
 
 <details>
@@ -74,14 +75,16 @@ replacing the file.
 {
   "$schema": "https://opencode.ai/config.json",
   "plugins": [
-    "github:fcoouto/opencode-predictions#main"
+    "opencode-predictions"
   ]
 }
 ```
 
 </details>
 
-OpenCode installs the package from GitHub.
+OpenCode installs the package from [npm](https://www.npmjs.com/package/opencode-predictions).
+To pin a release, use `"opencode-predictions@0.4.1"`. To track the development
+branch instead, use `"github:fcoouto/opencode-predictions#main"`.
 Configuration changes reload automatically; use `/reload` if needed.
 The global entry loads both Desktop and CLI support. Do not put it only in `cli.json`.
 
@@ -289,7 +292,7 @@ archive or telemetry. OpenCode and provider retention policies still apply.
 Automatic project instruction processing and learned preference memory are not
 supported. Only the explicitly configured global context file is read.
 
-Git installation stores plugin code in OpenCode's managed package cache
+Installation stores plugin code in OpenCode's managed package cache
 (`~/.cache/opencode/npm/` by default, or under `XDG_CACHE_HOME`). Settings remain
 in `predictions.json` on the server. The plugin does not collect or copy project files into that
 cache. Normal predictions write no plugin-owned context or suggestion files.
@@ -676,6 +679,8 @@ These are tested versions, not an allowlist. Private editor integration and the
 experimental Desktop API may need updates after OpenCode changes.
 
 OpenCode V1, Mini, browser-only clients, and noninteractive predictions are not supported.
+
+The package requires Node.js 22 or newer, the release lines that still receive security fixes. Run the latest patch release of your line. Developing this repository needs Node.js 26 (the tests use `await using`).
 
 ## License
 

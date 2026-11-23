@@ -308,12 +308,17 @@ function resolveModels(selectors, catalog) {
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.4.0",
+  version: "0.4.1",
   description: "Next-prompt predictions for OpenCode Desktop and CLI",
   type: "module",
   license: "MIT",
-  repository: { type: "git", url: "https://github.com/fcoouto/opencode-predictions.git" },
-  engines: { node: ">=26.4.0" },
+  author: { name: "Fernando Couto", url: "https://github.com/fcoouto" },
+  keywords: ["opencode-plugin", "opencode", "predictions", "autocomplete", "prompt", "suggestions"],
+  homepage: "https://github.com/fcoouto/opencode-predictions#readme",
+  bugs: { url: "https://github.com/fcoouto/opencode-predictions/issues" },
+  publishConfig: { access: "public" },
+  repository: { type: "git", url: "git+https://github.com/fcoouto/opencode-predictions.git" },
+  engines: { node: ">=22" },
   files: ["dist", "README.md", "readme-demo.svg", "LICENSE"],
   exports: {
     ".": "./dist/index.js",
@@ -335,6 +340,7 @@ var package_default = {
     "test:installed": "node scripts/test-installed.mjs",
     check: "npm test && npm run typecheck && npm run bundle"
   },
+  overrides: { gaxios: "7.3.1" },
   dependencies: { "@opencode/plugin": "2.2.6", "@opencode/client": "2.2.6", "jsonc-parser": "3.3.1" },
   devDependencies: {
     "@opentui/core": "0.8.4",
