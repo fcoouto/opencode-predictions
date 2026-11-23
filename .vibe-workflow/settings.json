@@ -2,6 +2,11 @@
   "version": 1,
   "features": [
     {
+      "smart_router": {
+        "enabled": true
+      }
+    },
+    {
       "git_workflow": {
         "enabled": true,
         "agent_merge": true,
