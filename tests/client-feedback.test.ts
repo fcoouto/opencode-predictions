@@ -5,6 +5,7 @@ import type { Notice, StatusView } from "../src/feedback.ts"
 import type { Status } from "../src/service.ts"
 
 const settle = () => new Promise(resolve => setImmediate(resolve))
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 const ready = (): Status => ({ enabled: true, automatic: false, debug: false, timeoutMs: 8000, contextTurns: 3, version: "one", warnings: [], feedbackRevision: 1 })
 function fixture(overrides: Partial<ClientHost> = {}) {
   let scope: string | undefined = "server/project"
@@ -34,10 +35,34 @@ test("invalid settings and missing models notify before any completed session wi
   }
 })
 
+test("a location that is still booting does not flash a service error while status recovers", async () => {
+  let attempts = 0
+  const f = fixture({ status: async () => { if (attempts++ < 2) throw Object.assign(new Error("HTTP 400"), { type: "rpc.unavailable" }); return ready() } })
+  try {
+    await sleep(700)
+    assert.ok(attempts >= 3, "status retried quickly instead of waiting for the 2s poll")
+    assert.equal(f.notices.length, 0)
+  } finally { f.client.dispose() }
+})
+
+test("a location that never finishes booting reports the service error once the grace window ends", async () => {
+  const f = fixture({ status: async () => { throw new Error("HTTP 400") } })
+  try {
+    await sleep(500)
+    assert.equal(f.notices.length, 0)
+    await sleep(3200)
+    assert.equal(f.notices.length, 1)
+    assert.equal(f.notices[0].code, "service_unavailable")
+  } finally { f.client.dispose() }
+})
+
 test("status failures notify safely once and manual requests explain unavailable service", async () => {
-  const f = fixture({ status: async () => { throw new Error("PRIVATE token=SECRET") } })
+  let down = false
+  const f = fixture({ status: async () => { if (!down) return ready(); throw new Error("PRIVATE token=SECRET") } })
   try {
     await settle()
+    down = true
+    f.client.invalidate(); await settle()
     assert.equal(f.notices.length, 1)
     f.client.invalidate(); await settle()
     assert.equal(f.notices.length, 1)
@@ -249,7 +274,7 @@ test("synchronous status exceptions settle safely instead of restarting inspecti
   let calls = 0
   const f = fixture({ status: () => { if (++calls === 1) throw new Error("PRIVATE"); return Promise.resolve(ready()) } })
   try {
-    await settle(); assert.equal(f.notices.length, 1); assert.equal(f.notices[0].code, "service_unavailable")
+    await settle(); assert.equal(calls, 1); assert.equal(f.notices.length, 0)
     await f.client.status()
     assert.match(f.views[0].summary, /State: Ready/)
   } finally { f.client.dispose() }

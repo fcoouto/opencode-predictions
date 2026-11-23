@@ -398,6 +398,9 @@ function log(show, message) {
 }
 
 // src/client.ts
+var pollMs = 2e3;
+var bootGraceMs = 3e3;
+var bootRetryMs = 250;
 function startClient(host) {
   const suppressed = new Set(host.memory?.[0].suppressed);
   const versions = /* @__PURE__ */ new Map();
@@ -610,6 +613,7 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
           versions.set(location, value.version);
           cache = value;
           checked = Date.now();
+          record().reached = true;
           const recoveredModels = record().requestFailure === inspectedFailure && !!value.candidates?.some((model) => model.state === "ready");
           health(statusNotice(value), recoveredModels);
         }
@@ -622,7 +626,10 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
             health(reasonNotice("timeout"));
           } else {
             cache = void 0;
-            health(reasonNotice("service_unavailable"));
+            const value = record();
+            value.bootStarted ??= Date.now();
+            if (!value.reached && Date.now() - value.bootStarted < bootGraceMs) checked = Date.now() - pollMs + bootRetryMs;
+            else health(reasonNotice("service_unavailable"));
           }
         }
       } finally {
@@ -636,7 +643,7 @@ ${["generation_failed", "context_unavailable"].includes(reply.reason ?? "") ? no
   const tick = () => {
     if (disposed) return;
     sync();
-    if (scope && !loading && Date.now() - checked >= 2e3) void load();
+    if (scope && !loading && Date.now() - checked >= pollMs) void load();
     if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = void 0;
     const available = !!cache?.enabled && !cache.reason;
     controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : void 0, eligible: !!current?.eligible && !!cache?.enabled, draft: current?.draft ?? "" });
