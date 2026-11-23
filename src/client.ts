@@ -21,7 +21,11 @@ export type ClientHost = {
   openStatus(view: StatusView): void | Promise<void>
   diagnostics?(): Record<string, unknown>
 }
-type Health = { health?: Notice; requestFailure?: Notice; lastNotice?: Notice; announced?: string }
+type Health = { health?: Notice; requestFailure?: Notice; lastNotice?: Notice; announced?: string; bootStarted?: number; reached?: boolean }
+const pollMs = 2000
+// A new location answers status with an error until its server plugin has registered; stay quiet and retry fast.
+const bootGraceMs = 3000
+const bootRetryMs = 250
 export function startClient(host: ClientHost) {
   const suppressed = new Set(host.memory?.[0].suppressed)
   const versions = new Map<string, string>()
@@ -196,7 +200,7 @@ export function startClient(host: ClientHost) {
             suppress(); manual = undefined; controller.invalidate()
           }
           versions.set(location, value.version)
-          cache = value; checked = Date.now()
+          cache = value; checked = Date.now(); record().reached = true
           const recoveredModels = record().requestFailure === inspectedFailure && !!value.candidates?.some(model => model.state === "ready")
           health(statusNotice(value), recoveredModels)
         }
@@ -204,7 +208,13 @@ export function startClient(host: ClientHost) {
         if (live()) {
           checked = Date.now()
           if (deadline.aborted) { manual = undefined; controller.stage(undefined); health(reasonNotice("timeout")) }
-          else { cache = undefined; health(reasonNotice("service_unavailable")) }
+          else {
+            cache = undefined
+            const value = record()
+            value.bootStarted ??= Date.now()
+            if (!value.reached && Date.now() - value.bootStarted < bootGraceMs) checked = Date.now() - pollMs + bootRetryMs
+            else health(reasonNotice("service_unavailable"))
+          }
         }
       } finally {
         if (loading?.abort === abort) loading = undefined
@@ -217,7 +227,7 @@ export function startClient(host: ClientHost) {
   const tick = () => {
     if (disposed) return
     sync()
-    if (scope && !loading && Date.now() - checked >= 2000) void load()
+    if (scope && !loading && Date.now() - checked >= pollMs) void load()
     if (manual?.fromShortcut && (current?.draft || cache?.enabled === false)) manual = undefined
     const available = !!cache?.enabled && !cache.reason
     controller.update({ key: current && cache ? JSON.stringify([scope, current.key, cache.version]) : undefined, eligible: !!current?.eligible && !!cache?.enabled, draft: current?.draft ?? "" })
