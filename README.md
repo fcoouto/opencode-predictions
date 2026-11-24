@@ -83,7 +83,7 @@ replacing the file.
 </details>
 
 OpenCode installs the package from [npm](https://www.npmjs.com/package/opencode-predictions).
-To pin a release, use `"opencode-predictions@0.4.1"`. To track the development
+To pin a release, use `"opencode-predictions@0.4.2"`. To track the development
 branch instead, use `"github:fcoouto/opencode-predictions#main"`.
 Configuration changes reload automatically; use `/reload` if needed.
 The global entry loads both Desktop and CLI support. Do not put it only in `cli.json`.

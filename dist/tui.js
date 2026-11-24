@@ -257,12 +257,12 @@ var encoder = new TextEncoder();
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.4.1",
-  description: "Next-prompt predictions for OpenCode Desktop and CLI",
+  version: "0.4.2",
+  description: "OpenCode plugin for AI next-prompt suggestions: ghost-text prompt autocomplete in OpenCode Desktop and the CLI. Press Tab to accept.",
   type: "module",
   license: "MIT",
   author: { name: "Fernando Couto", url: "https://github.com/fcoouto" },
-  keywords: ["opencode-plugin", "opencode", "predictions", "autocomplete", "prompt", "suggestions"],
+  keywords: ["opencode-plugin", "opencode", "opencode-v2", "predictions", "autocomplete", "prompt-autocomplete", "next-prompt", "prompt-suggestions", "ghost-text", "ai", "llm", "coding-agent", "tui"],
   homepage: "https://github.com/fcoouto/opencode-predictions#readme",
   bugs: { url: "https://github.com/fcoouto/opencode-predictions/issues" },
   publishConfig: { access: "public" },
