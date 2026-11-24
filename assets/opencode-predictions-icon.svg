@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">Open Slot — a dark cursor beside a space marked by two opposing corners</title>
+  <path fill="#b9efcb" d="M0 0h64v64H0z"/>
+  <g fill="#202922">
+    <path d="M10 17h16v30H10z"/>
+    <path d="M33 17h14v5h-9v8h-5zM54 47H40v-5h9v-8h5z"/>
+  </g>
+</svg>

@@ -18,7 +18,8 @@
   <a href="#predictions-setup">Predictions Setup</a> &middot;
   <a href="#cost-and-privacy">Cost &amp; privacy</a> &middot;
   <a href="#settings">Settings</a> &middot;
-  <a href="#compatibility">Compatibility</a>
+  <a href="#compatibility">Compatibility</a> &middot;
+  <a href="#support-development">Support development</a>
 </p>
 
 <p align="center">
@@ -681,6 +682,11 @@ experimental Desktop API may need updates after OpenCode changes.
 OpenCode V1, Mini, browser-only clients, and noninteractive predictions are not supported.
 
 The package requires Node.js 22 or newer, the release lines that still receive security fixes. Run the latest patch release of your line. Developing this repository needs Node.js 26 (the tests use `await using`).
+
+## Support development
+
+OpenCode Predictions is free and always will be. If it’s saved you a few keystrokes,
+you can [leave a one-time tip](https://buy.stripe.com/fZu14pdh29pH4uScpifYY00) to help me maintain it.
 
 ## License
 
