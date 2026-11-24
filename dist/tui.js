@@ -257,7 +257,7 @@ var encoder = new TextEncoder();
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.4.3",
+  version: "0.4.4",
   description: "OpenCode plugin for AI next-prompt suggestions: ghost-text prompt autocomplete in OpenCode Desktop and the CLI. Press Tab to accept.",
   type: "module",
   license: "MIT",
