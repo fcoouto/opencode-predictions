@@ -22,10 +22,10 @@
 </p>
 
 <p align="center">
-  <img src="readme-demo.svg" width="800" alt="Illustrative interaction: the assistant finishes, then ghost text suggests “Review the diff for regressions.” Tab accepts it for editing, without sending." />
+  <img src="https://raw.githubusercontent.com/fcoouto/opencode-predictions/main/assets/predictions-desktop.gif" width="768" alt="OpenCode Desktop suggests “Run the targeted tests.” Tab accepts the suggestion, and the user adds “first, then show failures” without sending it." />
 </p>
 
-<p align="center"><sub>Illustrative interaction, not a screenshot. You decide what gets sent.</sub></p>
+<p align="center"><sub>Scripted demo in OpenCode Desktop. Tab accepts the suggestion for editing; Enter sends it.</sub></p>
 
 ## Keep the next step in sight
 
