@@ -268,7 +268,7 @@ var package_default = {
   publishConfig: { access: "public" },
   repository: { type: "git", url: "git+https://github.com/fcoouto/opencode-predictions.git" },
   engines: { node: ">=22" },
-  files: ["dist", "README.md", "readme-demo.svg", "LICENSE"],
+  files: ["dist", "README.md", "assets/predictions-desktop.gif", "LICENSE"],
   exports: {
     ".": "./dist/index.js",
     "./tui": "./dist/tui.js",
