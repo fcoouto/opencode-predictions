@@ -10,6 +10,7 @@
   <a href="https://github.com/fcoouto/opencode-predictions/actions/workflows/check.yml"><img src="https://github.com/fcoouto/opencode-predictions/actions/workflows/check.yml/badge.svg" alt="Build and test status" /></a>
   <a href="#compatibility"><img src="https://img.shields.io/badge/OpenCode-V2-b9efcb?style=flat-square&amp;labelColor=27352d" alt="Requires OpenCode V2" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9efcb?style=flat-square&amp;labelColor=27352d" alt="MIT license" /></a>
+  <a href="#support-development"><img src="https://img.shields.io/badge/Tip%20jar-b9efcb?style=flat-square&amp;logo=githubsponsors&amp;logoColor=27352d" alt="Tip jar" /></a>
 </p>
 
 <p align="center">
@@ -18,8 +19,7 @@
   <a href="#predictions-setup">Predictions Setup</a> &middot;
   <a href="#cost-and-privacy">Cost &amp; privacy</a> &middot;
   <a href="#settings">Settings</a> &middot;
-  <a href="#compatibility">Compatibility</a> &middot;
-  <a href="#support-development">Support development</a>
+  <a href="#compatibility">Compatibility</a>
 </p>
 
 <p align="center">
