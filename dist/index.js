@@ -308,13 +308,14 @@ function resolveModels(selectors, catalog) {
 // package.json
 var package_default = {
   name: "opencode-predictions",
-  version: "0.4.2",
+  version: "0.4.3",
   description: "OpenCode plugin for AI next-prompt suggestions: ghost-text prompt autocomplete in OpenCode Desktop and the CLI. Press Tab to accept.",
   type: "module",
   license: "MIT",
   author: { name: "Fernando Couto", url: "https://github.com/fcoouto" },
   keywords: ["opencode-plugin", "opencode", "opencode-v2", "predictions", "autocomplete", "prompt-autocomplete", "next-prompt", "prompt-suggestions", "ghost-text", "ai", "llm", "coding-agent", "tui"],
   homepage: "https://github.com/fcoouto/opencode-predictions#readme",
+  funding: "https://buy.stripe.com/fZu14pdh29pH4uScpifYY00",
   bugs: { url: "https://github.com/fcoouto/opencode-predictions/issues" },
   publishConfig: { access: "public" },
   repository: { type: "git", url: "git+https://github.com/fcoouto/opencode-predictions.git" },
