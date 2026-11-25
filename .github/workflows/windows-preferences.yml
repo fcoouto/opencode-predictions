@@ -1,0 +1,47 @@
+name: Native Windows preferences
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows-preferences:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run bundle
+      - name: Stage the packaged plugin and pinned OpenCode server
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path "$env:SystemDrive\" ('predictions-ci-' + [Guid]::NewGuid().ToString('N'))
+          [void][IO.Directory]::CreateDirectory($stage)
+          Set-Content -LiteralPath (Join-Path $stage 'package.json') -Value '{"private":true,"type":"module"}' -Encoding Ascii
+          $pack = npm.cmd pack --ignore-scripts --json --pack-destination $stage | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Could not pack the predictions plugin.' }
+          $tarball = ($pack | ConvertFrom-Json)[0].filename
+          npm.cmd install --prefix $stage --ignore-scripts --no-audit --no-fund (Join-Path $stage $tarball)
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install the packed predictions plugin.' }
+
+          $zip = Join-Path $env:RUNNER_TEMP 'predictions-opencode-2.2.6.zip'
+          Invoke-WebRequest -UseBasicParsing 'https://github.com/anomalyco/opencode/releases/download/v2.2.6/opencode-windows-x64.zip' -OutFile $zip
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash -ne 'f75c16b33b8523fe1ff41e7d97e3ae654a47d59a0e327def24db2d9291bb24be') {
+              throw 'Unexpected Windows OpenCode release checksum.'
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $stage
+          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $stage 'node.exe')
+          [void][IO.Directory]::CreateDirectory((Join-Path $stage 'src'))
+          [void][IO.Directory]::CreateDirectory((Join-Path $stage 'tests\host'))
+          Copy-Item -LiteralPath 'src\rpc.ts' -Destination (Join-Path $stage 'src')
+          Copy-Item -LiteralPath 'tests\host\fixture.mjs', 'tests\host\windows-preferences.test.ts', 'tests\host\windows-preferences-runner.ps1' -Destination (Join-Path $stage 'tests\host')
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PREDICTIONS_WINDOWS_STAGE=$stage" -Encoding UTF8
+      - name: Run native RPC tests under a standard Windows account
+        shell: powershell
+        run: |
+          & (Join-Path $env:PREDICTIONS_WINDOWS_STAGE 'tests\host\windows-preferences-runner.ps1') -Stage $env:PREDICTIONS_WINDOWS_STAGE
