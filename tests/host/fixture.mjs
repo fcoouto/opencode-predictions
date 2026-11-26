@@ -136,5 +136,5 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
     provider.closeAllConnections(); provider.close()
   }
   const restart = async () => { await stopChild(); await start() }
-  return { root, directory, env, get api() { return api }, get address() { return address }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
+  return { root, directory, env, get api() { return api }, get address() { return address }, get pid() { return child.pid }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
 }

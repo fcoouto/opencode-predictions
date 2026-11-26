@@ -23,6 +23,10 @@ jobs:
           $ProgressPreference = 'SilentlyContinue'
           $stage = Join-Path "$env:SystemDrive\" ('predictions-ci-' + [Guid]::NewGuid().ToString('N'))
           [void][IO.Directory]::CreateDirectory($stage)
+          icacls.exe $stage /grant '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not protect the Windows test stage.' }
+          icacls.exe $stage /inheritance:r
+          if ($LASTEXITCODE -ne 0) { throw 'Could not disable inherited access to the Windows test stage.' }
           Set-Content -LiteralPath (Join-Path $stage 'package.json') -Value '{"private":true,"type":"module"}' -Encoding Ascii
           $pack = npm.cmd pack --ignore-scripts --json --pack-destination $stage | Out-String
           if ($LASTEXITCODE -ne 0) { throw 'Could not pack the predictions plugin.' }

@@ -112,7 +112,8 @@ test("Windows reads create nothing and a second Save creates a private backup", 
   const backupAcl = await getAcl(f.source + ".backup")
   assert.match(backupAcl, /D:P/)
   assert.doesNotMatch(backupAcl, /;;;(?:WD|AU|BU)\)/)
-  assert.equal(await getAcl(f.source), oldAcl)
+  // The kernel can record automatic inheritance even when the DACL remains protected.
+  assert.equal((await getAcl(f.source)).replace("D:PAI(", "D:P("), oldAcl.replace("D:PAI(", "D:P("))
   assert.equal(await getAcl(f.directory), beforeAcl)
   assert.equal(await readFile(f.config, "utf8"), f.configBytes)
 })
@@ -166,6 +167,35 @@ for (const kind of ["inherited mutation rights", "hard link", "junction"]) test(
   assert.equal(await readFile(f.config, "utf8"), f.configBytes)
 })
 
+test("Windows refuses a file with an explicit integrity policy it cannot preserve", native, async t => {
+  const f = await fixture(t)
+  await writeFile(f.source, initial)
+  assert.equal((await f.store.read(signal())).documentValid, true)
+  await icacls(f.source, "/setintegritylevel", "L")
+  const state = await f.store.read(signal())
+  assert.equal(state.documentValid, false)
+  assert.equal((await f.store.write(state.revision, edit, signal())).kind, "read_only")
+  assert.equal(await readFile(f.source, "utf8"), initial)
+})
+
+test("Windows refuses a foreign-owned file in an otherwise verified directory", native, async () => {
+  const root = process.env.PREDICTIONS_TEST_FOREIGN_ROOT
+  assert.ok(root, "Run native tests with the isolated ownership fixture.")
+  const host: PreferencesHost = { home: root, platform: "win32", env: { XDG_CONFIG_HOME: root }, systemPaths: [join(root, "managed")] }
+  const source = preferencesPath(host), parked = source + ".foreign"
+  const bytes = await readFile(source)
+  const store = createPreferencesStore(host)
+  await rename(source, parked)
+  try {
+    const empty = await store.read(signal())
+    assert.equal(empty.writable, true, empty.reason ?? "The parent must be eligible for Save.")
+  } finally { await rename(parked, source) }
+  const state = await store.read(signal())
+  assert.equal(state.documentValid, false)
+  assert.equal((await store.write(state.revision, edit, signal())).kind, "read_only")
+  assert.deepEqual(await readFile(source), bytes)
+})
+
 for (const kind of ["untrusted reader", "hard link", "junction"]) test(`Windows refuses to overwrite a backup with ${kind}`, native, async t => {
   const f = await fixture(t), backup = f.source + ".backup"
   await writeFile(f.source, initial)
@@ -211,12 +241,13 @@ test("Windows refuses stale drafts and oversized preferences", native, async t =
   await writeFile(f.source, newer)
   assert.equal((await f.store.write(before.revision, edit, signal())).kind, "conflict")
   assert.equal(await readFile(f.source, "utf8"), newer)
-  const oversized = " ".repeat(65537)
-  await writeFile(f.source, oversized)
-  const state = await f.store.read(signal())
-  assert.equal(state.documentValid, false)
-  assert.equal((await f.store.write(state.revision, edit, signal())).kind, "read_only")
-  assert.equal(await readFile(f.source, "utf8"), oversized)
+  for (const bad of [" ".repeat(65537), ""]) {
+    await writeFile(f.source, bad)
+    const state = await f.store.read(signal())
+    assert.equal(state.documentValid, false)
+    assert.equal((await f.store.write(state.revision, edit, signal())).kind, "read_only")
+    assert.equal(await readFile(f.source, "utf8"), bad)
+  }
   assert.equal(await readFile(f.config, "utf8"), f.configBytes)
 })
 
@@ -274,7 +305,7 @@ for (const phase of ["before replacement", "lost readback", "different readback"
   const io = await checkpoint(phase === "before replacement" ? "BEFORE_ACTIVE_REPLACE" : "AFTER_ACTIVE_REPLACE",
     phase === "different readback"
       ? `File.WriteAllText(${JSON.stringify(f.source)}, ${JSON.stringify(differing)});`
-      : 'throw new IOException("private fixture failure");')
+      : 'if (path.Length > 0) throw new IOException("private fixture failure");')
   await writeFile(f.source, initial)
   const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
   const next = '{"version":1,"settings":{"debug":true}}\n'

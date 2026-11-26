@@ -1350,6 +1350,8 @@ $reply = [PredictionsPreferences]::Execute($request.op, $request.source, [string
 var limit = 65536;
 var wireLimit = 192 * 1024;
 var unavailable = "Windows prediction preferences cannot be read or verified. Check the server's configuration directory.";
+var helperUnavailable = "Windows PowerShell could not verify prediction preferences.";
+var helperTimeout = "Windows PowerShell timed out while verifying prediction preferences.";
 var uncertain = "Changes may have been saved. Reopen settings before trying again.";
 var readOnly = "Windows prediction preferences are not writable.";
 var refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings.";
@@ -1358,6 +1360,8 @@ var bootstrap = Buffer.from(
   "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
   "utf16le"
 ).toString("base64");
+var HelperRefusal = class extends Error {
+};
 function windowsLocalRoot(value) {
   if (!/^[A-Za-z]:[\\/]/.test(value)) return false;
   const components = value.slice(3).replace(/[\\/]$/, "").split(/[\\/]/);
@@ -1366,13 +1370,14 @@ function windowsLocalRoot(value) {
 async function invokeWindows(request, signal, script = windowsScript) {
   signal.throwIfAborted();
   const root = process.env.SystemRoot;
-  if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new Error(unavailable);
+  if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new HelperRefusal(helperUnavailable);
   const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0");
+  const deadline = AbortSignal.timeout(1800);
   const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
     cwd: system,
     windowsHide: true,
     stdio: ["pipe", "pipe", "ignore"],
-    signal: AbortSignal.any([signal, AbortSignal.timeout(1800)]),
+    signal: AbortSignal.any([signal, deadline]),
     env: {
       SystemRoot: root,
       PATH: system,
@@ -1399,7 +1404,8 @@ async function invokeWindows(request, signal, script = windowsScript) {
       } else output.push(chunk);
     });
     child.once("close", (code) => {
-      if (failed || code !== 0) reject(new Error(unavailable));
+      if (deadline.aborted) reject(new HelperRefusal(helperTimeout));
+      else if (failed || code !== 0) reject(new HelperRefusal(helperUnavailable));
       else {
         try {
           resolve2(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output)));
@@ -1413,14 +1419,14 @@ ${Buffer.from(JSON.stringify(request)).toString("base64")}
 `);
   });
 }
-var denied = (source) => ({
+var denied = (source, reason = unavailable) => ({
   source,
   state: "unavailable",
   expected: "",
   writable: false,
   present: false,
   bytes: Buffer.alloc(0),
-  reason: unavailable
+  reason
 });
 function object(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(unavailable);
@@ -1448,8 +1454,9 @@ function createWindowsIO(invoke = invokeWindows) {
         const result = reply(await invoke({ op: "read", source, systemPaths }, signal));
         signal.throwIfAborted();
         if (result.kind === "snapshot") return snapshot(result.snapshot, source);
-      } catch {
+      } catch (error) {
         signal.throwIfAborted();
+        if (error instanceof HelperRefusal) return denied(source, error.message);
       }
       return denied(source);
     },

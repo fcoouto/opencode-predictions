@@ -37,13 +37,31 @@ if ($StandardUser) {
 $name = 'predtest-' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
 $password = ConvertTo-SecureString ('Aa1!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
 $account = New-LocalUser -Name $name -Password $password
+$ownerRoot = Join-Path "$env:SystemDrive\" ('predictions-owner-' + [Guid]::NewGuid().ToString('N'))
 try {
     $users = Get-LocalGroup -SID 'S-1-5-32-545'
     if (!(Get-LocalGroupMember -Group $users | Where-Object { $_.SID -eq $account.SID })) {
         Add-LocalGroupMember -Group $users -Member $account
     }
-    & (Join-Path ([Environment]::SystemDirectory) 'icacls.exe') $Stage /grant "*$($account.SID.Value):(OI)(CI)RX"
+    $icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'
+    & $icacls $Stage /grant "*$($account.SID.Value):(OI)(CI)RX"
     if ($LASTEXITCODE -ne 0) { throw 'Could not grant the standard account access to the staged fixture.' }
+
+    [void][IO.Directory]::CreateDirectory($ownerRoot)
+    & $icacls $ownerRoot /grant "*$($account.SID.Value):(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not grant access to the isolated ownership fixture.' }
+    & $icacls $ownerRoot /inheritance:r
+    if ($LASTEXITCODE -ne 0) { throw 'Could not disable inherited access to the ownership fixture.' }
+    $ownerDirectory = Join-Path $ownerRoot 'opencode'
+    [void][IO.Directory]::CreateDirectory($ownerDirectory)
+    $foreignFile = Join-Path $ownerDirectory 'predictions.json'
+    [IO.File]::WriteAllText($foreignFile, '{"version":1,"settings":{"automatic":false}}')
+    foreach ($directory in @($ownerRoot, $ownerDirectory)) {
+        & $icacls $directory /setowner "*$($account.SID.Value)"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set the ownership fixture directory owner.' }
+    }
+    & $icacls $foreignFile /setowner "*$administrators"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the foreign-owned fixture file.' }
 
     $launch = [Diagnostics.ProcessStartInfo]::new()
     $launch.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
@@ -63,6 +81,7 @@ try {
     }
     $launch.EnvironmentVariables['USERNAME'] = $name
     $launch.EnvironmentVariables['PATH'] = "$Stage;$([Environment]::SystemDirectory);$env:SystemRoot"
+    $launch.EnvironmentVariables['PREDICTIONS_TEST_FOREIGN_ROOT'] = $ownerRoot
 
     $child = [Diagnostics.Process]::Start($launch)
     try {
