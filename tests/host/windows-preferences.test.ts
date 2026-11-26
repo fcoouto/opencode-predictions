@@ -4,7 +4,7 @@ import { once } from "node:events"
 import { readFile, readdir, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join } from "node:path"
 import { setTimeout as pause } from "node:timers/promises"
-import { test } from "node:test"
+import { test, type TestContext } from "node:test"
 import { pathToFileURL } from "node:url"
 import { OpenCode } from "@opencode/client"
 import { Predictions } from "../../src/rpc.ts"
@@ -21,6 +21,19 @@ for (const [name, value] of Object.entries({ APPDATA, OPENCODE_BIN, PREDICTIONS_
 async function entries(path: string): Promise<string[] | undefined> {
   try { return (await readdir(path)).sort() }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
+}
+
+async function coldRead(read: () => Promise<SetupSnapshot>, t: TestContext) {
+  try {
+    const state = await read()
+    if (state.reason !== "Windows PowerShell timed out while verifying prediction preferences." || state.writable) return state
+    t.diagnostic("Cold PowerShell startup hit the read deadline. Reopening settings once.")
+  } catch (error) {
+    const failure = error as { cause?: { cause?: { code?: string } } }
+    if (failure.cause?.cause?.code !== "ECONNRESET") throw error
+    t.diagnostic("The server reset the read connection during startup. Reopening settings once.")
+  }
+  return read()
 }
 
 for (const [windowsConfig, name] of [
@@ -47,7 +60,7 @@ for (const [windowsConfig, name] of [
     const read = async () => await f.api.rpc(Predictions).settingsV2({}, { location, signal: AbortSignal.timeout(2000) }) as SetupSnapshot
     const saveFields = async (revision: string, fields: { automatic?: boolean; debug?: boolean }) =>
       await f.api.rpc(Predictions).saveSettings({ revision, fields }, { location, signal: AbortSignal.timeout(12000) }) as SaveResult
-    const before = await read()
+    const before = await coldRead(read, t)
     assert.deepEqual(await entries(root), beforeRoot)
     assert.deepEqual(await entries(dirname(source)), beforeDir)
     assert.equal(before.source, source)
@@ -71,7 +84,7 @@ for (const [windowsConfig, name] of [
     assert.deepEqual(await readFile(config), configBytes)
 
     await f.restart()
-    const restarted = await read()
+    const restarted = await coldRead(read, t)
     assert.equal(restarted.activeRevision, restarted.revision)
     assert.equal(restarted.effective?.automatic, false)
     assert.equal(restarted.effective?.debug, true)
@@ -85,7 +98,7 @@ test("two Windows clients sustain status polling without accumulating helpers", 
   })
   const location = { directory: f.directory }
   const clients = [f.api, OpenCode.make({ baseUrl: f.address, headers: f.headers })]
-  const before = await clients[0].rpc(Predictions).settingsV2({}, { location, signal: AbortSignal.timeout(2000) }) as SetupSnapshot
+  const before = await coldRead(async () => await clients[0].rpc(Predictions).settingsV2({}, { location, signal: AbortSignal.timeout(2000) }) as SetupSnapshot, t)
   const save = await clients[0].rpc(Predictions).saveSettings({ revision: before.revision, fields: { models: "fixture/model", automatic: false } },
     { location, signal: AbortSignal.timeout(12000) }) as SaveResult
   assert.equal(save.kind, "saved", JSON.stringify(save))

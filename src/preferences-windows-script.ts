@@ -18,7 +18,7 @@ using Microsoft.Win32.SafeHandles;
 public static class PredictionsPreferences {
     const uint ReadControl = 0x20000, Delete = 0x10000, WriteDac = 0x40000, WriteOwner = 0x80000;
     const uint ReadData = 1, WriteData = 2, AppendData = 4, WriteEa = 0x10, DeleteChild = 0x40, ReadAttr = 0x80, WriteAttr = 0x100;
-    const uint Security = 7, ProtectedDacl = 0x80000004;
+    const uint Security = 0x77, ProtectedDacl = 0x80000004;
     const uint DirectoryFlag = 0x10, Reparse = 0x400, ReadOnly = 1;
     const uint NoFollow = 0x00200000, DirectoryHandle = 0x02000000, ShareRead = 1, ShareWrite = 2, ShareDelete = 4;
     const uint GenericRead = 0x80000000, GenericWrite = 0x40000000, CreateNew = 1, OpenExisting = 3;
@@ -138,6 +138,8 @@ public static class PredictionsPreferences {
             var sd = item.Descriptor;
             Require(ancestor ? Trusted(sd.Owner, true) : sd.Owner == user);
             Require(sd.DiscretionaryAcl != null && (sd.ControlFlags & ControlFlags.DiscretionaryAclPresent) != 0);
+            // Replacement must not drop a file's integrity label or central access policy.
+            if (!directory) Require(sd.SystemAcl == null || sd.SystemAcl.Count == 0);
             uint forbidden = Mutate | (directory ? DeleteChild : 0) | (ancestor ? 0 : WriteData | AppendData);
             foreach (var entry in sd.DiscretionaryAcl) {
                 var ace = entry as CommonAce;
