@@ -15,3 +15,4 @@ tests/host/observer/gui-experimental.cjs
 # Logs and operating-system files
 *.log
 .DS_Store
+.superpowers/
