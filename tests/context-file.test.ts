@@ -5,7 +5,7 @@ import { renameSync, symlinkSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
-import { inspectContextFile, readContextFile, sameFileIdentity } from "../src/context-file.ts"
+import { inspectContextFile, readContextFile, verifyOpenedFile } from "../src/context-file.ts"
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), "prediction-context-"))
@@ -97,13 +97,19 @@ test("context inspection honors cancellation", async t => {
   await assert.rejects(inspectContextFile(f.path, controller.signal), { name: "AbortError" })
 })
 
-// Identity check that catches a swap where O_NOFOLLOW is undefined (Windows): the opened handle must be the
-// same device and inode that lstat reported. Exercised directly because the swap itself cannot be pinned.
-test("context inspection treats a different device or inode as a replaced file", () => {
-  const before = { dev: 1n, ino: 2n }
-  assert.equal(sameFileIdentity(before, { dev: 1n, ino: 2n }), true)
-  assert.equal(sameFileIdentity(before, { dev: 1n, ino: 3n }), false)
-  assert.equal(sameFileIdentity(before, { dev: 9n, ino: 2n }), false)
+// Post-open verification for platforms without O_NOFOLLOW (Windows). The swap cannot be pinned to an
+// instant, so each branch is exercised directly with stat-like objects.
+const regularStat = (dev: bigint, ino: bigint) => ({ dev, ino, isFile: () => true })
+const linkStat = (dev: bigint, ino: bigint) => ({ dev, ino, isFile: () => false })
+
+test("opened handle is accepted only when both lstat results are the same regular file", () => {
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 2n), regularStat(1n, 2n)), true)
+  // A symlink to the original file, kept under another name, shares dev/ino with it.
+  // The second lstat sees the link at the path, so the open must be refused.
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), linkStat(1n, 2n), regularStat(1n, 2n)), false)
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 3n), regularStat(1n, 2n)), false)
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 2n), regularStat(9n, 2n)), false)
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 2n), linkStat(1n, 2n)), false)
 })
 
 // Aborting synchronously right after the call means the abort lands while the open is still pending,

@@ -7,6 +7,8 @@ export type ContextFileState = "ok" | "empty" | "missing" | "too_large" | "inval
 
 type ContextFileStatus = { state: ContextFileState; bytes?: number }
 
+type StatLike = { dev: bigint; ino: bigint; isFile(): boolean }
+
 // Reports state and size only; the text itself never leaves this function.
 export async function inspectContextFile(absolutePath: string, signal: AbortSignal): Promise<ContextFileStatus> {
   signal.throwIfAborted()
@@ -23,14 +25,14 @@ export async function inspectContextFile(absolutePath: string, signal: AbortSign
   let file: FileHandle
   try {
     // O_NOFOLLOW makes the open refuse a symlink where it is defined. Where it is not (Windows), the
-    // identity check in classifyOpenFile catches a swapped-in link or file.
+    // checks in classifyOpenFile catch a path that was swapped for a link.
     file = await open(absolutePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0))
   } catch (error) {
     signal.throwIfAborted()
     return errorField(error, "code") === "ENOENT" ? { state: "missing" } : { state: "unreadable" }
   }
   try {
-    return await classifyOpenFile(file, before, signal)
+    return await classifyOpenFile(absolutePath, file, before, signal)
   } catch {
     signal.throwIfAborted()
     return { state: "unreadable" }
@@ -39,17 +41,21 @@ export async function inspectContextFile(absolutePath: string, signal: AbortSign
   }
 }
 
-// Exported for tests. True only when two stat results name the same device and inode.
-export function sameFileIdentity(a: { dev: bigint; ino: bigint }, b: { dev: bigint; ino: bigint }): boolean {
-  return a.dev === b.dev && a.ino === b.ino
+// Exported for tests. Accepts an open only when the path is still the regular file it was first reported
+// as: the second lstat is not a link, and both lstat results match the opened handle's device and inode.
+export function verifyOpenedFile(before: StatLike, after: StatLike, opened: StatLike): boolean {
+  const same = (a: StatLike, b: StatLike) => a.dev === b.dev && a.ino === b.ino
+  return before.isFile() && after.isFile() && opened.isFile() && same(before, opened) && same(after, opened)
 }
 
-async function classifyOpenFile(file: FileHandle, before: BigIntStats, signal: AbortSignal): Promise<ContextFileStatus> {
-  const info = await file.stat({ bigint: true })
+async function classifyOpenFile(absolutePath: string, file: FileHandle, before: BigIntStats, signal: AbortSignal): Promise<ContextFileStatus> {
+  const opened = await file.stat({ bigint: true })
+  // A second lstat after the open catches a symlink swapped in at the path, which the identity check alone
+  // cannot see when the link targets the original file.
+  const after = await lstat(absolutePath, { bigint: true })
   signal.throwIfAborted()
-  // The handle must be the file lstat reported; a replaced path is unreadable and is never read.
-  if (!info.isFile() || !sameFileIdentity(before, info)) return { state: "unreadable" }
-  const bytes = Number(info.size)
+  if (!verifyOpenedFile(before, after, opened)) return { state: "unreadable" }
+  const bytes = Number(opened.size)
   try {
     const text = await readValidatedText(file, signal)
     return { state: text ? "ok" : "empty", bytes }
