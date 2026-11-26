@@ -390,10 +390,12 @@ public static class PredictionsPreferences {
         const string ChangedContext = "it changed while it was checked";
         const string UnreadableContext = "its access rules cannot be read";
         const int NotFoundError = 2, AccessDeniedError = 5, FileExistsError = 80, AlreadyExistsError = 183;
-        // Read access makes a handle take part in sharing, and this share mode leaves out delete. While such
+        // A handle with read access takes part in sharing, and this share mode leaves out delete. While such
         // a handle is open, no one can rename or delete the file, so the fixed path keeps naming it.
-        const uint HoldAccess = ReadControl | ReadAttr | ReadData, HoldShare = ShareRead | ShareWrite;
-        const uint AnyShare = ShareRead | ShareWrite | ShareDelete;
+        // A handle with only attribute and rule access takes no part in sharing, whatever its share mode.
+        // It keeps the file ID from being reused, but it cannot deny rename or delete.
+        const uint PinAccess = ReadControl | ReadAttr | ReadData, ViewAccess = ReadControl | ReadAttr;
+        const uint HoldShare = ShareRead | ShareWrite, AnyShare = ShareRead | ShareWrite | ShareDelete;
 
         // Opens the entry at the fixed context path itself, never a link target. Null with the Win32
         // error code means it could not be opened. Nothing is read from it here.
@@ -434,56 +436,51 @@ public static class PredictionsPreferences {
             return null;
         }
 
-        // Finds the reason for an entry that exists but was denied to the holding open. Weaker opens still
-        // show its shape, and then its owner and rules. No handle from here is adopted, so a swap between
-        // these opens cannot make a file pass.
-        string UnheldContextProblem(string path) {
-            foreach (var access in new uint[] { ReadControl | ReadAttr, ReadAttr }) {
-                int code;
-                using (var item = OpenContext(path, access, AnyShare, out code)) {
-                    if (item != null) {
-                        var reason = ContextProblem(item);
-                        if (reason != null) return reason;
-                        // The file passes every rule, but its data cannot be opened, so it cannot be held.
-                        throw new IOException();
-                    }
-                    if (code == NotFoundError) return ChangedContext;
-                    if (code != AccessDeniedError) throw new Win32Exception(code);
+        // Finds the reason for an entry that could not be created or held. Attribute access shows its shape.
+        // Its owner and rules are not read here, so an entry with a sound shape is refused as well.
+        // Nothing opened here is adopted. reported tells that the create found an entry at the path.
+        static string UnheldContextProblem(string path, bool reported) {
+            int code;
+            FileInfoByHandle info;
+            using (var item = OpenContext(path, ReadAttr, AnyShare, out code)) {
+                if (item == null) {
+                    if (code != NotFoundError) return UnreadableContext;
+                    if (reported) return ChangedContext;
+                    // Nothing is there, so the create failed for a cause other than an entry at the path.
+                    throw new IOException();
                 }
+                if (!GetFileInformationByHandle(item.Handle, out info)) return UnreadableContext;
             }
-            return UnreadableContext;
+            var reason = ContextShape(info);
+            return reason != null ? reason : UnreadableContext;
         }
 
-        // Creates the fixed context file empty and private when it is absent, and adopts the entry that is
-        // there only when the create reports one. It never overwrites or truncates. The returned handle is
-        // the one from the create or from the adopting open. The caller keeps it open until the preferences
-        // are replaced. Null with a reason means refusal.
+        // Creates the fixed context file empty and private when it is absent. It adopts an entry only when
+        // the create reports that one exists. It never overwrites or truncates. The returned handle is the
+        // one from the create or from the adopting open. The caller keeps it open until the preferences are
+        // replaced. Null with a reason means refusal.
         Item HoldContext(string directory, out string reason) {
             var path = Path.Combine(directory, ContextName);
             int createError = 0, openError;
             // The error is read inside the callback, because freeing the descriptor afterwards can replace it.
             var made = WithAttributes(Private(false), attrs => {
-                var created = CreateFileW(path, HoldAccess, HoldShare, attrs, CreateNew, NoFollow, IntPtr.Zero);
+                var created = CreateFileW(path, PinAccess, HoldShare, attrs, CreateNew, NoFollow, IntPtr.Zero);
                 if (created.IsInvalid) createError = Marshal.GetLastWin32Error();
                 return created;
             });
-            Item item;
+            Item item = null;
             if (!made.IsInvalid) item = new Item { Path = path, Handle = made };
             else {
                 made.Dispose();
-                bool exists = createError == FileExistsError || createError == AlreadyExistsError;
-                // An existing directory can make the create report access denied.
-                if (!exists && createError != AccessDeniedError) throw new Win32Exception(createError);
-                item = OpenContext(path, HoldAccess, HoldShare, out openError);
+                bool reported = createError == FileExistsError || createError == AlreadyExistsError;
+                if (reported) {
+                    item = OpenContext(path, PinAccess, HoldShare, out openError);
+                    // Reading the data is not an adoption rule. A file that denies it, or that another program
+                    // has open without read sharing, is held by attribute and rule access instead.
+                    if (item == null) item = OpenContext(path, ViewAccess, HoldShare, out openError);
+                }
                 if (item == null) {
-                    if (openError == NotFoundError) {
-                        // Nothing is there. Either the entry that the create reported is gone, or the create itself was denied.
-                        if (!exists) throw new Win32Exception(createError);
-                        reason = ChangedContext;
-                        return null;
-                    }
-                    if (openError != AccessDeniedError) throw new Win32Exception(openError);
-                    reason = UnheldContextProblem(path);
+                    reason = UnheldContextProblem(path, reported);
                     return null;
                 }
             }
@@ -497,9 +494,10 @@ public static class PredictionsPreferences {
             return null;
         }
 
-        // Run immediately before the preferences are replaced, while the held handle still denies rename
-        // and delete. The fixed path must name the held file. Only then is that file judged by the rules
-        // again, so another entry at the path always reports a change, whatever its own state.
+        // Run immediately before the preferences are replaced. The fixed path must name the held file. Only
+        // then is that file judged by the rules again, so another entry at the path always reports a change,
+        // whatever its own state. A handle that denies rename and delete makes a change impossible. For a
+        // handle that cannot deny them, this check is the protection.
         string ConfirmContext(Item held) {
             int code;
             FileInfoByHandle now;
@@ -540,7 +538,7 @@ public static class PredictionsPreferences {
                     var backupState = before.bytes == null ? BackupState.Absent : CheckBackup(backup);
                     if (backupState == BackupState.ReadOnly) return Result("read_only");
                     // The context file is created or adopted in the pinned directory before any preference bytes are staged.
-                    // Its handle stays open, denying rename and delete, until the preferences are replaced.
+                    // Its handle stays open until the preferences are replaced.
                     string refusal = null;
                     using (var held = context == "create" ? HoldContext(chain.Physical, out refusal) : null) {
                         if (refusal != null) return Refused(refusal);
