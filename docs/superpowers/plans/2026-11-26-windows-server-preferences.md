@@ -78,3 +78,5 @@
 - [x] **Document and verify.** State that simple private ACLs support repeat Save, unsupported permissions and EFS are read-only, and Save does not guarantee preservation of opaque audit metadata. Run `npm run check`, `npm run test:package`, and `git diff --check`. Record the [native run evidence](../../research/2026-11-26-windows-preferences-qualification.md#save-policy-follow-up).
 
 Independent review and green checks on the current PR head are required before changing readiness. Do not tag, merge, or publish as part of this task.
+
+**Final review ruling (user-approved):** Keep best-effort checks for existing files and accept the same trusted-writer race as Unix, including permission changes. For verified absence, use a no-overwrite rename and map name collisions to conflict. Verify the no-overwrite primitive on an ordinary occupied scratch file, and retain both packaged profiles' first Save, backup creation, and repeat-Save tests.

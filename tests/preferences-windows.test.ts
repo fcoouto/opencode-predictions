@@ -338,6 +338,19 @@ test("Windows staging is private before it receives preference bytes", native, a
   }
 })
 
+test("Windows no-replace rename leaves an occupied scratch name untouched", native, async t => {
+  const f = await fixture(t), occupied = join(f.directory, "occupied-scratch.txt")
+  await writeFile(occupied, "keep this")
+  const io = await checkpoint(f.root, "BEFORE_STAGE_WRITE", `
+    if (Rename(file, Path.Combine(directory, "occupied-scratch.txt"), false))
+        throw new IOException("A no-replace rename unexpectedly succeeded.");
+  `)
+  const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(initial), signal())
+  assert.equal(result.kind, "written", JSON.stringify(result))
+  assert.equal(await readFile(occupied, "utf8"), "keep this")
+})
+
 test("Windows recognizes equivalent grants but not missing, inapplicable, or encrypted replacements", native, async t => {
   const f = await fixture(t), observation = join(f.root, "replacement-policy")
   const io = await checkpoint(f.root, "BEFORE_STAGE_WRITE", `

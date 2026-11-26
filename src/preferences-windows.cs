@@ -325,25 +325,31 @@ public static class PredictionsPreferences {
             }
         }
 
-        static void Rename(SafeFileHandle file, string path) {
+        static bool Rename(SafeFileHandle file, string path, bool replace) {
             var bytes = Encoding.Unicode.GetBytes(path);
             int root = IntPtr.Size, length = root * 2, start = length + 4;
             var info = new byte[start + bytes.Length + 2];
-            info[0] = 1; // ReplaceIfExists; the name stays on the pinned local volume.
+            info[0] = replace ? (byte)1 : (byte)0; // ReplaceIfExists; same pinned volume.
             Buffer.BlockCopy(BitConverter.GetBytes(bytes.Length), 0, info, length, 4);
             Buffer.BlockCopy(bytes, 0, info, start, bytes.Length);
-            if (!WithBytes(info, p => SetFileInformationByHandle(file, 3, p, (uint)info.Length))) throw LastError();
+            if (WithBytes(info, p => SetFileInformationByHandle(file, 3, p, (uint)info.Length))) return true;
+            var error = LastError();
+            const int FileExists = 80, AlreadyExists = 183;
+            if (!replace && (error.NativeErrorCode == FileExists || error.NativeErrorCode == AlreadyExists)) return false;
+            throw error;
         }
 
         static void Discard(SafeFileHandle file) {
             WithBytes(new byte[] { 1 }, p => SetFileInformationByHandle(file, 4, p, 1));
         }
 
-        bool CanReplaceBackup(string path) {
+        enum BackupState { Absent, Replaceable, ReadOnly }
+
+        BackupState CheckBackup(string path) {
             using (var existing = Open(path, false, true)) {
-                if (existing == null) return true;
+                if (existing == null) return BackupState.Absent;
                 Safe(existing, false, false, true);
-                return CanReplace(existing);
+                return CanReplace(existing) ? BackupState.Replaceable : BackupState.ReadOnly;
             }
         }
 
@@ -389,22 +395,27 @@ public static class PredictionsPreferences {
                     }
                     var path = chain.FilePath;
                     var backup = path + ".backup";
-                    if (before.bytes != null && !CanReplaceBackup(backup)) return Result("read_only");
+                    var backupState = before.bytes == null ? BackupState.Absent : CheckBackup(backup);
+                    if (backupState == BackupState.ReadOnly) return Result("read_only");
                     using (var stage = Stage(chain.Physical, next)) {
                         try {
                             if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
                             if (before.bytes != null) {
                                 using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes))) {
+                                    bool installed = false;
                                     try {
-                                        if (!CanReplaceBackup(backup)) { Discard(copy); return Result("read_only"); }
-                                        Rename(copy, backup);
+                                        var rechecked = CheckBackup(backup);
+                                        if (rechecked == BackupState.ReadOnly) return Result("read_only");
+                                        if (rechecked != backupState) return Result("conflict");
+                                        installed = Rename(copy, backup, backupState == BackupState.Replaceable);
+                                        if (!installed) return Result("conflict");
                                     }
-                                    catch { Discard(copy); throw; }
+                                    finally { if (!installed) Discard(copy); }
                                 }
                             }
                             if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
                             /* BEFORE_ACTIVE_REPLACE */
-                            Rename(stage, path);
+                            if (!Rename(stage, path, before.bytes != null)) return Result("conflict");
                             committed = true;
                         } finally { if (!committed) Discard(stage); }
                     }

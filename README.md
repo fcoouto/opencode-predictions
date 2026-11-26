@@ -291,7 +291,7 @@ It does not edit `opencode.json(c)`, other plugins, or credentials.
 
 An explicitly empty or relative `XDG_CONFIG_HOME` is refused. Without an override, Windows requires an absolute `APPDATA`. Windows paths must be on a local NTFS drive; network shares, junctions, and symlinks are refused. On Unix, the server can resolve a trusted configuration-directory symlink. Both refuse symlinked active files, hard links, unsafe ownership or write permissions, and unsupported ACLs.
 
-On Windows, Save replaces only unencrypted files with permissions matching the plugin's private file policy. A readable file with other permissions stays readable, but Save is disabled. An existing backup must also meet the policy. Save does not guarantee preservation of audit rules the server cannot inspect.
+On Windows, Save checks that existing files are unencrypted and match the plugin's private file permissions. A readable file with other permissions stays readable, but Save is disabled. An existing backup must also pass the check. Save does not guarantee preservation of audit rules the server cannot inspect. Do not change permissions while Save is running: the checks are best-effort, and concurrent changes to an existing file can be overwritten. When creating the preferences file or backup, Save will not overwrite a file that appears after its check.
 
 `predictions.json` is the only prediction settings source. Missing fields use
 built-in defaults; explicit `false` stays false. `contextFile` can only be set by
