@@ -33,6 +33,11 @@ async function afterRestart(read: () => Promise<SetupSnapshot>, t: TestContext) 
   return read()
 }
 
+function reportTiming(t: TestContext, output: string) {
+  const records = output.match(/PREF_TIMING \d+ \d+ (?:read|commit) [A-Z_]+ -?\d+/g)
+  if (records) t.diagnostic("Verifier stages (elapsed milliseconds):\n" + records.slice(0, 40).join("\n"))
+}
+
 for (const [windowsConfig, name] of [
   ["appdata", "default Windows profile saves and survives server restart"],
   ["override", "literal Windows config paths round-trip"],
@@ -41,6 +46,7 @@ for (const [windowsConfig, name] of [
     await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
       windowsConfig, projectConfig: true, seedPreferences: false,
     })
+    t.after(() => reportTiming(t, f.output()))
     const root = windowsConfig === "appdata" ? APPDATA! : join(f.root, "O'Brien [测试]")
     const source = join(root, "opencode", "predictions.json")
     const config = join(f.directory, "opencode.jsonc")
@@ -81,6 +87,7 @@ for (const [windowsConfig, name] of [
     assert.deepEqual(JSON.parse(await readFile(source, "utf8")), { version: 1, future, settings: { automatic: false, debug: true } })
     assert.deepEqual(await readFile(config), configBytes)
 
+    reportTiming(t, f.output())
     await f.restart()
     const restarted = await afterRestart(read, t)
     assert.equal(restarted.activeRevision, restarted.revision)
