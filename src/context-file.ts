@@ -2,8 +2,9 @@ import { constants, type BigIntStats } from "node:fs"
 import { lstat, open, type FileHandle } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
+import type { ContextFileState } from "./setup.ts"
 
-export type ContextFileState = "ok" | "empty" | "missing" | "too_large" | "invalid" | "unreadable"
+export type { ContextFileState }
 
 type ContextFileStatus = { state: ContextFileState; bytes?: number }
 

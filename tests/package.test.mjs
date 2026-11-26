@@ -32,7 +32,7 @@ test("packed contents include working entries and exclude local data and install
 test("packed setup surface: selected-server Save, no local bridge, writer only in the server bundle", async () => {
   const pkg = JSON.parse(await readFile("package.json", "utf8"))
   const rpc = (await import(pathToFileURL(resolve(pkg.exports["./rpc"])).href)).Predictions
-  assert.deepEqual(Object.keys(rpc.methods).sort(), ["predict", "previewSettings", "saveSettings", "settingsV2", "status"], "only the selected-server settings contract is public")
+  assert.deepEqual(Object.keys(rpc.methods).sort(), ["contextFileStatus", "predict", "previewSettings", "saveSettings", "settingsV2", "status"], "only the selected-server settings contract is public")
   const gui = await readFile(pkg.exports["./gui-experimental"], "utf8")
   const server = await readFile(pkg.exports["."], "utf8")
   const tui = await readFile(pkg.exports["./tui"], "utf8")
