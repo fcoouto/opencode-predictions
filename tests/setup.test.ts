@@ -494,6 +494,43 @@ for (const status of ["unsupported", "unavailable"] as const) test(`context stat
   editor.dispose()
 })
 
+test("Undo clears a staged context change even after the status turns unavailable, and Save sends nothing until status is known", async () => {
+  const f = contextEditorFixture({ set: false })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  f.api.contextStatus = async () => "unavailable" as never
+  await editor.refreshContext()
+  assert.equal(editor.state().context, "unavailable")
+  assert.equal(editor.state().contextChange, "managed", "the staged change stays visible to Undo")
+  assert.equal(editor.state().dirty, true)
+  const refused = await editor.save()
+  assert.deepEqual(refused, { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] })
+  assert.equal(editor.state().blocked, false, "a local refusal does not block the draft")
+  assert.equal(f.inputs.length, 0, "no server call while status is unknown")
+  editor.setContextFile(undefined)
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.dispose()
+})
+
+test("a status that turns unsupported clears the staged context change, and Save sends no contextFile", async () => {
+  const f = contextEditorFixture({ set: false })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.change({ enabled: false })
+  editor.setContextFile("managed")
+  f.api.contextStatus = async () => "unsupported" as never
+  await editor.refreshContext()
+  assert.equal(editor.state().context, "unsupported")
+  assert.equal(editor.state().contextChange, undefined, "the old server cannot apply it")
+  assert.equal(editor.state().dirty, true, "the field edit is still a change")
+  assert.equal((await editor.save()).kind, "saved")
+  assert.deepEqual(f.inputs[0], { revision: "r1", fields: { enabled: false } })
+  assert.equal(Object.hasOwn(f.inputs[0], "contextFile"), false)
+  editor.dispose()
+})
+
 test("a read-only snapshot or an unknown context status cannot stage a context change", async () => {
   const readOnly = contextEditorFixture({ set: false })
   readOnly.snapshot.writable = false

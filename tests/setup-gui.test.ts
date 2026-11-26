@@ -813,6 +813,55 @@ test("an old server shows the manual sentence and the update note, with no butto
   } finally { await page.close() }
 })
 
+test("Undo still clears a staged file after Check again finds the status unavailable", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unavailable")
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /Context file status is unavailable right now\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    await contextButton(page, "Undo").click()
+    assert.equal(await save(page).isDisabled(), true, "Undo leaves the draft clean")
+    assert.equal(await contextButton(page, "Undo").count(), 0)
+    await setReply(page, { set: false })
+    await contextButton(page, "Check again").click()
+    await contextButton(page, "Use a context file").waitFor()
+  } finally { await page.close() }
+})
+
+test("a staged file while the status is unavailable is not sent; Save says why", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unavailable")
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /Context file status is unavailable right now\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    await save(page).click()
+    await page.waitForFunction(() => /Context file status is unavailable right now\./.test(document.querySelector('[data-footer] [role="status"]')?.textContent ?? ""))
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0, "no save reaches the server")
+  } finally { await page.close() }
+})
+
+test("Check again finding the status unsupported clears the staged file; Save keeps the field edit and sends no contextFile", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await page.getByRole("switch", { name: "Predict After Replies" }).check()
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unsupported")
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /Update the Predictions plugin on the server to manage the context file here\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.equal(await contextButton(page, "Undo").count(), 0, "nothing is staged any more")
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    const sent = await page.evaluate(() => (window as any).log.saves[0].input)
+    assert.equal(Object.hasOwn(sent, "contextFile"), false)
+    assert.deepEqual(sent.fields, { automatic: true })
+  } finally { await page.close() }
+})
+
 test("read-only keeps Open, Show and Check again, and disables every staging action", async () => {
   let page = await mount({ readOnly: true, contextFile: okFile })
   try {

@@ -132,7 +132,11 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     state.contextLoading = true; notify()
     try {
       const status = await abortable(() => read(lifetime.signal), lifetime.signal)
-      if (request === contextRequest && !lifetime.signal.aborted) state.context = status
+      if (request === contextRequest && !lifetime.signal.aborted) {
+        state.context = status
+        // An old server cannot apply a staged file action, so the staged change is dropped instead of sent.
+        if (status === "unsupported" && state.contextChange !== undefined) { state.contextChange = undefined; update() }
+      }
     } catch { if (request === contextRequest && !lifetime.signal.aborted) state.context = "unavailable" }
     finally { if (request === contextRequest) { state.contextLoading = false; notify() } }
   }
@@ -140,7 +144,9 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     state: (): Readonly<SetupState> => state,
     refreshContext,
     setContextFile(change: "managed" | "none" | undefined) {
-      if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot?.writable || typeof state.context !== "object") return
+      if (lifetime.signal.aborted || state.loading || state.saving) return
+      // Clearing needs no status, so Undo keeps working when the status later turns unknown.
+      if (change !== undefined && (!state.snapshot?.writable || typeof state.context !== "object")) return
       state.contextChange = change; state.lastSave = undefined; update()
     },
     async load() {
@@ -199,6 +205,12 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
       if (issues.length) { state.issues = issues; notify(); return { kind: "invalid", issues } }
       if (!state.dirty) return failed("No changes to save.")
       if (!state.snapshot.writable) return { kind: "read_only", message: state.snapshot.reason ?? "This configuration is read-only." }
+      // Without a known status the server cannot be trusted to apply a file action: refuse locally and keep the change for Undo.
+      if (state.contextChange !== undefined && typeof state.context !== "object") {
+        const refused: SaveResult = { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] }
+        state.lastSave = refused; notify()
+        return refused
+      }
       resetPreview()
       const before = state.snapshot
       const expected = structuredClone(state.fields)

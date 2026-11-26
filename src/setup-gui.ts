@@ -373,6 +373,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     when(() => contextView() === "checking", () => note(() => contextFileText.checking)),
     when(() => contextView() === "unsupported", () => column(note(() => setupText.contextFileManual), note(() => contextFileText.unsupported))),
     when(() => contextView() === "unavailable", () => note(() => contextFileText.unavailable)),
+    when(() => contextView() === "unavailable" && !!contextStaged(), () => note(contextStagedCopy)),
     when(() => contextView() === "unset", () => note(() => contextStagedCopy() ?? setupText.contextFile)),
     when(() => contextView() === "set", () => note(contextPathLine)),
     when(() => contextView() === "set" && !contextStaged() && contextStatusNow()?.state === "empty", () => note(() => contextFileText.empty)),
