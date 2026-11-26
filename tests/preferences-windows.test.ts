@@ -299,14 +299,15 @@ async function checkpoint(root: string, name: string, code: string) {
 test("Windows staging is private before it receives preference bytes", native, async t => {
   const f = await fixture(t), observation = join(f.root, "staging-before-write")
   const io = await checkpoint(f.root, "BEFORE_STAGE_WRITE", `
-    var stagedPath = new System.IO.FileInfo(path);
-    var stagedAcl = stagedPath.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
-    File.AppendAllText(${JSON.stringify(observation)}, stagedPath.Length + ":" + stagedAcl + Environment.NewLine);
+    // Inspect the held file; legacy .NET pathname APIs may reject the volume GUID path.
+    var size = ((ulong)item.Info.SizeHigh << 32) | item.Info.SizeLow;
+    var stagedAcl = item.Descriptor.GetSddlForm(AccessControlSections.Access);
+    File.AppendAllText(${JSON.stringify(observation)}, size + ":" + stagedAcl + Environment.NewLine);
   `)
   await writeFile(f.source, initial)
   const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
   const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from('{"version":1,"settings":{}}\n'), signal())
-  assert.equal(result.kind, "written")
+  assert.equal(result.kind, "written", JSON.stringify(result))
   const samples = (await readFile(observation, "utf8")).trim().split(/\r?\n/)
   assert.equal(samples.length, 2, "Both active and backup staging were observed.")
   for (const sample of samples) {
