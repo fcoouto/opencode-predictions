@@ -36,7 +36,7 @@ User settings live only in the selected server's `predictions.json`; missing fie
 - Preferences use strict UTF-8/JSON validation, safe storage checks, atomic replacement, private backups, best-effort revision checks, and verified activation.
 - The user explicitly rejected write locking and accepted simultaneous-writer lost updates, including different-field edits. Backups do not guarantee recovery of concurrent changes. Interrupted writes require fresh readback, never automatic replay or manual lock cleanup.
 - Administrative configuration suppresses user preference application and writes. Unsupported or invalid preference documents cannot silently activate default predictions.
-- Native qualification covers macOS Desktop 2.3.0 and CLI/server 2.2.6. Linux/Windows path tests do not imply native filesystem/ACL qualification.
+- Native qualification covers macOS Desktop 2.3.0 and CLI/server 2.2.6. It also covers Windows x64 OpenCode server 2.2.6 with the npm package and local NTFS. Windows Desktop UI, native ARM64, and native Linux filesystem behavior are not qualified.
 
 ## Evidence on Hand
 
@@ -45,8 +45,8 @@ User settings live only in the selected server's `predictions.json`; missing fie
 - `src/models.ts` resolves model selectors.
 - `src/gui.ts` and `src/tui.ts` register current commands and status dialogs.
 - `src/index.ts` and `src/rpc.ts` expose prediction, status, settings, metadata preview, and selected-server Save.
-- `src/preferences*.ts` implement the document, store, and runtime lifecycle; `tests/host/preferences.test.ts` and connected native suites qualify normal launches.
-- `docs/research/2026-11-18-predictions-preferences-qualification.md` records evidence and limits. Earlier setup designs and persistence candidates are historical, not the current write boundary.
+- `src/preferences*.ts` implement the document, store, and runtime lifecycle. `src/preferences-windows.cs` verifies Windows storage. The connected native suites qualify normal server launches.
+- The [macOS](docs/research/2026-11-18-predictions-preferences-qualification.md) and [Windows](docs/research/2026-11-26-windows-preferences-qualification.md) qualification records describe evidence and limits. Earlier setup designs and persistence candidates are historical, not the current write boundary.
 
 ## Product Principles
 

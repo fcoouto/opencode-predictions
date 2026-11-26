@@ -287,9 +287,9 @@ It does not edit `opencode.json(c)`, other plugins, or credentials.
 | --- | --- |
 | macOS / Linux default | `~/.config/opencode/predictions.json` |
 | Absolute `XDG_CONFIG_HOME`, on any platform | `$XDG_CONFIG_HOME/opencode/predictions.json` |
-| Windows path convention (see [server limits](#compatibility)) | `%APPDATA%/opencode/predictions.json` |
+| Windows default (see [compatibility](#compatibility)) | `%APPDATA%\opencode\predictions.json` |
 
-An explicitly empty/relative `XDG_CONFIG_HOME`, or missing/nonabsolute Windows `APPDATA`, is refused. A trusted configuration-directory symlink is resolved on the server; symlinked active files, hard links, unsafe ownership/write permissions, and unsupported ACLs are refused.
+An explicitly empty or relative `XDG_CONFIG_HOME` is refused. Without an override, Windows requires an absolute `APPDATA`. Windows paths must be on a local NTFS drive; network shares, junctions, and symlinks are refused. On Unix, the server can resolve a trusted configuration-directory symlink. Both refuse symlinked active files, hard links, unsafe ownership or write permissions, and unsupported ACLs.
 
 `predictions.json` is the only prediction settings source. Missing fields use
 built-in defaults; explicit `false` stays false. `contextFile` can only be set by
@@ -677,10 +677,13 @@ task, it favors a short contextual reply instead of repeating the proposal.
   including shared-service and standalone setups. Prediction behavior was
   also tested on Desktop `2.2.7`. These are tested versions, not minimums.
   See the [qualification record](docs/research/2026-11-18-predictions-preferences-qualification.md).
-- **Server limits:** The plugin requires Unix file ownership checks to load
-  or save preferences. A native Windows server cannot do that. This
-  restriction is on the server, not the client. Linux file and permission
-  behavior has not been tested on a native host.
+- **Tested on Windows:** Preferences on a native x64 OpenCode `2.2.6` server
+  with local NTFS, including `%APPDATA%` and `XDG_CONFIG_HOME`. The Windows
+  server needs an npm release that includes the prebuilt verifier. Git installs
+  without the verifier and native ARM64 servers cannot load or save preferences.
+  This qualifies the server, not the Windows Desktop UI. See the
+  [Windows qualification record](docs/research/2026-11-26-windows-preferences-qualification.md).
+- **Linux:** File and permission behavior has not been tested on a native host.
 - **Node.js:** The npm package declares Node.js `>=22`. Contributors use
   Node.js `26` to run the tests.
 
