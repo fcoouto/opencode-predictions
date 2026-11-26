@@ -73,7 +73,10 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
     },
     async contextStatus(signal: AbortSignal): Promise<ContextFileStatus> {
       await runtime.refresh(signal)
-      const value = runtime.state().stored.contextFile
+      const stored = runtime.state().stored
+      // An unverified document carries no context path, so absence here is unknown, not "not set". The clients show the failure as unavailable.
+      if (!stored.documentValid) throw new Error("Context file status is unavailable.")
+      const value = stored.contextFile
       if (value === undefined) return { set: false }
       if (typeof value !== "string" || !parseOptions({ contextFile: value }).ok) return { set: true, path: String(value), absolute: "", managed: false, state: "unreadable" }
       const absolute = expandContextPath(value, paths.home)

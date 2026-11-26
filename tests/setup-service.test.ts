@@ -2,7 +2,8 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createSetupService } from "../src/setup-service.ts"
 import { createPreferencesRuntime } from "../src/preferences-runtime.ts"
-import { createPreferencesStore, managedContextPath, preferencesPath, type PreferenceRead, type PreferencesStore } from "../src/preferences-store.ts"
+import { createPreferencesStore, createWindowsStore, managedContextPath, preferencesPath, type PreferenceRead, type PreferencesHost, type PreferencesStore } from "../src/preferences-store.ts"
+import { createWindowsIO } from "../src/preferences-windows.ts"
 import { mkdir, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import type { CatalogModel } from "../src/models.ts"
@@ -410,4 +411,40 @@ test("status reports a hand-set path as not managed and a 9000-byte managed file
   await writeFile(f.managed, "a".repeat(9000))
   assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: f.stored, absolute: f.managed, managed: true, state: "too_large", bytes: 9000 })
   f.runtime.dispose()
+})
+
+test("status fails instead of reporting Not set when the preferences document cannot be read", async () => {
+  const f = await preferencesServiceFixture()
+  await mkdir(dirname(f.file), { recursive: true })
+  // A hand edit left the document unfinished. It may still name a context file.
+  await writeFile(f.file, '{"version":1,"settings":{"contextFile":"~/notes.md"')
+  const stored = await f.store.read(signal())
+  assert.equal(stored.documentValid, false)
+  assert.equal(Object.hasOwn(stored, "contextFile"), false)
+  await assert.rejects(f.setup.contextStatus(signal()), { name: "Error", message: "Context file status is unavailable." })
+  await writeFile(f.file, '{"version":1,"settings":{}}\n')
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: false }, "a readable document without a context file is still Not set")
+  f.runtime.dispose()
+})
+
+test("status fails instead of reporting Not set when the Windows verifier is unavailable", async () => {
+  const host: PreferencesHost = { home: "C:\\Users\\Example", platform: "win32", env: { APPDATA: "C:\\Users\\Example\\AppData\\Roaming" }, systemPaths: [] }
+  let verifier: "down" | "up" = "down"
+  const source = preferencesPath(host)
+  const store = createWindowsStore(host, createWindowsIO(async () => {
+    if (verifier === "down") throw new Error("The verifier could not start")
+    return JSON.stringify({ kind: "snapshot", snapshot: { source, state: "user", writable: true, expected: "a".repeat(64), bytes: null } })
+  }))
+  const runtime = createPreferencesRuntime(store, options => createService({
+    session: async () => { throw new Error("Unexpected session") },
+    context: async () => { throw new Error("Unexpected context") },
+    models: async () => catalog,
+    generate: async () => { throw new Error("Unexpected generation") },
+  }, options, "/server"))
+  const setup = createSetupService(store, async () => catalog, runtime, { managed: () => managedContextPath(host), home: host.home, platform: "win32" })
+  assert.equal((await store.read(signal())).documentValid, false)
+  await assert.rejects(setup.contextStatus(signal()), { name: "Error", message: "Context file status is unavailable." })
+  verifier = "up"
+  assert.deepEqual(await setup.contextStatus(signal()), { set: false })
+  runtime.dispose()
 })
