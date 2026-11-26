@@ -1,7 +1,7 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
 import { setupText, setupTUIText, originLabels, contextFileIssue } from "./setup-copy.ts"
-import { createSetupEditor, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { createSetupEditor, parseSelector, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
 type TUIContext = TUIPlugin.Context
@@ -178,30 +178,38 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   const setGroups = (editor: SetupEditor, next: string[][]) => editor.setGroups(next.filter(group => group.length))
   const swap = <T,>(items: T[], from: number, to: number) => { const copy = [...items]; [copy[from], copy[to]] = [copy[to], copy[from]]; return copy }
 
-  async function pickModel(editor: SetupEditor): Promise<string | undefined> {
+  // With `current`, the pickers open on the entry's model and reasoning level so editing is one or two confirmations.
+  async function pickModel(editor: SetupEditor, current?: string): Promise<string | undefined> {
     const catalog = editor.state().snapshot?.catalog ?? []
     if (!catalog.length) { await alert("No models are available from this server. Add a model pattern instead, or connect a provider in OpenCode."); return undefined }
+    const parsed = current === undefined ? undefined : parseSelector(current, catalog)
+    const was = parsed?.kind === "model" ? parsed : undefined
     const model = await dialog.select<Catalog>({
-      title: "Add a model", placeholder: "Search by provider or model name",
+      title: current === undefined ? "Add a model" : "Change model", placeholder: "Search by provider or model name", current: was?.model,
       options: catalog.map(item => ({ title: item.name ?? item.id, description: `${item.providerID}/${item.id}${item.enabled ? "" : " — disabled"}`, value: item, category: item.providerID })),
       search: (query, options) => {
         const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-        return options.filter(option => words.every(word => (option.title + " " + option.description).toLowerCase().includes(word))).slice(0, 50)
+        const found = options.filter(option => words.every(word => (option.title + " " + option.description).toLowerCase().includes(word)))
+        const top = found.slice(0, 50)
+        // When editing, the highlighted model stays listed even past the first 50 results.
+        const highlighted = found.find(option => option.value === was?.model)
+        return highlighted && !top.includes(highlighted) ? [...top.slice(0, 49), highlighted] : top
       },
     })
     if (!model) return undefined
     let variant: string | undefined
     if (model.variants.length) {
-      const chosen = await dialog.select<string>({ title: "Reasoning variant", options: [{ title: "Default reasoning", value: "" }, ...model.variants.map(item => ({ title: item.id, value: item.id }))] })
+      const kept = model === was?.model && model.variants.some(item => item.id === was.variant) ? was.variant! : ""
+      const chosen = await dialog.select<string>({ title: "Reasoning variant", current: kept, options: [{ title: "Default reasoning", value: "" }, ...model.variants.map(item => ({ title: item.id, value: item.id }))] })
       if (chosen === undefined) return undefined
       variant = chosen || undefined
     }
     return model.providerID + "/" + model.id + (variant ? "#" + variant : "")
   }
-  async function pickPattern(editor: SetupEditor): Promise<string | undefined> {
-    let value = ""
+  async function pickPattern(editor: SetupEditor, current?: string): Promise<string | undefined> {
+    let value = current ?? ""
     for (;;) {
-      const answer = await dialog.prompt({ title: "Add a model pattern", description: "Use provider/model-pattern, such as provider/family-*, with an optional #variant. Patterns stay patterns.", placeholder: "provider/model-*", value })
+      const answer = await dialog.prompt({ title: current === undefined ? "Add a model pattern" : "Edit model pattern", description: "Use provider/model-pattern, such as provider/family-*, with an optional #variant. Patterns stay patterns.", placeholder: "provider/model-*", value })
       if (answer === undefined) return undefined
       value = answer.trim()
       const problem = !value ? "Enter a provider/model-pattern selector." : validateSettings({ models: [[value]] })[0]?.message
@@ -279,6 +287,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     const choice = await dialog.select<string>({
       title: modelName(editor, selector) ?? selector,
       options: [
+        { title: "Edit", description: "Change model or pattern.", value: "edit" },
         { title: "Details", description: "Selector and warnings.", value: "details" },
         { title: "Move up", value: "up", disabled: position === 0 }, { title: "Move down", value: "down", disabled: position === all[index].length - 1 },
         { title: "Remove", description: "Removes it.", value: "remove" },
@@ -286,6 +295,16 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     })
     if (choice === "details") { await alert([selector, ...issues(editor, index, position)].join("\n")); return }
     if (choice === undefined || !await editable(editor)) return
+    if (choice === "edit") {
+      const replacement = parseSelector(selector, editor.state().snapshot?.catalog ?? []).kind === "model" ? await pickModel(editor, selector) : await pickPattern(editor, selector)
+      // Only replace the entry that was edited, where it still is.
+      const now = groups(editor)
+      if (!replacement || now[index]?.[position] !== selector) return
+      const edited = now.map(items => [...items]); edited[index][position] = replacement
+      setGroups(editor, edited)
+      await editor.preview()
+      return
+    }
     const next = all.map(items => [...items])
     if (choice === "remove") next[index].splice(position, 1)
     else next[index] = swap(next[index], position, choice === "up" ? position - 1 : position + 1)

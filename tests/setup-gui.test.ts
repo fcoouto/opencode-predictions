@@ -24,7 +24,7 @@ async function mount(options: Options = {}): Promise<Page> {
   await page.addScriptTag({ content: source })
   await page.evaluate(opts => {
     const w = window as any, S = w.Setup
-    const log: any = { mainCalls: 0, saves: [], reads: 0, previews: 0, confirms: [], settings: [], fetches: 0, dialogs: 0, status: 0, predictions: 0 }
+    const log: any = { mainCalls: 0, saves: [], reads: 0, previews: 0, confirms: [], settings: [], fetches: 0, dialogs: 0, status: 0, predictions: 0, selects: [], alerts: [] }
     w.log = log
     w.fetch = () => { log.fetches++; return Promise.reject(new Error("PRIVATE network")) }
     const catalog = opts.catalog ?? [
@@ -79,6 +79,9 @@ async function mount(options: Options = {}): Promise<Page> {
       dialogs: {
         open: (render: any) => { log.dialogs++; const holder = document.createElement("div"); holder.setAttribute("data-dialog-host", ""); document.body.append(holder); const handle = { close: () => holder.remove() }; S.createRoot(() => holder.append(render(handle))); return handle },
         confirm: async (options: any) => { log.confirms.push(options); return !!w.confirmAnswer },
+        // The host's searchable picker: each queued answer picks an option by title, or dismisses with null.
+        select: async (options: any) => { log.selects.push(JSON.parse(JSON.stringify(options))); if (w.holdSelect) { w.holdSelect = false; await new Promise(resolve => { w.releaseSelect = resolve }) } const title = (w.selectAnswers ?? []).shift(); return title === null || title === undefined ? undefined : options.options.find((option: any) => option.title === title)?.value },
+        alert: async (options: any) => { log.alerts.push(options) },
       },
       add: (_token: unknown, value: any) => { if (value.render) w.page = value; else w.commands = { ...(w.commands ?? {}), [value.id]: value } },
       ui: {},
@@ -246,6 +249,8 @@ test("timeout accepts only whole numbers and the draft blocks Save until valid",
 const entryTitles = (page: Page) => page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-entry-"] [data-title]')].map(node => node.textContent))
 const menu = (page: Page, name: string) => page.locator(`[data-menu="${name}"]`)
 const choose = async (page: Page, name: string, item: string) => { await menu(page, name).getByRole("button").first().click(); await page.getByRole("menuitem", { name: item, exact: true }).click() }
+const answer = (page: Page, ...titles: (string | null)[]) => page.evaluate(list => { (window as any).selectAnswers = list }, titles)
+const selects = (page: Page) => page.evaluate(() => (window as any).log.selects as any[])
 const focused = (page: Page) => page.evaluate(() => ({ row: document.activeElement?.closest("[data-action]")?.getAttribute("data-action"), name: document.activeElement?.getAttribute("aria-label") ?? document.activeElement?.textContent?.trim() }))
 
 test("Models opens with a Fallback order row that explains the order and the cost, and offers Add group; the old footer row is gone", async () => {
@@ -277,7 +282,7 @@ test("each group is a section with a match summary, an Add menu and a group-acti
     for (const name of ["Actions for Family A, group 1, entry 1", "Actions for Model B, group 2, entry 1", "Add to Group 1", "Add to Group 2", "Group 1 actions", "Group 2 actions"]) assert.equal(await menu(page, name).count(), 1, name)
     await page.waitForFunction(() => /1 model matches now/.test(document.querySelector('[data-action="predictions-group-0"]')?.textContent ?? ""))
     const controls = await page.locator('[data-section^="Group "] button').count()
-    assert.equal(controls, 6, "2 groups with 1 entry each expose 6 controls (was 19)")
+    assert.equal(controls, 8, "2 groups with 1 entry each expose 8 controls: Add, group actions, and per entry Edit plus actions")
     await menu(page, "Actions for Family A, group 1, entry 1").getByRole("button").click()
     assert.deepEqual(await page.getByRole("menuitem").allTextContents(), ["Move up", "Move down", "Remove"])
     assert.equal(await page.getByRole("menuitem", { name: "Move up" }).isDisabled(), true)
@@ -335,7 +340,7 @@ test("an entry's actions menu reorders within a group and keeps focus on the mov
   } finally { await page.close() }
 })
 
-test("Add group and the per-group Add menu open the model and pattern dialogs and add to the right place", async () => {
+test("Add group and the per-group Add menu open the model picker and pattern dialog and add to the right place", async () => {
   const page = await mount({ fields: { models: [["local/b"]] } })
   try {
     await idle(page)
@@ -344,12 +349,9 @@ test("Add group and the per-group Add menu open the model and pattern dialogs an
     await dialog.getByLabel("Model pattern").fill("local/family-*")
     await dialog.getByRole("button", { name: "Add pattern" }).click()
     assert.deepEqual(await entryTitles(page), ["1. Model B", "2. local/family-*"])
+    await answer(page, "Family A", "Default reasoning")
     await choose(page, "Add group", "Model…")
-    const add = page.getByRole("dialog", { name: "Add a model" })
-    assert.match(await add.textContent() ?? "", /may incur charges/, "the cost note is repeated where a model is added")
-    await add.getByLabel("Search models").fill("family a")
-    await add.getByRole("button", { name: /Family A/ }).click()
-    await add.getByRole("button", { name: "Add model" }).click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-action^="predictions-entry-"]').length === 3)
     assert.deepEqual(await entryTitles(page), ["1. Model B", "2. local/family-*", "1. Family A"])
     assert.deepEqual(await titles(page), ["Behavior", "Models", "Group 1 — Tried first", "Group 2 — If Group 1 fails", "Advanced"])
   } finally { await page.close() }
@@ -365,24 +367,156 @@ test("zero-match and overlap warnings carry an icon and text beside the entry, n
   } finally { await page.close() }
 })
 
-test("searchable model selection offers variants and keeps provider IDs as secondary identifiers", async () => {
+test("Add a model picks a model then a reasoning level from the host's searchable pickers", async () => {
   const page = await mount({ fields: {} })
   try {
     await idle(page)
+    await answer(page, "Family A", "high")
     await page.getByRole("button", { name: "Add a model" }).click()
-    const dialog = page.getByRole("dialog", { name: "Add a model" })
-    await dialog.getByLabel("Search models").fill("family a")
-    const choices = await dialog.getByRole("button").allTextContents()
-    assert.ok(choices.some(text => text.includes("Family A") && text.includes("local/family/a")), JSON.stringify(choices))
-    assert.equal(choices.some(text => text.includes("Model B")), false)
-    await dialog.getByRole("button", { name: /Family A/ }).click()
-    await dialog.getByLabel("Reasoning variant").selectOption("high")
-    await dialog.getByRole("button", { name: "Add model" }).click()
-    assert.equal(await page.getByRole("dialog").count(), 0)
-    assert.equal(await row(page, "predictions-entry-0-0").locator("[data-row-description]").textContent().then(text => text!.includes("local/family/a#high")), true)
+    await page.waitForFunction(() => document.querySelectorAll('[data-action^="predictions-entry-"]').length === 1)
+    const [model, reasoning] = await selects(page)
+    assert.equal(model.title, "Add a model")
+    assert.equal(model.current, undefined, "nothing is highlighted when adding")
+    assert.deepEqual(model.options.find((option: any) => option.title === "Family A"), { title: "Family A", description: "local/family/a", group: "local", value: model.options.find((option: any) => option.title === "Family A").value })
+    assert.equal(reasoning.title, "Reasoning for Family A")
+    assert.deepEqual(reasoning.options.map((option: any) => option.title), ["Default reasoning", "low", "high"])
+    assert.equal(await page.getByRole("dialog").count(), 0, "no plugin dialog is left open")
     await save(page).click()
     await page.waitForFunction(() => (window as any).log.saves.length === 1)
     assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input.fields), { models: [["local/family/a#high"]] })
+  } finally { await page.close() }
+})
+
+test("a model without reasoning levels needs one pick, and a disabled model says so", async () => {
+  const page = await mount({ fields: {}, catalog: [{ providerID: "local", id: "b", name: "Model B", enabled: true, variants: [] }, { providerID: "off", id: "c", name: "Model C", enabled: false, variants: [] }] })
+  try {
+    await idle(page)
+    await answer(page, "Model B")
+    await page.getByRole("button", { name: "Add a model" }).click()
+    await page.waitForFunction(() => document.querySelectorAll('[data-action^="predictions-entry-"]').length === 1)
+    const calls = await selects(page)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].options.find((option: any) => option.title === "Model C").description, "off/c — disabled")
+    assert.deepEqual(await entryTitles(page), ["1. Model B"])
+  } finally { await page.close() }
+})
+
+test("dismissing the reasoning step adds nothing", async () => {
+  const page = await mount({ fields: {} })
+  try {
+    await idle(page)
+    await answer(page, "Family A", null)
+    await page.getByRole("button", { name: "Add a model" }).click()
+    await page.waitForFunction(() => (window as any).log.selects.length === 2)
+    await page.waitForTimeout(50)
+    assert.equal(await page.locator('[data-action^="predictions-entry-"]').count(), 0)
+    assert.equal(await save(page).isDisabled(), true)
+  } finally { await page.close() }
+})
+
+test("an empty catalog explains itself instead of opening an empty picker", async () => {
+  const page = await mount({ fields: {}, catalog: [] })
+  try {
+    await idle(page)
+    await page.getByRole("button", { name: "Add a model" }).click()
+    await page.waitForFunction(() => (window as any).log.alerts.length === 1)
+    assert.equal((await selects(page)).length, 0)
+    assert.match(await page.evaluate(() => (window as any).log.alerts[0].title + " " + ((window as any).log.alerts[0].description ?? "")), /pattern/i)
+    assert.equal(await page.locator('[data-action^="predictions-entry-"]').count(), 0)
+  } finally { await page.close() }
+})
+
+const description = (page: Page, id: string) => row(page, id).locator("[data-row-description]").textContent()
+const editButton = (page: Page, id: string) => row(page, id).getByRole("button", { name: /^Edit\b/ })
+const edit = (page: Page, id: string) => editButton(page, id).click()
+
+test("Edit on a model entry reopens the pickers on the current model and reasoning, and rows show the level in words", async () => {
+  const page = await mount({ fields: { models: [["local/family/a#low"]] } })
+  try {
+    await idle(page)
+    assert.match((await description(page, "predictions-entry-0-0"))!, /local\/family\/a.*Reasoning: low/)
+    assert.doesNotMatch((await description(page, "predictions-entry-0-0"))!, /#low/)
+    await answer(page, "Family A", "high")
+    await edit(page, "predictions-entry-0-0")
+    await page.waitForFunction(() => /Reasoning: high/.test(document.querySelector('[data-action="predictions-entry-0-0"]')?.textContent ?? ""))
+    const [model, reasoning] = await selects(page)
+    assert.equal(model.title, "Change model")
+    assert.equal(model.current.id, "family/a")
+    assert.equal(reasoning.current, "low")
+    await page.waitForFunction(() => document.activeElement?.textContent?.startsWith("Edit") && !!document.activeElement.closest('[data-action="predictions-entry-0-0"]'))
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input.fields), { models: [["local/family/a#high"]] })
+  } finally { await page.close() }
+})
+
+test("Edit on a pattern opens the pattern dialog filled in, and the row labels it a pattern", async () => {
+  const page = await mount({ fields: { models: [["local/family-*"]] } })
+  try {
+    await idle(page)
+    assert.match((await description(page, "predictions-entry-0-0"))!, /Pattern/)
+    await edit(page, "predictions-entry-0-0")
+    const dialog = page.getByRole("dialog", { name: "Edit model pattern" })
+    assert.equal(await dialog.getByLabel("Model pattern").inputValue(), "local/family-*")
+    await dialog.getByLabel("Model pattern").fill("local/b*")
+    await dialog.getByRole("button", { name: "Save pattern" }).click()
+    assert.deepEqual(await entryTitles(page), ["1. local/b*"])
+    assert.equal((await selects(page)).length, 0)
+  } finally { await page.close() }
+})
+
+test("Edit on a model that left the catalog falls back to the pattern dialog with the full selector", async () => {
+  const page = await mount({ fields: { models: [["local/gone#low"]] } })
+  try {
+    await idle(page)
+    await edit(page, "predictions-entry-0-0")
+    assert.equal(await page.getByRole("dialog", { name: "Edit model pattern" }).getByLabel("Model pattern").inputValue(), "local/gone#low")
+  } finally { await page.close() }
+})
+
+test("Edit replaces only the entry at its own position when a model is listed twice", async () => {
+  const page = await mount({ fields: { models: [["local/b", "local/b"]] } })
+  try {
+    await idle(page)
+    await answer(page, "Family A", "Default reasoning")
+    await edit(page, "predictions-entry-0-1")
+    await page.waitForFunction(() => /Family A/.test(document.querySelector('[data-action="predictions-entry-0-1"]')?.textContent ?? ""))
+    assert.deepEqual(await entryTitles(page), ["1. Model B", "2. Family A"])
+  } finally { await page.close() }
+})
+
+test("each Edit button names the entry it edits, by model and position", async () => {
+  const page = await mount({ fields: { models: [["local/family/a#low", "local/family/a#high"], ["local/family-*"]] } })
+  try {
+    await idle(page)
+    for (const name of ["Edit Family A, group 1, entry 1", "Edit Family A, group 1, entry 2", "Edit local/family-*, group 2, entry 1"]) assert.equal(await page.getByRole("button", { name, exact: true }).count(), 1, name)
+    assert.equal(await editButton(page, "predictions-entry-0-0").evaluate(button => [...button.querySelectorAll("span")].every(span => span.getBoundingClientRect().width <= 1)), true, "only the word Edit is visible")
+  } finally { await page.close() }
+})
+
+test("a picker result is dropped when the page has switched to another server while it was open", async () => {
+  const page = await mount({ fields: { models: [["local/b"]] } })
+  try {
+    await idle(page)
+    await page.evaluate(() => { (window as any).holdSelect = true })
+    await answer(page, "Family A", "high")
+    await edit(page, "predictions-entry-0-0")
+    await page.waitForFunction(() => (window as any).log.selects.length === 1)
+    await page.evaluate(() => (window as any).switchServer("remote-host"))
+    await page.waitForFunction(() => /remote-host/.test(document.querySelector("[data-description]")?.textContent ?? ""))
+    await idle(page)
+    await page.evaluate(() => (window as any).releaseSelect())
+    await page.waitForTimeout(100)
+    assert.deepEqual(await entryTitles(page), ["1. Model B"], "the other server's draft is untouched")
+    assert.equal(await save(page).isDisabled(), true)
+  } finally { await page.close() }
+})
+
+test("Edit is disabled when the configuration is read-only", async () => {
+  const page = await mount({ readOnly: true })
+  try {
+    await idle(page)
+    assert.equal(await editButton(page, "predictions-entry-0-0").isDisabled(), true)
   } finally { await page.close() }
 })
 

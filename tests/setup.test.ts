@@ -400,3 +400,14 @@ test("a failed preview is reported separately and never looks like a load failur
   assert.equal(state.dirty, true)
   assert.equal(state.fields.debug, true, "the draft is intact")
 })
+
+test("parseSelector tells catalog models from patterns and splits the reasoning variant", async () => {
+  const { parseSelector } = await import("../src/setup.ts")
+  const familyA = { providerID: "local", id: "family/a", name: "Family A", enabled: true, variants: [{ id: "low" }, { id: "high" }] }
+  const modelB = { providerID: "local", id: "b", name: "Model B", enabled: true, variants: [] }
+  const catalog = [familyA, modelB] as unknown as SetupSnapshot["catalog"]
+  assert.deepEqual(parseSelector("local/family/a#low", catalog), { kind: "model", model: familyA, variant: "low" })
+  assert.deepEqual(parseSelector("local/b", catalog), { kind: "model", model: modelB, variant: undefined })
+  assert.deepEqual(parseSelector("local/family-*", catalog), { kind: "pattern" })
+  assert.deepEqual(parseSelector("local/gone#low", catalog), { kind: "pattern" })
+})

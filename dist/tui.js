@@ -1151,6 +1151,12 @@ function createSetupEditor(api, changed) {
     }
   };
 }
+function parseSelector(selector, catalog) {
+  const hash = selector.indexOf("#");
+  const base = hash < 0 ? selector : selector.slice(0, hash);
+  const model = catalog.find((item) => item.providerID + "/" + item.id === base);
+  return model ? { kind: "model", model, variant: hash < 0 ? void 0 : selector.slice(hash + 1) } : { kind: "pattern" };
+}
 function readGroups(fields) {
   if (fields.models === void 0) return void 0;
   const parsed = parseOptions({ models: fields.models });
@@ -1403,34 +1409,41 @@ ${setupTUIText.fuller}`);
     [copy[from], copy[to]] = [copy[to], copy[from]];
     return copy;
   };
-  async function pickModel(editor) {
+  async function pickModel(editor, current) {
     const catalog = editor.state().snapshot?.catalog ?? [];
     if (!catalog.length) {
       await alert("No models are available from this server. Add a model pattern instead, or connect a provider in OpenCode.");
       return void 0;
     }
+    const parsed = current === void 0 ? void 0 : parseSelector(current, catalog);
+    const was = parsed?.kind === "model" ? parsed : void 0;
     const model = await dialog.select({
-      title: "Add a model",
+      title: current === void 0 ? "Add a model" : "Change model",
       placeholder: "Search by provider or model name",
+      current: was?.model,
       options: catalog.map((item) => ({ title: item.name ?? item.id, description: `${item.providerID}/${item.id}${item.enabled ? "" : " \u2014 disabled"}`, value: item, category: item.providerID })),
       search: (query, options) => {
         const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-        return options.filter((option) => words.every((word) => (option.title + " " + option.description).toLowerCase().includes(word))).slice(0, 50);
+        const found = options.filter((option) => words.every((word) => (option.title + " " + option.description).toLowerCase().includes(word)));
+        const top = found.slice(0, 50);
+        const highlighted = found.find((option) => option.value === was?.model);
+        return highlighted && !top.includes(highlighted) ? [...top.slice(0, 49), highlighted] : top;
       }
     });
     if (!model) return void 0;
     let variant;
     if (model.variants.length) {
-      const chosen = await dialog.select({ title: "Reasoning variant", options: [{ title: "Default reasoning", value: "" }, ...model.variants.map((item) => ({ title: item.id, value: item.id }))] });
+      const kept = model === was?.model && model.variants.some((item) => item.id === was.variant) ? was.variant : "";
+      const chosen = await dialog.select({ title: "Reasoning variant", current: kept, options: [{ title: "Default reasoning", value: "" }, ...model.variants.map((item) => ({ title: item.id, value: item.id }))] });
       if (chosen === void 0) return void 0;
       variant = chosen || void 0;
     }
     return model.providerID + "/" + model.id + (variant ? "#" + variant : "");
   }
-  async function pickPattern(editor) {
-    let value = "";
+  async function pickPattern(editor, current) {
+    let value = current ?? "";
     for (; ; ) {
-      const answer = await dialog.prompt({ title: "Add a model pattern", description: "Use provider/model-pattern, such as provider/family-*, with an optional #variant. Patterns stay patterns.", placeholder: "provider/model-*", value });
+      const answer = await dialog.prompt({ title: current === void 0 ? "Add a model pattern" : "Edit model pattern", description: "Use provider/model-pattern, such as provider/family-*, with an optional #variant. Patterns stay patterns.", placeholder: "provider/model-*", value });
       if (answer === void 0) return void 0;
       value = answer.trim();
       const problem = !value ? "Enter a provider/model-pattern selector." : validateSettings({ models: [[value]] })[0]?.message;
@@ -1517,6 +1530,7 @@ ${setupTUIText.fuller}`);
     const choice = await dialog.select({
       title: modelName(editor, selector) ?? selector,
       options: [
+        { title: "Edit", description: "Change model or pattern.", value: "edit" },
         { title: "Details", description: "Selector and warnings.", value: "details" },
         { title: "Move up", value: "up", disabled: position === 0 },
         { title: "Move down", value: "down", disabled: position === all[index].length - 1 },
@@ -1528,6 +1542,16 @@ ${setupTUIText.fuller}`);
       return;
     }
     if (choice === void 0 || !await editable(editor)) return;
+    if (choice === "edit") {
+      const replacement = parseSelector(selector, editor.state().snapshot?.catalog ?? []).kind === "model" ? await pickModel(editor, selector) : await pickPattern(editor, selector);
+      const now = groups(editor);
+      if (!replacement || now[index]?.[position] !== selector) return;
+      const edited = now.map((items) => [...items]);
+      edited[index][position] = replacement;
+      setGroups(editor, edited);
+      await editor.preview();
+      return;
+    }
     const next = all.map((items) => [...items]);
     if (choice === "remove") next[index].splice(position, 1);
     else next[index] = swap(next[index], position, choice === "up" ? position - 1 : position + 1);
