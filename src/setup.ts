@@ -2,6 +2,7 @@ import { parseOptions, type Options } from "./options.ts"
 import type { Candidate, CatalogModel } from "./models.ts"
 import { abortable } from "./service.ts"
 import { applyPreferenceChange, resolvePreferences } from "./preferences.ts"
+import type { ContextFileState } from "./context-file.ts"
 
 // Setup RPC must not let clients select files for the server to read and send to providers.
 export const settingKeys = ["models", "enabled", "automatic", "escalation", "timeoutMs", "contextTurns", "debug", "includeGithubPRContext"] as const
@@ -13,7 +14,9 @@ export type SetupLocation = { directory: string; workspaceID?: string }
 export type SetupIssue = { field: SettingKey | "contextFile"; group?: number; entry?: number; severity: "error" | "warning"; code: string; message: string }
 export type SetupSnapshot = ConfigSnapshot & { overrides: SettingsInput; origins: Record<SettingKey, SettingOrigin>; activeRevision: string | null; effective: Options | null; catalog: CatalogModel[]; issues: SetupIssue[]; serviceVersion: string }
 export type SetupPreview = { groups: { selectors: string[]; candidates: Candidate[] }[]; issues: SetupIssue[] }
-export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true; reset?: SettingKey[] }
+export type SaveInput = { revision: string; fields: SettingsInput; removeModels?: true; reset?: SettingKey[]; contextFile?: "managed" | "none" }
+// path is the stored value for display; absolute is the server-resolved path for Open and Show.
+export type ContextFileStatus = { set: false } | { set: true; path: string; absolute: string; managed: boolean; state: ContextFileState; bytes?: number }
 export type SaveResult = { kind: "saved"; revision: string; serviceVersion: string } | { kind: "saved_not_active"; revision: string; message: string } | { kind: "invalid"; issues: SetupIssue[] } | { kind: "conflict" | "read_only" | "failed"; message: string }
 export type SetupAPI = {
   read(signal: AbortSignal): Promise<SetupSnapshot>

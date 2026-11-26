@@ -87,6 +87,7 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
       if (!isDeepStrictEqual(prospective, fresh.stored.overrides)) {
         const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual(value, fresh.stored.overrides[key as keyof SettingsInput])))
         const result = await store.write(fresh.stored.revision, { fields, ...(input.reset ? { reset: input.reset } : {}), ...(input.removeModels ? { removeModels: true } : {}) }, signal)
+        if (result.kind === "refused_context") return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: result.message }] }
         if (result.kind !== "written") return result
         written = result.revision
       }
