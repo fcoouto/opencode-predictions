@@ -251,17 +251,17 @@ Conversation:
   const user = Array.from(current.user);
   const assistant = Array.from(current.assistant);
   const retainedUser = Array.from(current.user.trim() ? "" : latestUser);
-  const excerpt2 = (text, limit2) => text.length <= limit2 ? text.join("") : text.slice(0, Math.ceil(limit2 / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit2 / 2)).join("");
+  const excerpt2 = (text, limit3) => text.length <= limit3 ? text.join("") : text.slice(0, Math.ceil(limit3 / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit3 / 2)).join("");
   let low = 1;
   let high = Math.max(user.length, assistant.length, retainedUser.length);
   let result = "";
   while (low <= high) {
-    const limit2 = Math.floor((low + high) / 2);
-    const prompt = format([{ user: excerpt2(user, limit2), assistant: excerpt2(assistant, limit2) }], excerpt2(retainedUser, limit2));
+    const limit3 = Math.floor((low + high) / 2);
+    const prompt = format([{ user: excerpt2(user, limit3), assistant: excerpt2(assistant, limit3) }], excerpt2(retainedUser, limit3));
     if (encoder.encode(prompt).length <= 32768) {
       result = prompt;
-      low = limit2 + 1;
-    } else high = limit2 - 1;
+      low = limit3 + 1;
+    } else high = limit3 - 1;
   }
   return result || void 0;
 }
@@ -437,12 +437,12 @@ function links(prompt) {
     return [];
   }
 }
-function excerpt(text, limit2) {
+function excerpt(text, limit3) {
   const points = Array.from(text);
-  if (points.length <= limit2) return text;
+  if (points.length <= limit3) return text;
   const marker = excerptMarker;
-  if (limit2 < marker.length) return "";
-  const size = limit2 - marker.length;
+  if (limit3 < marker.length) return "";
+  const size = limit3 - marker.length;
   return points.slice(0, Math.ceil(size / 2)).join("") + marker + points.slice(points.length - Math.floor(size / 2)).join("");
 }
 function appendGitHubContext(prompt, sources) {
@@ -455,13 +455,13 @@ function appendGitHubContext(prompt, sources) {
     let high = Math.min(4096, Array.from(source.body).length);
     let best;
     while (low <= high) {
-      const limit2 = Math.floor((low + high) / 2);
-      const body = excerpt(source.body, limit2);
+      const limit3 = Math.floor((low + high) / 2);
+      const body = excerpt(source.body, limit3);
       const candidate2 = { url: source.url, title: excerpt(source.title, 256), body, state: source.state, draft: source.draft, updatedAt: source.updatedAt, fetchedAt: source.fetchedAt, bodyExcerpted: source.bodyExcerpted || body !== source.body };
       if (encoder2.encode(label + JSON.stringify([...selected, candidate2])).length <= budget) {
         best = candidate2;
-        low = limit2 + 1;
-      } else high = limit2 - 1;
+        low = limit3 + 1;
+      } else high = limit3 - 1;
     }
     if (best) selected.push(best);
   }
@@ -796,9 +796,9 @@ Queue: ${queue}`, request)), parent);
         const recovery = cause.length && cause.every((detail) => /authentication failed/.test(detail)) ? "Reconnect the provider, then reload the server plugin." : cause.length && cause.every((detail) => /quota|usage limit/.test(detail)) ? "Wait for quota to reset; check Prediction status and preview." : "Open Prediction status and preview for causes and recovery.";
         return { reason: failure, ...cause.length ? { notice: { code: failure, severity: "error", title: cause.length === 1 ? cause[0] : "All prediction models failed.", message: recovery } } : {} };
       };
-      const reply = await abortable(async () => {
-        const reply2 = await work();
-        if (reply2.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply2.reason)) {
+      const reply2 = await abortable(async () => {
+        const reply3 = await work();
+        if (reply3.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply3.reason)) {
           parent.throwIfAborted();
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
@@ -806,18 +806,18 @@ Queue: ${queue}`, request)), parent);
           const selectors = new Set(options.models.flatMap((group) => group.split(",").map((value) => value.trim())));
           const single = configured[0];
           const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
-          reply2.notice ??= statusNotice(status()) ?? reasonNotice(reply2.reason);
-          await abortable(() => Promise.resolve(api.notice?.(message, request, reply2.notice)), parent);
+          reply3.notice ??= statusNotice(status()) ?? reasonNotice(reply3.reason);
+          await abortable(() => Promise.resolve(api.notice?.(message, request, reply3.notice)), parent);
         }
-        return reply2;
+        return reply3;
       }, caller);
       caller.throwIfAborted();
-      lastOutcome = reply.text ? "suggestion" : reply.reason;
-      if (reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "")) {
+      lastOutcome = reply2.text ? "suggestion" : reply2.reason;
+      if (reply2.text || ["no_suggestion", "escalation_refreshed"].includes(reply2.reason ?? "")) {
         const escalation2 = nextOffer(request, progress);
-        if (escalation2) reply.escalation = escalation2;
+        if (escalation2) reply2.escalation = escalation2;
       }
-      return reply;
+      return reply2;
     } catch {
       lastOutcome = caller.aborted ? "cancelled" : deadline?.aborted ? "timeout" : "generation_failed";
       return { reason: lastOutcome, ...lastOutcome !== "cancelled" ? { notice: reasonNotice(lastOutcome === "timeout" ? "timeout" : "service_unavailable") } : {} };
@@ -846,7 +846,7 @@ import { homedir as homedir2, userInfo } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
-import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path";
+import { dirname, basename, isAbsolute, join, posix, win32 as win322 } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -916,8 +916,567 @@ function resolvePreferences(overrides, contextFile) {
   return { rawOptions, fields, origins, issues: validateSettings(fields, contextFile) };
 }
 
-// src/preferences-store.ts
+// src/preferences-windows.ts
+import { spawn } from "node:child_process";
+import { win32 } from "node:path";
+
+// src/preferences-windows-script.ts
+var windowsScript = String.raw`
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())) | ConvertFrom-Json
+Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
+using System.Security.Principal;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public static class PredictionsPreferences {
+    const uint ReadControl = 0x20000, Delete = 0x10000, WriteDac = 0x40000, WriteOwner = 0x80000;
+    const uint ReadData = 1, WriteData = 2, AppendData = 4, WriteEa = 0x10, DeleteChild = 0x40, ReadAttr = 0x80, WriteAttr = 0x100;
+    const uint Security = 7, ProtectedDacl = 0x80000004;
+    const uint DirectoryFlag = 0x10, Reparse = 0x400, ReadOnly = 1;
+    const uint NoFollow = 0x00200000, DirectoryHandle = 0x02000000, ShareRead = 1, ShareWrite = 2, ShareDelete = 4;
+    const uint GenericRead = 0x80000000, GenericWrite = 0x40000000, CreateNew = 1, OpenExisting = 3;
+    const uint Mutate = Delete | WriteDac | WriteOwner | WriteEa | WriteAttr;
+    const int Limit = 65536;
+
+    [StructLayout(LayoutKind.Sequential)] struct Attributes { public int Length; public IntPtr Descriptor; public int Inherit; }
+    [StructLayout(LayoutKind.Sequential)] struct FileInfoByHandle {
+        public uint Attributes, CreatedLow, CreatedHigh, AccessLow, AccessHigh, WriteLow, WriteHigh;
+        public uint Volume, SizeHigh, SizeLow, Links, IdHigh, IdLow;
+    }
+    [StructLayout(LayoutKind.Sequential)] struct GenericMapping { public uint Read, Write, Execute, All; }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)] static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr attrs, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)] static extern bool CreateDirectoryW(string path, IntPtr attrs);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetFileInformationByHandle(SafeFileHandle file, out FileInfoByHandle info);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)] static extern uint GetFinalPathNameByHandleW(SafeFileHandle file, StringBuilder path, uint size, uint flags);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true)] static extern uint GetDriveTypeW(string root);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, ExactSpelling=true, SetLastError=true)] static extern bool GetVolumeInformationW(string root, IntPtr name, uint nameSize, out uint serial, out uint maxComponent, out uint flags, StringBuilder fileSystem, uint size);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetFileInformationByHandle(SafeFileHandle file, int informationClass, IntPtr info, uint size);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool WriteFile(SafeFileHandle file, byte[] bytes, int length, out int written, IntPtr overlapped);
+    [DllImport("kernel32.dll", SetLastError=true)] static extern bool FlushFileBuffers(SafeFileHandle file);
+    [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
+    [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(SafeFileHandle file, int type, uint information, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+    [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(SafeFileHandle file, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
+    [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool DuplicateToken(IntPtr token, int level, out SafeFileHandle duplicate);
+    [DllImport("advapi32.dll", SetLastError=true)] static extern bool AccessCheck(byte[] descriptor, SafeFileHandle token, uint desired, ref GenericMapping mapping, IntPtr privileges, ref uint size, out uint granted, [MarshalAs(UnmanagedType.Bool)] out bool allowed);
+
+    static readonly SecurityIdentifier SystemSid = new SecurityIdentifier("S-1-5-18");
+    static readonly SecurityIdentifier AdminSid = new SecurityIdentifier("S-1-5-32-544");
+    static readonly SecurityIdentifier InstallerSid = new SecurityIdentifier("S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464");
+    static Win32Exception LastError() { return new Win32Exception(Marshal.GetLastWin32Error()); }
+    static void Require(bool ok) { if (!ok) throw new IOException(); }
+
+    public sealed class Snapshot {
+        public string source { get; set; }
+        public string state { get; set; }
+        public bool writable { get; set; }
+        public string expected { get; set; }
+        public string bytes { get; set; }
+    }
+    public sealed class Reply {
+        public string kind { get; set; }
+        public Snapshot snapshot { get; set; }
+    }
+    static Reply Result(string kind, Snapshot snapshot = null) { return new Reply { kind = kind, snapshot = snapshot }; }
+
+    sealed class Item : IDisposable {
+        public string Path;
+        public SafeFileHandle Handle;
+        public FileInfoByHandle Info;
+        public byte[] SecurityBytes;
+        public RawSecurityDescriptor Descriptor;
+        public void Dispose() { Handle.Dispose(); }
+    }
+
+    static Item Open(string path, bool directory, bool allowMissing, bool expectReparse = false) {
+        uint read = ReadControl | ReadAttr | ReadData;
+        // Listing access makes a directory handle participate in delete sharing.
+        var handle = CreateFileW(path, read, ShareRead | ShareWrite | (directory ? 0 : ShareDelete), IntPtr.Zero, OpenExisting, NoFollow | DirectoryHandle, IntPtr.Zero);
+        if (handle.IsInvalid) {
+            var error = LastError();
+            handle.Dispose();
+            if (allowMissing && error.NativeErrorCode == 2) return null;
+            throw error;
+        }
+        try {
+            var item = new Item { Path = path, Handle = handle };
+            Inspect(item);
+            Require(expectReparse || (item.Info.Attributes & Reparse) == 0);
+            Require(((item.Info.Attributes & DirectoryFlag) != 0) == directory);
+            Require(directory || item.Info.Links == 1);
+            return item;
+        } catch {
+            handle.Dispose();
+            throw;
+        }
+    }
+
+    static void Inspect(Item item) {
+        if (!GetFileInformationByHandle(item.Handle, out item.Info)) throw LastError();
+        IntPtr owner, group, dacl, sacl, descriptor;
+        uint error = GetSecurityInfo(item.Handle, 1, Security, out owner, out group, out dacl, out sacl, out descriptor);
+        if (error != 0) throw new Win32Exception((int)error);
+        try {
+            var bytes = new byte[checked((int)GetSecurityDescriptorLength(descriptor))];
+            Marshal.Copy(descriptor, bytes, 0, bytes.Length);
+            item.SecurityBytes = bytes;
+            item.Descriptor = new RawSecurityDescriptor(bytes, 0);
+        } finally { LocalFree(descriptor); }
+    }
+
+    sealed class Session : IDisposable {
+        readonly SecurityIdentifier user;
+        readonly SafeFileHandle token;
+        public Session() {
+            using (var identity = WindowsIdentity.GetCurrent()) {
+                user = identity.User;
+                if (!DuplicateToken(identity.Token, 2, out token)) throw LastError();
+            }
+        }
+        public void Dispose() { token.Dispose(); }
+
+        bool Trusted(SecurityIdentifier sid, bool ancestor) {
+            return sid == user || sid == SystemSid || sid == AdminSid || (ancestor && sid == InstallerSid);
+        }
+
+        static uint Expand(uint mask) {
+            if ((mask & 0x10000000) != 0) mask |= 0x1f01ff;
+            if ((mask & 0x40000000) != 0) mask |= 0x120116;
+            if ((mask & 0x80000000) != 0) mask |= 0x120089;
+            if ((mask & 0x20000000) != 0) mask |= 0x1200a0;
+            return mask & 0x0fffffff;
+        }
+
+        void Safe(Item item, bool ancestor, bool directory, bool privateFile = false) {
+            var sd = item.Descriptor;
+            Require(ancestor ? Trusted(sd.Owner, true) : sd.Owner == user);
+            Require(sd.DiscretionaryAcl != null && (sd.ControlFlags & ControlFlags.DiscretionaryAclPresent) != 0);
+            uint forbidden = Mutate | (directory ? DeleteChild : 0) | (ancestor ? 0 : WriteData | AppendData);
+            foreach (var entry in sd.DiscretionaryAcl) {
+                var ace = entry as CommonAce;
+                Require(ace != null && !ace.IsCallback && (ace.AceType == AceType.AccessAllowed || ace.AceType == AceType.AccessDenied));
+                if ((ace.AceFlags & AceFlags.InheritOnly) != 0 || ace.AceType != AceType.AccessAllowed || Trusted(ace.SecurityIdentifier, ancestor)) continue;
+                Require(!privateFile && (Expand((uint)ace.AccessMask) & forbidden) == 0);
+            }
+        }
+
+        bool Can(Item item, uint desired) {
+            var mapping = new GenericMapping { Read = 0x120089, Write = 0x120116, Execute = 0x1200a0, All = 0x1f01ff };
+            uint size = 1024, granted;
+            bool allowed;
+            var privileges = Marshal.AllocHGlobal((int)size);
+            try {
+                if (!AccessCheck(item.SecurityBytes, token, desired, ref mapping, privileges, ref size, out granted, out allowed)) throw LastError();
+                return allowed;
+            } finally { Marshal.FreeHGlobal(privileges); }
+        }
+
+        static string[] Components(string path) {
+            Require(path.Length >= 3 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' && (path[2] == '\\' || path[2] == '/'));
+            var parts = path.Substring(3).Split('\\', '/');
+            Require(parts.All(part => part.Length > 0 && part.IndexOfAny(new[] { '\0', ':', '*', '?', '<', '>', '"', '|' }) < 0 && !part.EndsWith(".") && !part.EndsWith(" ")));
+            return parts;
+        }
+
+        sealed class Chain : IDisposable {
+            public readonly List<Item> Items = new List<Item>();
+            public string Physical;
+            public int Next;
+            public string[] Parts;
+            public Item Parent { get { return Items[Items.Count - 1]; } }
+            public bool DirectoryExists { get { return Next == Parts.Length - 1; } }
+            public string FilePath { get { return Path.Combine(Physical, Parts[Parts.Length - 1]); } }
+            public void Dispose() {
+                for (int i = Items.Count - 1; i >= 0; i--) Items[i].Dispose();
+            }
+        }
+
+        Chain Pin(string source, bool administrative) {
+            var chain = new Chain { Parts = Components(source) };
+            try {
+                var drive = source.Substring(0, 2) + "\\";
+                Require(GetDriveTypeW(drive) == 3);
+                var root = Open(drive, true, false);
+                chain.Items.Add(root);
+                var name = new StringBuilder(128);
+                var length = GetFinalPathNameByHandleW(root.Handle, name, (uint)name.Capacity, 1);
+                Require(length > 0 && length < name.Capacity);
+                var volume = name.ToString();
+                Guid volumeId;
+                Require(volume.StartsWith(@"\\?\Volume{", StringComparison.OrdinalIgnoreCase) && volume.EndsWith(@"}\") && volume.Length == 49 && Guid.TryParse(volume.Substring(11, 36), out volumeId));
+                uint serial, maxComponent, flags;
+                var fileSystem = new StringBuilder(32);
+                Require(GetVolumeInformationW(volume, IntPtr.Zero, 0, out serial, out maxComponent, out flags, fileSystem, (uint)fileSystem.Capacity));
+                Require(serial == root.Info.Volume && fileSystem.ToString() == "NTFS" && (flags & 8) != 0);
+                Safe(root, true, true);
+                chain.Physical = volume;
+                while (!chain.DirectoryExists) {
+                    var path = Path.Combine(chain.Physical, chain.Parts[chain.Next]);
+                    var child = Open(path, true, true);
+                    if (child == null) break;
+                    chain.Items.Add(child);
+                    chain.Physical = path;
+                    chain.Next++;
+                    Safe(child, administrative || !chain.DirectoryExists, true);
+                }
+                return chain;
+            } catch { chain.Dispose(); throw; }
+        }
+
+        bool Managed(string[] paths) {
+            if (paths == null || paths.Length == 0) return true;
+            foreach (var source in paths) {
+                try {
+                    using (var chain = Pin(source, true)) {
+                        if (!chain.DirectoryExists) continue;
+                        // Any existing entry suppresses preferences; inability to inspect it does too.
+                        using (var item = Open(chain.FilePath, true, true, true)) if (item != null) return true;
+                    }
+                } catch { return true; }
+            }
+            return false;
+        }
+
+        byte[] ReadFile(Item item) {
+            using (var view = new SafeFileHandle(item.Handle.DangerousGetHandle(), false))
+            using (var stream = new FileStream(view, FileAccess.Read, 4096, false)) {
+                byte[] data = new byte[Limit + 1];
+                int total = 0, n;
+                while (total < data.Length && (n = stream.Read(data, total, data.Length - total)) != 0) total += n;
+                Require(total <= Limit);
+                Array.Resize(ref data, total);
+                return data;
+            }
+        }
+
+        static void AddItem(BinaryWriter writer, Item item) {
+            writer.Write(item.Info.Volume); writer.Write(item.Info.IdHigh); writer.Write(item.Info.IdLow);
+            writer.Write(item.Info.Attributes); writer.Write(item.Info.Links);
+            writer.Write(item.SecurityBytes.Length); writer.Write(item.SecurityBytes);
+        }
+
+        Snapshot Read(Chain chain, string source) {
+            using (var data = new MemoryStream())
+            using (var stamp = new BinaryWriter(data, Encoding.UTF8))
+            using (var file = chain.DirectoryExists ? Open(chain.FilePath, false, true) : null) {
+                stamp.Write("windows-preferences-v1"); stamp.Write(source); stamp.Write(chain.Next);
+                foreach (var item in chain.Items) {
+                    Inspect(item);
+                    Require((item.Info.Attributes & Reparse) == 0);
+                    Safe(item, item != chain.Parent || !chain.DirectoryExists, true);
+                    AddItem(stamp, item);
+                }
+                stamp.Write(file != null);
+                bool writable = Can(chain.Parent, chain.DirectoryExists ? WriteData : AppendData);
+                byte[] bytes = null;
+                if (file != null) {
+                    Safe(file, false, false);
+                    bytes = ReadFile(file);
+                    writable = writable && (file.Info.Attributes & ReadOnly) == 0 && Can(file, WriteData);
+                    AddItem(stamp, file); stamp.Write(bytes.Length); stamp.Write(bytes);
+                }
+                stamp.Flush();
+                using (var sha = SHA256.Create()) {
+                    var expected = BitConverter.ToString(sha.ComputeHash(data.ToArray())).Replace("-", "").ToLowerInvariant();
+                    return new Snapshot { source = source, state = "user", writable = writable, expected = expected, bytes = bytes == null ? null : Convert.ToBase64String(bytes) };
+                }
+            }
+        }
+
+        RawSecurityDescriptor Private(bool directory) {
+            var flags = directory ? AceFlags.ContainerInherit | AceFlags.ObjectInherit : AceFlags.None;
+            var acl = new RawAcl(GenericAcl.AclRevision, 3);
+            foreach (var sid in new[] { user, SystemSid, AdminSid })
+                acl.InsertAce(acl.Count, new CommonAce(flags, AceQualifier.AccessAllowed, 0x1f01ff, sid, false, null));
+            return new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected, user, null, null, acl);
+        }
+
+        static T WithBytes<T>(byte[] bytes, Func<IntPtr, T> fn) {
+            var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+            try { return fn(pin.AddrOfPinnedObject()); }
+            finally { pin.Free(); }
+        }
+
+        static T WithAttributes<T>(RawSecurityDescriptor sd, Func<IntPtr, T> fn) {
+            var bytes = new byte[sd.BinaryLength];
+            sd.GetBinaryForm(bytes, 0);
+            return WithBytes(bytes, descriptor => {
+                var length = Marshal.SizeOf(typeof(Attributes));
+                var attrs = Marshal.AllocHGlobal(length);
+                try {
+                    Marshal.StructureToPtr(new Attributes { Length = length, Descriptor = descriptor, Inherit = 0 }, attrs, false);
+                    return fn(attrs);
+                } finally { Marshal.FreeHGlobal(attrs); }
+            });
+        }
+
+        void CreateMissing(Chain chain) {
+            while (!chain.DirectoryExists) {
+                var path = Path.Combine(chain.Physical, chain.Parts[chain.Next]);
+                if (!WithAttributes(Private(true), attrs => CreateDirectoryW(path, attrs))) throw LastError();
+                var child = Open(path, true, false);
+                chain.Items.Add(child);
+                chain.Physical = path;
+                chain.Next++;
+                Safe(child, !chain.DirectoryExists, true);
+            }
+        }
+
+        static void Rename(SafeFileHandle file, string path) {
+            var bytes = Encoding.Unicode.GetBytes(path);
+            int root = IntPtr.Size, length = root * 2, start = length + 4;
+            var info = new byte[start + bytes.Length + 2];
+            info[0] = 1; // ReplaceIfExists; the name stays on the pinned local volume.
+            Buffer.BlockCopy(BitConverter.GetBytes(bytes.Length), 0, info, length, 4);
+            Buffer.BlockCopy(bytes, 0, info, start, bytes.Length);
+            if (!WithBytes(info, p => SetFileInformationByHandle(file, 3, p, (uint)info.Length))) throw LastError();
+        }
+
+        static void Discard(SafeFileHandle file) {
+            WithBytes(new byte[] { 1 }, p => SetFileInformationByHandle(file, 4, p, 1));
+        }
+
+        void NarrowAcl(SafeFileHandle file, RawAcl previous) {
+            var privateAcl = new RawAcl(previous.Revision, previous.Count);
+            foreach (CommonAce ace in previous) {
+                if (ace.AceType == AceType.AccessAllowed && !Trusted(ace.SecurityIdentifier, false)) continue;
+                var copy = (CommonAce)ace.Copy();
+                copy.AceFlags &= ~AceFlags.Inherited;
+                privateAcl.InsertAce(privateAcl.Count, copy);
+            }
+            var bytes = new byte[privateAcl.BinaryLength];
+            privateAcl.GetBinaryForm(bytes, 0);
+            var error = WithBytes(bytes, p => SetSecurityInfo(file, 1, ProtectedDacl, IntPtr.Zero, IntPtr.Zero, p, IntPtr.Zero));
+            if (error != 0) throw new Win32Exception((int)error);
+        }
+
+        SafeFileHandle Stage(string directory, byte[] bytes, RawAcl activeAcl) {
+            var path = Path.Combine(directory, ".predictions.tmp-" + Guid.NewGuid().ToString("N"));
+            var file = WithAttributes(Private(false), attrs => CreateFileW(path, ReadControl | ReadAttr | WriteDac | Delete | GenericWrite, ShareRead, attrs, CreateNew, NoFollow, IntPtr.Zero));
+            if (file.IsInvalid) { var error = LastError(); file.Dispose(); throw error; }
+            try {
+                var item = new Item { Path = path, Handle = file };
+                Inspect(item);
+                Require(item.Info.Links == 1 && (item.Info.Attributes & (Reparse | DirectoryFlag)) == 0);
+                Safe(item, false, false, true);
+                /* BEFORE_STAGE_WRITE */
+                int written;
+                if (!WriteFile(file, bytes, bytes.Length, out written, IntPtr.Zero)) throw LastError();
+                Require(written == bytes.Length);
+                if (activeAcl != null) NarrowAcl(file, activeAcl);
+                if (!FlushFileBuffers(file)) throw LastError();
+                return file;
+            } catch { Discard(file); file.Dispose(); throw; }
+        }
+
+        static Snapshot Masked(string source, string state) {
+            return new Snapshot { source = source, state = state, writable = false, expected = "", bytes = null };
+        }
+
+        public Reply Run(string op, string source, string[] administration, string expected, string content) {
+            bool committed = false;
+            try {
+                if (Managed(administration)) return op == "read" ? Result("snapshot", Masked(source, "managed")) : Result("read_only");
+                using (var chain = Pin(source, false)) {
+                    var before = Read(chain, source);
+                    if (op == "read") return Result("snapshot", before);
+                    if (before.expected != expected) return Result("conflict");
+                    if (!before.writable) return Result("read_only");
+                    byte[] next = Convert.FromBase64String(content);
+                    Require(next.Length <= Limit);
+                    if (!chain.DirectoryExists) {
+                        CreateMissing(chain);
+                        before = Read(chain, source);
+                        if (before.bytes != null) return Result("conflict");
+                        if (!before.writable) return Result("read_only");
+                    }
+                    RawAcl activeAcl = null;
+                    using (var active = Open(chain.FilePath, false, true)) {
+                        if (active != null) {
+                            Safe(active, false, false);
+                            activeAcl = active.Descriptor.DiscretionaryAcl;
+                        }
+                    }
+                    var path = chain.FilePath;
+                    using (var stage = Stage(chain.Physical, next, activeAcl)) {
+                        try {
+                            if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
+                            if (before.bytes != null) {
+                                var backup = path + ".backup";
+                                using (var existing = Open(backup, false, true)) if (existing != null) Safe(existing, false, false, true);
+                                using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes), null)) {
+                                    try { Rename(copy, backup); }
+                                    catch { Discard(copy); throw; }
+                                }
+                            }
+                            if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
+                            /* BEFORE_ACTIVE_REPLACE */
+                            Rename(stage, path);
+                            committed = true;
+                        } finally { if (!committed) Discard(stage); }
+                    }
+                    /* AFTER_ACTIVE_REPLACE */
+                    var persisted = Read(chain, source);
+                    if (Managed(administration) || persisted.bytes != Convert.ToBase64String(next)) return Result("uncertain");
+                    return Result("written", persisted);
+                }
+            } catch {
+                if (committed) return Result("uncertain");
+                return op == "read" ? Result("snapshot", Masked(source, "unavailable")) : Result("failed");
+            }
+        }
+    }
+
+    public static Reply Execute(string op, string source, string[] administration, string expected, string content) {
+        using (var session = new Session()) return session.Run(op, source, administration, expected, content);
+    }
+}
+'@
+$reply = [PredictionsPreferences]::Execute($request.op, $request.source, [string[]]$request.systemPaths, $request.expected, $request.bytes)
+[Console]::WriteLine((ConvertTo-Json -InputObject $reply -Depth 4 -Compress))
+`;
+
+// src/preferences-windows.ts
 var limit = 65536;
+var wireLimit = 192 * 1024;
+var unavailable = "Windows prediction preferences cannot be read or verified. Check the server's configuration directory.";
+var uncertain = "Changes may have been saved. Reopen settings before trying again.";
+var readOnly = "Windows prediction preferences are not writable.";
+var refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings.";
+var conflict = "Prediction preferences changed. Reload settings before saving.";
+var bootstrap = Buffer.from(
+  "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
+  "utf16le"
+).toString("base64");
+function windowsLocalRoot(value) {
+  if (!/^[A-Za-z]:[\\/]/.test(value)) return false;
+  const components = value.slice(3).replace(/[\\/]$/, "").split(/[\\/]/);
+  return components.length === 1 && components[0] === "" || components.every((part) => part.length > 0 && !/[\x00-\x1f<>:"|?*]|[. ]$/.test(part) && !/^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[0-9¹²³]) *(?:\.|$)/i.test(part));
+}
+async function invokeWindows(request, signal, script = windowsScript) {
+  signal.throwIfAborted();
+  const root = process.env.SystemRoot;
+  if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new Error(unavailable);
+  const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0");
+  const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
+    cwd: system,
+    windowsHide: true,
+    stdio: ["pipe", "pipe", "ignore"],
+    signal: AbortSignal.any([signal, AbortSignal.timeout(1800)]),
+    env: {
+      SystemRoot: root,
+      PATH: system,
+      PSModulePath: win32.join(powershell, "Modules"),
+      TMP: process.env.TMP,
+      TEMP: process.env.TEMP,
+      USERPROFILE: process.env.USERPROFILE
+    }
+  });
+  return new Promise((resolve2, reject) => {
+    const output = [];
+    let length = 0, failed = false;
+    child.on("error", () => {
+      failed = true;
+    });
+    child.stdin.on("error", () => {
+      failed = true;
+    });
+    child.stdout.on("data", (chunk) => {
+      length += chunk.length;
+      if (length > wireLimit) {
+        failed = true;
+        child.kill();
+      } else output.push(chunk);
+    });
+    child.once("close", (code) => {
+      if (failed || code !== 0) reject(new Error(unavailable));
+      else {
+        try {
+          resolve2(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output)));
+        } catch {
+          reject(new Error(unavailable));
+        }
+      }
+    });
+    child.stdin.end(`${Buffer.from(script).toString("base64")}
+${Buffer.from(JSON.stringify(request)).toString("base64")}
+`);
+  });
+}
+var denied = (source) => ({
+  source,
+  state: "unavailable",
+  expected: "",
+  writable: false,
+  present: false,
+  bytes: Buffer.alloc(0),
+  reason: unavailable
+});
+function object(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(unavailable);
+  return value;
+}
+function reply(text) {
+  if (Buffer.byteLength(text) > wireLimit) throw new Error(unavailable);
+  return object(JSON.parse(text));
+}
+function snapshot(data, source) {
+  const { source: path, state, expected, writable, bytes } = object(data);
+  if (path !== source || typeof writable !== "boolean" || typeof expected !== "string") throw new Error(unavailable);
+  if (state === "unavailable" && !writable && !expected && bytes === null) return denied(source);
+  if (state === "managed" && !writable && !expected && bytes === null) return { ...denied(source), state, reason: void 0 };
+  if (state !== "user" || !/^[a-f0-9]{64}$/.test(expected) || bytes !== null && typeof bytes !== "string") throw new Error(unavailable);
+  const decoded = Buffer.from(bytes ?? "", "base64");
+  if (decoded.length > limit || bytes !== null && decoded.toString("base64") !== bytes) throw new Error(unavailable);
+  return { source, state, expected, writable, present: bytes !== null, bytes: decoded, ...!writable ? { reason: readOnly } : {} };
+}
+function createWindowsIO(invoke = invokeWindows) {
+  return {
+    async readWindowsPreferences(source, systemPaths, signal) {
+      signal.throwIfAborted();
+      try {
+        const result = reply(await invoke({ op: "read", source, systemPaths }, signal));
+        signal.throwIfAborted();
+        if (result.kind === "snapshot") return snapshot(result.snapshot, source);
+      } catch {
+        signal.throwIfAborted();
+      }
+      return denied(source);
+    },
+    async commitWindowsPreferences(before, systemPaths, next, signal) {
+      signal.throwIfAborted();
+      if (!before.writable || before.state !== "user") return { kind: "read_only", message: readOnly };
+      if (next.byteLength > limit) return { kind: "failed", message: refused };
+      const bytes = Buffer.from(next);
+      try {
+        const result = reply(await invoke({ op: "commit", source: before.source, systemPaths, expected: before.expected, bytes: bytes.toString("base64") }, signal));
+        if (result.kind === "conflict") return { kind: "conflict", message: conflict };
+        if (result.kind === "read_only") return { kind: "read_only", message: readOnly };
+        if (result.kind === "failed") return { kind: "failed", message: refused };
+        if (result.kind === "written") {
+          const persisted = snapshot(result.snapshot, before.source);
+          if (persisted.state === "user" && persisted.present && persisted.bytes.equals(bytes)) return { kind: "written", snapshot: persisted };
+        }
+      } catch {
+      }
+      return { kind: "failed", message: uncertain };
+    }
+  };
+}
+var { readWindowsPreferences, commitWindowsPreferences } = createWindowsIO();
+
+// src/preferences-store.ts
+var limit2 = 65536;
 var run = promisify(execFile);
 var missing = (error) => error?.code === "ENOENT";
 var Refusal = class extends Error {
@@ -925,19 +1484,20 @@ var Refusal = class extends Error {
 var fail = (message) => {
   throw new Refusal(message);
 };
-var uncertain = "Changes may have been saved. Reopen settings before trying again.";
+var uncertain2 = "Changes may have been saved. Reopen settings before trying again.";
 var identity = (value) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...value.isDirectory() ? [] : [value.nlink]];
 var hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function preferencesPath(host) {
-  const path = host.platform === "win32" ? win32 : posix;
+  const path = host.platform === "win32" ? win322 : posix;
+  const absolute = host.platform === "win32" ? windowsLocalRoot : path.isAbsolute;
   let root = host.env.XDG_CONFIG_HOME;
-  if (root !== void 0 && (!root || !path.isAbsolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.");
+  if (root !== void 0 && (!root || !absolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.");
   if (root === void 0) root = host.platform === "win32" ? host.env.APPDATA : path.join(host.home, ".config");
-  if (!root || !path.isAbsolute(root)) return fail("The server's user configuration directory is unavailable.");
+  if (!root || !absolute(root)) return fail("The server's user configuration directory is unavailable.");
   return path.join(root, "opencode", "predictions.json");
 }
 function administrativePaths(platform, env, username) {
-  if (platform === "win32") return [env.ProgramData && win32.isAbsolute(env.ProgramData) ? win32.join(env.ProgramData, "opencode") : ""];
+  if (platform === "win32") return [env.ProgramData && windowsLocalRoot(env.ProgramData) ? win322.join(env.ProgramData, "opencode") : ""];
   if (platform === "darwin") return [
     "/Library/Application Support/opencode",
     "/Library/Managed Preferences/ai.opencode.managed.plist",
@@ -946,7 +1506,7 @@ function administrativePaths(platform, env, username) {
   return ["/etc/opencode"];
 }
 function decodePreferences(bytes) {
-  if (bytes.byteLength > limit) fail("Prediction preferences exceed 65536 bytes.");
+  if (bytes.byteLength > limit2) fail("Prediction preferences exceed 65536 bytes.");
   let text;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -990,7 +1550,78 @@ async function safe(info, path, directory = false) {
     if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) fail("Prediction preferences have unsupported access control entries.");
   }
 }
+function createWindowsStore(host) {
+  const revision = (state) => hash([state.source, state.state, state.expected]);
+  const systemPaths = () => host.systemPaths.map((path) => windowsLocalRoot(path) ? path : "");
+  const inspect = (signal) => readWindowsPreferences(preferencesPath(host), systemPaths(), signal);
+  const invalid = (source, reason) => ({
+    revision: hash([source, "unavailable"]),
+    source,
+    writable: false,
+    documentValid: false,
+    policy: "user",
+    overrides: {},
+    reason: reason ?? "Windows prediction preferences cannot be read or verified. Check the server's configuration directory."
+  });
+  return {
+    async read(signal) {
+      let source = "";
+      try {
+        source = preferencesPath(host);
+        const state = await inspect(signal);
+        if (state.state === "unavailable") return invalid(source, state.reason);
+        if (state.state === "managed") return {
+          revision: revision(state),
+          source,
+          writable: false,
+          documentValid: true,
+          policy: "managed",
+          overrides: {},
+          reason: "Administrative configuration prevents user prediction preferences."
+        };
+        const settings = state.present ? decodePreferences(state.bytes).settings : {};
+        return {
+          revision: revision(state),
+          source,
+          writable: state.writable,
+          documentValid: true,
+          policy: "user",
+          overrides: preferenceFields(settings),
+          contextFile: settings.contextFile,
+          ...state.reason ? { reason: state.reason } : {}
+        };
+      } catch (error) {
+        signal.throwIfAborted();
+        return invalid(source, error instanceof Refusal ? error.message : void 0);
+      }
+    },
+    async write(current, input, signal) {
+      signal.throwIfAborted();
+      let before, document;
+      try {
+        before = await inspect(signal);
+        if (!before.writable) return { kind: "read_only", message: before.reason ?? "Prediction preferences are read-only." };
+        document = before.present ? decodePreferences(before.bytes) : { version: 1, settings: {} };
+      } catch (error) {
+        signal.throwIfAborted();
+        return { kind: "read_only", message: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified." };
+      }
+      if (revision(before) !== current) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
+      let bytes;
+      try {
+        const settings = applyPreferenceChange(document.settings, input);
+        bytes = Buffer.from(JSON.stringify({ ...document, settings }, null, 2) + "\n");
+        decodePreferences(bytes);
+      } catch (error) {
+        return { kind: "failed", message: error instanceof Refusal ? error.message : "Prediction preference changes are invalid." };
+      }
+      const result = await commitWindowsPreferences(before, systemPaths(), bytes, signal);
+      return result.kind === "written" ? { kind: "written", revision: revision(result.snapshot) } : result;
+    }
+  };
+}
 function createPreferencesStore(host) {
+  if (process.platform === "win32" && host.platform === "win32") return createWindowsStore(host);
   async function inspect(signal) {
     signal.throwIfAborted();
     const logical = preferencesPath(host);
@@ -1025,7 +1656,7 @@ function createPreferencesStore(host) {
       try {
         const pinned = await handle.stat();
         if (JSON.stringify(identity(pinned)) !== JSON.stringify(identity(info))) fail("Prediction preferences changed while reading. Reload settings.");
-        const buffer = Buffer.alloc(limit + 1);
+        const buffer = Buffer.alloc(limit2 + 1);
         const read = await handle.read(buffer, 0, buffer.length, 0);
         bytes = buffer.subarray(0, read.bytesRead);
         document = decodePreferences(bytes);
@@ -1038,7 +1669,7 @@ function createPreferencesStore(host) {
     signal.throwIfAborted();
     return { source, directory, policy: "user", bytes, document, info, parent: target.ancestor === directory ? parent : void 0, revision, writable, reason };
   }
-  function snapshot(value) {
+  function snapshot2(value) {
     return {
       revision: value.revision,
       source: value.source,
@@ -1053,7 +1684,7 @@ function createPreferencesStore(host) {
   return {
     async read(signal) {
       try {
-        return snapshot(await inspect(signal));
+        return snapshot2(await inspect(signal));
       } catch (error) {
         signal.throwIfAborted();
         let source = "";
@@ -1083,7 +1714,7 @@ function createPreferencesStore(host) {
         } catch (error) {
           return { kind: "read_only", message: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified." };
         }
-        if (!before.writable) return { kind: "read_only", message: snapshot(before).reason };
+        if (!before.writable) return { kind: "read_only", message: snapshot2(before).reason };
         if (before.revision !== revision) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
         const settings = applyPreferenceChange(before.document.settings, input);
         const text = JSON.stringify({ ...before.document, settings }, null, 2) + "\n";
@@ -1126,19 +1757,19 @@ function createPreferencesStore(host) {
         await rename(next, before.source);
         committed = true;
         const persisted = await inspect(new AbortController().signal);
-        if (!persisted.bytes.equals(Buffer.from(text))) return { kind: "failed", message: uncertain };
+        if (!persisted.bytes.equals(Buffer.from(text))) return { kind: "failed", message: uncertain2 };
         return { kind: "written", revision: persisted.revision };
       }
       try {
         result = await transaction();
       } catch (error) {
-        result = { kind: "failed", message: committed ? uncertain : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
+        result = { kind: "failed", message: committed ? uncertain2 : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
       } finally {
         for (const path of temporary) await unlink(path).catch((error) => {
           if (!missing(error)) cleanupFailed = true;
         });
       }
-      return cleanupFailed ? { kind: "failed", message: committed ? uncertain : "Save cleanup failed. Reopen settings before trying again." } : result;
+      return cleanupFailed ? { kind: "failed", message: committed ? uncertain2 : "Save cleanup failed. Reopen settings before trying again." } : result;
     }
   };
 }
@@ -1179,9 +1810,9 @@ function createPreferencesRuntime(store, make) {
     async predict(input, signal) {
       await refresh(signal);
       const engine = state().service;
-      const reply = await engine.predict(input, signal);
+      const reply2 = await engine.predict(input, signal);
       await refresh(signal);
-      return engine === state().service ? reply : { reason: "stale" };
+      return engine === state().service ? reply2 : { reason: "stale" };
     },
     dispose() {
       if (!lifetime.signal.aborted) {

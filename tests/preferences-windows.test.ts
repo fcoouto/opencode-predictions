@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { test, type TestContext } from "node:test"
 import { promisify } from "node:util"
-import { createPreferencesStore, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
+import { administrativePaths, createPreferencesStore, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
 
 const native = { skip: process.platform !== "win32", timeout: 25000 }
 const signal = () => new AbortController().signal
@@ -21,7 +21,52 @@ test("Windows roots must identify a local drive", () => {
     for (const key of ["APPDATA", "XDG_CONFIG_HOME"]) {
       assert.throws(() => preferencesPath({ ...base, env: { [key]: bad } }), `accepted ${key}=${bad}`)
     }
+    assert.deepEqual(administrativePaths("win32", { ProgramData: bad }), [""])
   }
+})
+
+const loadWindowsIO = () => import(new URL("../src/preferences-windows.ts", import.meta.url).href)
+const candidate = { source: "C:\\fixture\\opencode\\predictions.json", state: "user", writable: true, expected: "a".repeat(64), bytes: null }
+const administration = ["C:\\fixture\\managed"]
+
+test("Windows refuses malformed, unknown, or oversized helper replies", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  for (const reply of [
+    "{bad",
+    JSON.stringify({ kind: "snapshot", snapshot: { ...candidate, state: "unknown" } }),
+    JSON.stringify({ kind: "snapshot", snapshot: { ...candidate, bytes: Buffer.alloc(65537).toString("base64") } }),
+    JSON.stringify({ kind: "snapshot", snapshot: { ...candidate, expected: "" } }),
+  ]) {
+    const io = createWindowsIO(async () => reply)
+    const read = await io.readWindowsPreferences(candidate.source, administration, signal())
+    assert.equal(read.state, "unavailable")
+    assert.equal(read.writable, false)
+  }
+})
+
+test("Windows refuses timed-out reads and propagates cancellation", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  const read = createWindowsIO(async () => { throw Object.assign(new Error("private helper output"), { code: "ETIMEDOUT" }) }).readWindowsPreferences
+  const result = await read(candidate.source, administration, signal())
+  assert.equal(result.writable, false)
+  assert.doesNotMatch(JSON.stringify(result), /private helper output/)
+  await assert.rejects(read(candidate.source, administration, AbortSignal.abort()), { name: "AbortError" })
+})
+
+test("Windows does not replay a commit after losing the helper reply", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  let commits = 0
+  const io = createWindowsIO(async (request: { op: string }) => {
+    if (request.op === "commit") {
+      commits++
+      throw new Error("private helper output")
+    }
+    return JSON.stringify({ kind: "snapshot", snapshot: candidate })
+  })
+  const before = await io.readWindowsPreferences(candidate.source, administration, signal())
+  const result = await io.commitWindowsPreferences(before, administration, Buffer.from(initial), signal())
+  assert.deepEqual(result, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+  assert.equal(commits, 1)
 })
 
 async function fixture(t: TestContext) {
@@ -43,6 +88,15 @@ const icacls = (path: string, ...args: string[]) => utility("icacls.exe", [path,
 const getAcl = async (path: string) => (await utility("WindowsPowerShell\\v1.0\\powershell.exe", [
   "-NoProfile", "-NonInteractive", "-Command", "(Get-Acl -LiteralPath $env:PREDICTIONS_TEST_ACL_PATH).Sddl",
 ], { ...process.env, PREDICTIONS_TEST_ACL_PATH: path })).stdout.trim()
+
+test("the preference helper compiles in Windows PowerShell", native, async t => {
+  const f = await fixture(t)
+  const { windowsScript } = await import(new URL("../src/preferences-windows-script.ts", import.meta.url).href)
+  const path = join(f.root, "compile-helper.ps1")
+  const compileOnly = windowsScript.slice(0, windowsScript.indexOf("$reply = ")).replace(/^\$request = .*$/m, "")
+  await writeFile(path, compileOnly)
+  await utility("WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path])
+})
 
 test("Windows reads create nothing and a second Save creates a private backup", native, async t => {
   const f = await fixture(t), beforeAcl = await getAcl(f.directory)
@@ -163,5 +217,77 @@ test("Windows refuses stale drafts and oversized preferences", native, async t =
   assert.equal(state.documentValid, false)
   assert.equal((await f.store.write(state.revision, edit, signal())).kind, "read_only")
   assert.equal(await readFile(f.source, "utf8"), oversized)
+  assert.equal(await readFile(f.config, "utf8"), f.configBytes)
+})
+
+async function checkpoint(name: string, code: string) {
+  const { createWindowsIO, invokeWindows } = await loadWindowsIO()
+  const { windowsScript } = await import(new URL("../src/preferences-windows-script.ts", import.meta.url).href)
+  const marker = `/* ${name} */`
+  assert.equal(windowsScript.split(marker).length, 2, `Missing test boundary: ${name}`)
+  const script = windowsScript.replace(marker, () => code)
+  return createWindowsIO((request: unknown, abort: AbortSignal) => invokeWindows(request, abort, script))
+}
+
+test("Windows staging is private before it receives preference bytes", native, async t => {
+  const f = await fixture(t), observation = join(f.root, "staging-before-write")
+  const io = await checkpoint("BEFORE_STAGE_WRITE", `
+    var stagedPath = new System.IO.FileInfo(path);
+    var stagedAcl = stagedPath.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
+    File.AppendAllText(${JSON.stringify(observation)}, stagedPath.Length + ":" + stagedAcl + Environment.NewLine);
+  `)
+  await writeFile(f.source, initial)
+  const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from('{"version":1,"settings":{}}\n'), signal())
+  assert.equal(result.kind, "written")
+  const samples = (await readFile(observation, "utf8")).trim().split(/\r?\n/)
+  assert.equal(samples.length, 2, "Both active and backup staging were observed.")
+  for (const sample of samples) {
+    assert.match(sample, /^0:D:P/)
+    assert.doesNotMatch(sample, /;;;(?:WD|AU|BU)\)/)
+  }
+})
+
+test("Windows pins the verified directory until replacement finishes", native, async t => {
+  const f = await fixture(t), observation = join(f.root, "rename-observed")
+  const spare = join(f.root, "spare")
+  await mkdir(spare)
+  await writeFile(join(spare, "sentinel"), "not a preferences directory")
+  const io = await checkpoint("BEFORE_ACTIVE_REPLACE", `
+    try { Directory.Move(${JSON.stringify(f.directory)}, ${JSON.stringify(f.directory + "-moved")}); }
+    catch (IOException) { File.WriteAllText(${JSON.stringify(observation)}, "pinned"); }
+  `)
+  await writeFile(f.source, initial)
+  const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  const complete = '{"version":1,"settings":{"debug":true}}\n'
+  assert.equal((await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(complete), signal())).kind, "written")
+  assert.equal(await readFile(observation, "utf8"), "pinned")
+  assert.equal(await readFile(f.source, "utf8"), complete)
+  assert.equal(await readFile(f.config, "utf8"), f.configBytes)
+  assert.deepEqual(await readdir(spare), ["sentinel"])
+  assert.equal(await readFile(join(spare, "sentinel"), "utf8"), "not a preferences directory")
+})
+
+for (const phase of ["before replacement", "lost readback", "different readback"]) test(`Windows reports a safe outcome for ${phase}`, native, async t => {
+  const f = await fixture(t)
+  const differing = '{"version":1,"settings":{"debug":false}}\n'
+  const io = await checkpoint(phase === "before replacement" ? "BEFORE_ACTIVE_REPLACE" : "AFTER_ACTIVE_REPLACE",
+    phase === "different readback"
+      ? `File.WriteAllText(${JSON.stringify(f.source)}, ${JSON.stringify(differing)});`
+      : 'throw new IOException("private fixture failure");')
+  await writeFile(f.source, initial)
+  const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  const next = '{"version":1,"settings":{"debug":true}}\n'
+  const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(next), signal())
+  assert.equal(result.kind, "failed")
+  assert.doesNotMatch(JSON.stringify(result), /private fixture failure/)
+  if (phase === "before replacement") {
+    assert.equal(await readFile(f.source, "utf8"), initial)
+    assert.doesNotMatch(JSON.stringify(result), /may have been saved/)
+  } else {
+    assert.equal(await readFile(f.source, "utf8"), phase === "lost readback" ? next : differing)
+    assert.match(result.message, /Changes may have been saved/)
+    assert.equal((await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(next), signal())).kind, "conflict")
+  }
   assert.equal(await readFile(f.config, "utf8"), f.configBytes)
 })

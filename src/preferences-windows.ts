@@ -1,0 +1,123 @@
+import { spawn } from "node:child_process"
+import { win32 } from "node:path"
+import type { PreferencesWriteResult } from "./preferences-store.ts"
+import { windowsScript } from "./preferences-windows-script.ts"
+
+const limit = 65536, wireLimit = 192 * 1024
+const unavailable = "Windows prediction preferences cannot be read or verified. Check the server's configuration directory."
+const uncertain = "Changes may have been saved. Reopen settings before trying again."
+const readOnly = "Windows prediction preferences are not writable."
+const refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings."
+const conflict = "Prediction preferences changed. Reload settings before saving."
+const bootstrap = Buffer.from(
+  "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
+  "utf16le",
+).toString("base64")
+
+export type WindowsSnapshot = {
+  source: string; state: "user" | "managed" | "unavailable"; writable: boolean
+  expected: string; present: boolean; bytes: Buffer; reason?: string
+}
+type WindowsCommit = { kind: "written"; snapshot: WindowsSnapshot } | Exclude<PreferencesWriteResult, { kind: "written" }>
+type Request = { op: "read"; source: string; systemPaths: readonly string[] }
+  | { op: "commit"; source: string; systemPaths: readonly string[]; expected: string; bytes: string }
+type Invoke = (request: Request, signal: AbortSignal) => Promise<string>
+
+export function windowsLocalRoot(value: string): boolean {
+  if (!/^[A-Za-z]:[\\/]/.test(value)) return false
+  const components = value.slice(3).replace(/[\\/]$/, "").split(/[\\/]/)
+  return components.length === 1 && components[0] === "" || components.every(part =>
+    part.length > 0 && !/[\x00-\x1f<>:"|?*]|[. ]$/.test(part)
+    && !/^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[0-9¹²³]) *(?:\.|$)/i.test(part))
+}
+
+export async function invokeWindows(request: Request, signal: AbortSignal, script = windowsScript): Promise<string> {
+  signal.throwIfAborted()
+  const root = process.env.SystemRoot
+  if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new Error(unavailable)
+  const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0")
+  const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
+    cwd: system, windowsHide: true, stdio: ["pipe", "pipe", "ignore"],
+    signal: AbortSignal.any([signal, AbortSignal.timeout(1800)]),
+    env: { SystemRoot: root, PATH: system, PSModulePath: win32.join(powershell, "Modules"),
+      TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE },
+  })
+  return new Promise((resolve, reject) => {
+    const output: Buffer[] = []
+    let length = 0, failed = false
+    child.on("error", () => { failed = true })
+    child.stdin.on("error", () => { failed = true })
+    child.stdout.on("data", (chunk: Buffer) => {
+      length += chunk.length
+      if (length > wireLimit) {
+        failed = true
+        child.kill()
+      } else output.push(chunk)
+    })
+    child.once("close", code => {
+      if (failed || code !== 0) reject(new Error(unavailable))
+      else {
+        try { resolve(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output))) }
+        catch { reject(new Error(unavailable)) }
+      }
+    })
+    child.stdin.end(`${Buffer.from(script).toString("base64")}\n${Buffer.from(JSON.stringify(request)).toString("base64")}\n`)
+  })
+}
+
+const denied = (source: string): WindowsSnapshot => ({
+  source, state: "unavailable", expected: "", writable: false, present: false, bytes: Buffer.alloc(0), reason: unavailable,
+})
+function object(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(unavailable)
+  return value as Record<string, unknown>
+}
+function reply(text: string) {
+  if (Buffer.byteLength(text) > wireLimit) throw new Error(unavailable)
+  return object(JSON.parse(text))
+}
+function snapshot(data: unknown, source: string): WindowsSnapshot {
+  const { source: path, state, expected, writable, bytes } = object(data)
+  if (path !== source || typeof writable !== "boolean" || typeof expected !== "string") throw new Error(unavailable)
+  if (state === "unavailable" && !writable && !expected && bytes === null) return denied(source)
+  if (state === "managed" && !writable && !expected && bytes === null) return { ...denied(source), state, reason: undefined }
+  if (state !== "user" || !/^[a-f0-9]{64}$/.test(expected) || bytes !== null && typeof bytes !== "string") throw new Error(unavailable)
+  const decoded = Buffer.from(bytes ?? "", "base64")
+  if (decoded.length > limit || bytes !== null && decoded.toString("base64") !== bytes) throw new Error(unavailable)
+  return { source, state, expected, writable, present: bytes !== null, bytes: decoded, ...(!writable ? { reason: readOnly } : {}) }
+}
+
+export function createWindowsIO(invoke: Invoke = invokeWindows) {
+  return {
+    async readWindowsPreferences(source: string, systemPaths: readonly string[], signal: AbortSignal): Promise<WindowsSnapshot> {
+      signal.throwIfAborted()
+      try {
+        const result = reply(await invoke({ op: "read", source, systemPaths }, signal))
+        signal.throwIfAborted()
+        if (result.kind === "snapshot") return snapshot(result.snapshot, source)
+      } catch { signal.throwIfAborted() }
+      return denied(source)
+    },
+    async commitWindowsPreferences(before: WindowsSnapshot, systemPaths: readonly string[], next: Uint8Array, signal: AbortSignal): Promise<WindowsCommit> {
+      signal.throwIfAborted()
+      if (!before.writable || before.state !== "user") return { kind: "read_only", message: readOnly }
+      if (next.byteLength > limit) return { kind: "failed", message: refused }
+      const bytes = Buffer.from(next)
+      try {
+        const result = reply(await invoke({ op: "commit", source: before.source, systemPaths, expected: before.expected, bytes: bytes.toString("base64") }, signal))
+        if (result.kind === "conflict") return { kind: "conflict", message: conflict }
+        if (result.kind === "read_only") return { kind: "read_only", message: readOnly }
+        if (result.kind === "failed") return { kind: "failed", message: refused }
+        if (result.kind === "written") {
+          const persisted = snapshot(result.snapshot, before.source)
+          if (persisted.state === "user" && persisted.present && persisted.bytes.equals(bytes)) return { kind: "written", snapshot: persisted }
+        }
+      } catch {
+        // Once sent, a lost response cannot establish that replacement did not occur.
+      }
+      return { kind: "failed", message: uncertain }
+    },
+  }
+}
+
+export const { readWindowsPreferences, commitWindowsPreferences } = createWindowsIO()

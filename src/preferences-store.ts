@@ -5,6 +5,7 @@ import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { applyPreferenceChange, parsePreferences, preferenceFields, type PreferenceDocument } from "./preferences.ts"
+import { commitWindowsPreferences, readWindowsPreferences, windowsLocalRoot, type WindowsSnapshot } from "./preferences-windows.ts"
 import type { SaveInput, SettingsInput } from "./setup.ts"
 
 export type PreferencesHost = { home: string; platform: NodeJS.Platform; env: Record<string, string | undefined>; systemPaths: readonly string[] }
@@ -20,15 +21,16 @@ const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(valu
 
 export function preferencesPath(host: PreferencesHost): string {
   const path = host.platform === "win32" ? win32 : posix
+  const absolute = host.platform === "win32" ? windowsLocalRoot : path.isAbsolute
   let root = host.env.XDG_CONFIG_HOME
-  if (root !== undefined && (!root || !path.isAbsolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.")
+  if (root !== undefined && (!root || !absolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.")
   if (root === undefined) root = host.platform === "win32" ? host.env.APPDATA : path.join(host.home, ".config")
-  if (!root || !path.isAbsolute(root)) return fail("The server's user configuration directory is unavailable.")
+  if (!root || !absolute(root)) return fail("The server's user configuration directory is unavailable.")
   return path.join(root, "opencode", "predictions.json")
 }
 
 export function administrativePaths(platform: NodeJS.Platform, env: PreferencesHost["env"], username?: string): readonly string[] {
-  if (platform === "win32") return [env.ProgramData && win32.isAbsolute(env.ProgramData) ? win32.join(env.ProgramData, "opencode") : ""]
+  if (platform === "win32") return [env.ProgramData && windowsLocalRoot(env.ProgramData) ? win32.join(env.ProgramData, "opencode") : ""]
   if (platform === "darwin") return [
     "/Library/Application Support/opencode", "/Library/Managed Preferences/ai.opencode.managed.plist",
     username ? posix.join("/Library/Managed Preferences", username, "ai.opencode.managed.plist") : "/Library/Managed Preferences",
@@ -69,7 +71,61 @@ async function safe(info: Stats, path: string, directory = false) {
   }
 }
 
+function createWindowsStore(host: PreferencesHost) {
+  const revision = (state: WindowsSnapshot) => hash([state.source, state.state, state.expected])
+  const systemPaths = () => host.systemPaths.map(path => windowsLocalRoot(path) ? path : "")
+  const inspect = (signal: AbortSignal) => readWindowsPreferences(preferencesPath(host), systemPaths(), signal)
+  const invalid = (source: string, reason?: string): PreferenceRead => ({
+    revision: hash([source, "unavailable"]), source, writable: false, documentValid: false, policy: "user", overrides: {},
+    reason: reason ?? "Windows prediction preferences cannot be read or verified. Check the server's configuration directory.",
+  })
+  return {
+    async read(signal: AbortSignal): Promise<PreferenceRead> {
+      let source = ""
+      try {
+        source = preferencesPath(host)
+        const state = await inspect(signal)
+        if (state.state === "unavailable") return invalid(source, state.reason)
+        if (state.state === "managed") return {
+          revision: revision(state), source, writable: false, documentValid: true, policy: "managed", overrides: {},
+          reason: "Administrative configuration prevents user prediction preferences.",
+        }
+        const settings = state.present ? decodePreferences(state.bytes).settings : {}
+        return { revision: revision(state), source, writable: state.writable, documentValid: true, policy: "user",
+          overrides: preferenceFields(settings), contextFile: settings.contextFile, ...(state.reason ? { reason: state.reason } : {}) }
+      } catch (error) {
+        signal.throwIfAborted()
+        return invalid(source, error instanceof Refusal ? error.message : undefined)
+      }
+    },
+    async write(current: string, input: Omit<SaveInput, "revision">, signal: AbortSignal): Promise<PreferencesWriteResult> {
+      signal.throwIfAborted()
+      let before: WindowsSnapshot, document: PreferenceDocument
+      try {
+        before = await inspect(signal)
+        if (!before.writable) return { kind: "read_only", message: before.reason ?? "Prediction preferences are read-only." }
+        document = before.present ? decodePreferences(before.bytes) : { version: 1, settings: {} }
+      } catch (error) {
+        signal.throwIfAborted()
+        return { kind: "read_only", message: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified." }
+      }
+      if (revision(before) !== current) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." }
+      let bytes: Buffer
+      try {
+        const settings = applyPreferenceChange(document.settings, input)
+        bytes = Buffer.from(JSON.stringify({ ...document, settings }, null, 2) + "\n")
+        decodePreferences(bytes)
+      } catch (error) {
+        return { kind: "failed", message: error instanceof Refusal ? error.message : "Prediction preference changes are invalid." }
+      }
+      const result = await commitWindowsPreferences(before, systemPaths(), bytes, signal)
+      return result.kind === "written" ? { kind: "written", revision: revision(result.snapshot) } : result
+    },
+  }
+}
+
 export function createPreferencesStore(host: PreferencesHost) {
+  if (process.platform === "win32" && host.platform === "win32") return createWindowsStore(host)
   async function inspect(signal: AbortSignal) {
     signal.throwIfAborted()
     const logical = preferencesPath(host)

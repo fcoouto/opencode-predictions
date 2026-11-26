@@ -30,7 +30,7 @@ if ($StandardUser) {
     Write-Host "Native Windows $([Environment]::OSVersion.Version); account is non-admin; volume is $($volume.DriveFormat)."
     & $env:OPENCODE_BIN --version
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    & (Join-Path $Stage 'node.exe') --test (Join-Path $Stage 'tests\preferences-windows.test.ts') (Join-Path $Stage 'tests\host\windows-preferences.test.ts')
+    & (Join-Path $Stage 'node.exe') --test --test-concurrency=1 (Join-Path $Stage 'tests\preferences-windows.test.ts') (Join-Path $Stage 'tests\host\windows-preferences.test.ts')
     exit $LASTEXITCODE
 }
 
