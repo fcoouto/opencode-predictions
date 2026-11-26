@@ -95,7 +95,7 @@ test("Windows reports cancellation after Save dispatch as uncertain without retr
 })
 
 const refusedContext = (reason: string) => `predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`
-const windowsReasons = ["it is a link", "it is not a regular file", "it has more than one link", "it is owned by another user", "other users can write to it", "it changed while it was checked"]
+const windowsReasons = ["it is a link", "it is not a regular file", "it has more than one link", "it is owned by another user", "other users can write to it", "it changed while it was checked", "its access rules cannot be read"]
 type Packet = { op: string; bytes?: string; context?: string }
 const written = (request: Packet) => JSON.stringify({ kind: "written", reason: null, snapshot: { ...candidate, bytes: request.bytes } })
 

@@ -12,7 +12,7 @@ const readOnly = "Windows prediction preferences are not writable."
 const refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings."
 const conflict = "Prediction preferences changed. Reload settings before saving."
 // The reasons the verifier may give for refusing the fixed context file. Anything else is not trusted.
-const contextReasons = new Set(["it is a link", "it is not a regular file", "it has more than one link", "it is owned by another user", "other users can write to it", "it changed while it was checked"])
+const contextReasons = new Set(["it is a link", "it is not a regular file", "it has more than one link", "it is owned by another user", "other users can write to it", "it changed while it was checked", "its access rules cannot be read"])
 export const contextRefusal = (reason: string) => `predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`
 const inputPrefix = "OPENCODE_PREDICTIONS_IO_"
 const inputChunk = 16 * 1024

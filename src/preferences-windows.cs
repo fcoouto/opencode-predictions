@@ -388,50 +388,105 @@ public static class PredictionsPreferences {
 
         const string ContextName = "predictions-context.md";
         const string ChangedContext = "it changed while it was checked";
+        const string UnreadableContext = "its access rules cannot be read";
+        const int NotFoundError = 2, AccessDeniedError = 5, FileExistsError = 80, AlreadyExistsError = 183;
+        // Read access makes a handle take part in sharing, and this share mode leaves out delete. While such
+        // a handle is open, no one can rename or delete the file, so the fixed path keeps naming it.
+        const uint HoldAccess = ReadControl | ReadAttr | ReadData, HoldShare = ShareRead | ShareWrite;
+        const uint AnyShare = ShareRead | ShareWrite | ShareDelete;
 
-        // Opens the fixed context file itself, never a link target. It asks for no data access, so the
-        // handle reads nothing and an editor that has the file open does not make the open fail.
-        static Item OpenContext(string path, bool confirming) {
-            var handle = CreateFileW(path, ReadControl | ReadAttr, ShareRead | ShareWrite | ShareDelete, IntPtr.Zero, OpenExisting, NoFollow | DirectoryHandle, IntPtr.Zero);
-            if (handle.IsInvalid) {
-                var error = LastError();
-                handle.Dispose();
-                // A file deleted while another handle is open reports access denied (5) until that handle closes.
-                if (error.NativeErrorCode == 2 || (confirming && error.NativeErrorCode == 5)) return null;
-                throw error;
+        // Opens the entry at the fixed context path itself, never a link target. Null with the Win32
+        // error code means it could not be opened. Nothing is read from it here.
+        static Item OpenContext(string path, uint access, uint share, out int code) {
+            var handle = CreateFileW(path, access, share, IntPtr.Zero, OpenExisting, NoFollow | DirectoryHandle, IntPtr.Zero);
+            if (!handle.IsInvalid) {
+                code = 0;
+                return new Item { Path = path, Handle = handle };
             }
-            try {
-                var item = new Item { Path = path, Handle = handle };
-                Inspect(item);
-                return item;
-            } catch {
-                handle.Dispose();
-                throw;
-            }
+            code = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            return null;
         }
 
-        // The adoption rules, in order. Null means the file may be used.
+        // The rules that need only the entry's attributes, in order.
+        static string ContextShape(FileInfoByHandle info) {
+            if ((info.Attributes & Reparse) != 0) return "it is a link";
+            if ((info.Attributes & DirectoryFlag) != 0) return "it is not a regular file";
+            if (info.Links != 1) return "it has more than one link";
+            return null;
+        }
+
+        // The adoption rules, in order. Null means the file may be used. The shape is judged from the
+        // attributes before the owner and access rules are read, so an entry whose rules cannot be read
+        // still reports that it is a link, a directory or a file with more links.
         string ContextProblem(Item item) {
-            if ((item.Info.Attributes & Reparse) != 0) return "it is a link";
-            if ((item.Info.Attributes & DirectoryFlag) != 0) return "it is not a regular file";
-            if (item.Info.Links != 1) return "it has more than one link";
+            if (!GetFileInformationByHandle(item.Handle, out item.Info)) throw LastError();
+            var reason = ContextShape(item.Info);
+            if (reason != null) return reason;
+            try { Inspect(item); }
+            catch (Win32Exception) { return UnreadableContext; }
+            // Inspect read the attributes again.
+            reason = ContextShape(item.Info);
+            if (reason != null) return reason;
             if (item.Descriptor.Owner != user) return "it is owned by another user";
             try { Safe(item, false, false); }
             catch (IOException) { return "other users can write to it"; }
             return null;
         }
 
-        // Creates the fixed context file empty and private when it is absent, then judges whatever is there.
-        // It never overwrites or truncates. The caller keeps the returned handle open until the preferences
-        // are replaced, so the file ID cannot be reused in between. Null with a reason means refusal.
+        // Finds the reason for an entry that exists but was denied to the holding open. Weaker opens still
+        // show its shape, and then its owner and rules. No handle from here is adopted, so a swap between
+        // these opens cannot make a file pass.
+        string UnheldContextProblem(string path) {
+            foreach (var access in new uint[] { ReadControl | ReadAttr, ReadAttr }) {
+                int code;
+                using (var item = OpenContext(path, access, AnyShare, out code)) {
+                    if (item != null) {
+                        var reason = ContextProblem(item);
+                        if (reason != null) return reason;
+                        // The file passes every rule, but its data cannot be opened, so it cannot be held.
+                        throw new IOException();
+                    }
+                    if (code == NotFoundError) return ChangedContext;
+                    if (code != AccessDeniedError) throw new Win32Exception(code);
+                }
+            }
+            return UnreadableContext;
+        }
+
+        // Creates the fixed context file empty and private when it is absent, and adopts the entry that is
+        // there only when the create reports one. It never overwrites or truncates. The returned handle is
+        // the one from the create or from the adopting open. The caller keeps it open until the preferences
+        // are replaced. Null with a reason means refusal.
         Item HoldContext(string directory, out string reason) {
             var path = Path.Combine(directory, ContextName);
-            // The outcome of the create is not read. An entry that already exists makes it fail, and the
-            // open below then judges that entry.
-            WithAttributes(Private(false), attrs => CreateFileW(path, ReadControl | ReadAttr, ShareRead | ShareWrite | ShareDelete, attrs, CreateNew, NoFollow, IntPtr.Zero)).Dispose();
-            var item = OpenContext(path, false);
-            // Nothing is there, so the create failed for a cause other than an existing entry.
-            Require(item != null);
+            int createError = 0, openError;
+            // The error is read inside the callback, because freeing the descriptor afterwards can replace it.
+            var made = WithAttributes(Private(false), attrs => {
+                var created = CreateFileW(path, HoldAccess, HoldShare, attrs, CreateNew, NoFollow, IntPtr.Zero);
+                if (created.IsInvalid) createError = Marshal.GetLastWin32Error();
+                return created;
+            });
+            Item item;
+            if (!made.IsInvalid) item = new Item { Path = path, Handle = made };
+            else {
+                made.Dispose();
+                bool exists = createError == FileExistsError || createError == AlreadyExistsError;
+                // An existing directory can make the create report access denied.
+                if (!exists && createError != AccessDeniedError) throw new Win32Exception(createError);
+                item = OpenContext(path, HoldAccess, HoldShare, out openError);
+                if (item == null) {
+                    if (openError == NotFoundError) {
+                        // Nothing is there. Either the entry that the create reported is gone, or the create itself was denied.
+                        if (!exists) throw new Win32Exception(createError);
+                        reason = ChangedContext;
+                        return null;
+                    }
+                    if (openError != AccessDeniedError) throw new Win32Exception(openError);
+                    reason = UnheldContextProblem(path);
+                    return null;
+                }
+            }
             try { reason = ContextProblem(item); }
             catch {
                 item.Dispose();
@@ -442,16 +497,21 @@ public static class PredictionsPreferences {
             return null;
         }
 
-        // Run immediately before the preferences are replaced. The fixed path must still name the held file,
-        // and that file must pass the rules again. A link or an extra link reports its own reason.
+        // Run immediately before the preferences are replaced, while the held handle still denies rename
+        // and delete. The fixed path must name the held file. Only then is that file judged by the rules
+        // again, so another entry at the path always reports a change, whatever its own state.
         string ConfirmContext(Item held) {
-            using (var fresh = OpenContext(held.Path, true)) {
-                if (fresh == null) return ChangedContext;
-                var reason = ContextProblem(fresh);
-                if (reason != null) return reason;
-                bool same = fresh.Info.Volume == held.Info.Volume && fresh.Info.IdHigh == held.Info.IdHigh && fresh.Info.IdLow == held.Info.IdLow;
-                return same ? null : ChangedContext;
+            int code;
+            FileInfoByHandle now;
+            using (var fresh = OpenContext(held.Path, ReadAttr, AnyShare, out code)) {
+                if (fresh == null) {
+                    if (code == NotFoundError || code == AccessDeniedError) return ChangedContext;
+                    throw new Win32Exception(code);
+                }
+                if (!GetFileInformationByHandle(fresh.Handle, out now)) throw LastError();
             }
+            if (now.Volume != held.Info.Volume || now.IdHigh != held.Info.IdHigh || now.IdLow != held.Info.IdLow) return ChangedContext;
+            return ContextProblem(held);
         }
 
         static Snapshot Masked(string source, string state) {
@@ -480,6 +540,7 @@ public static class PredictionsPreferences {
                     var backupState = before.bytes == null ? BackupState.Absent : CheckBackup(backup);
                     if (backupState == BackupState.ReadOnly) return Result("read_only");
                     // The context file is created or adopted in the pinned directory before any preference bytes are staged.
+                    // Its handle stays open, denying rename and delete, until the preferences are replaced.
                     string refusal = null;
                     using (var held = context == "create" ? HoldContext(chain.Physical, out refusal) : null) {
                         if (refusal != null) return Refused(refusal);
