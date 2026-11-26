@@ -33,9 +33,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not disable inherited access to the Windows test stage.' }
           # CI experiment only: never publish this bundle or its staged executable.
           $compiler = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
-          Add-Type -AssemblyName System.Web.Extensions
-          $serialization = [System.Web.Script.Serialization.JavaScriptSerializer].Assembly.Location
-          node.exe tests/host/windows-preferences-precompiled.mjs $stage $compiler $serialization
+          node.exe tests/host/windows-preferences-precompiled.mjs $stage $compiler
           if ($LASTEXITCODE -ne 0) { throw 'Could not build the precompiled verifier experiment.' }
           Set-Content -LiteralPath (Join-Path $stage 'package.json') -Value '{"private":true,"type":"module"}' -Encoding Ascii
           $pack = npm.cmd pack --ignore-scripts --json --pack-destination $stage | Out-String

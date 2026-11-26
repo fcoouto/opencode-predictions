@@ -5,11 +5,11 @@ import { basename, isAbsolute, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { windowsScript } from "../../src/preferences-windows-script.ts"
 
-const [stage, compiler, serialization] = process.argv.slice(2)
+const [stage, compiler] = process.argv.slice(2)
 const checkOnly = stage === "--check"
 assert.ok(checkOnly || process.platform === "win32" && process.env.GITHUB_ACTIONS === "true"
   && isAbsolute(stage) && /^predictions-ci-[a-f0-9]{32}$/.test(basename(stage))
-  && isAbsolute(compiler) && isAbsolute(serialization), "Use this experiment only on the disposable Windows runner.")
+  && isAbsolute(compiler), "Use this experiment only on the disposable Windows runner.")
 
 const body = windowsScript.match(/ -TypeDefinition @'\n([\s\S]+?)\n'@/)[1]
 const transport = new URL("../../src/preferences-windows.ts", import.meta.url)
@@ -46,7 +46,7 @@ public static class TestEntry {
     }
 }
 `)
-  execFileSync(compiler, ["/nologo", "/optimize+", "/platform:x64", "/target:exe", `/out:${exe}`, `/reference:${serialization}`, source], { stdio: "inherit" })
+  execFileSync(compiler, ["/nologo", "/optimize+", "/platform:x64", "/target:exe", `/out:${exe}`, source], { stdio: "inherit" })
   try {
     await writeFile(transport, original.replace(launcher, () => `spawn(${JSON.stringify(exe)}, [], {`))
     execFileSync(process.execPath, ["scripts/build.mjs"], { cwd, stdio: "inherit" })
