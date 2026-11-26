@@ -1,10 +1,10 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
 import { execFileSync } from "node:child_process"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
-import { readContextFile } from "../src/context-file.ts"
+import { inspectContextFile, readContextFile } from "../src/context-file.ts"
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), "prediction-context-"))
@@ -57,4 +57,41 @@ test("context reader honors cancellation before opening a file", async t => {
   const controller = new AbortController()
   controller.abort()
   await assert.rejects(readContextFile(f.path, controller.signal), { name: "AbortError" })
+})
+
+test("context inspection reports state and byte size for each file shape", async t => {
+  const f = await fixture(t)
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "missing" })
+  await writeFile(f.path, "")
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "empty", bytes: 0 })
+  await writeFile(f.path, "hello")
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "ok", bytes: 5 })
+  await writeFile(f.path, "x".repeat(9000))
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "too_large", bytes: 9000 })
+  await writeFile(f.path, Buffer.from([0xff]))
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "invalid", bytes: 1 })
+})
+
+test("context inspection never returns file text", async t => {
+  const f = await fixture(t)
+  await writeFile(f.path, "secret preference text")
+  const result = await inspectContextFile(f.path, f.signal)
+  assert.deepEqual(Object.keys(result).sort(), ["bytes", "state"])
+  assert.equal(JSON.stringify(result).includes("secret"), false)
+})
+
+test("context inspection reports directories and symlinks as unreadable without following links", async t => {
+  const f = await fixture(t)
+  assert.deepEqual(await inspectContextFile(f.directory, f.signal), { state: "unreadable" })
+  const target = join(f.directory, "target.md")
+  await writeFile(target, "Use XLSX.")
+  await symlink(target, f.path)
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "unreadable" })
+})
+
+test("context inspection honors cancellation", async t => {
+  const f = await fixture(t)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(inspectContextFile(f.path, controller.signal), { name: "AbortError" })
 })

@@ -1,7 +1,37 @@
-import { constants } from "node:fs"
-import { open } from "node:fs/promises"
+import { constants, type Stats } from "node:fs"
+import { lstat, open } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
+
+export type ContextFileState = "ok" | "empty" | "missing" | "too_large" | "invalid" | "unreadable"
+
+// Reports state and size only; the text itself never leaves this function.
+export async function inspectContextFile(absolutePath: string, signal: AbortSignal): Promise<{ state: ContextFileState; bytes?: number }> {
+  signal.throwIfAborted()
+  let info: Stats
+  try {
+    info = await lstat(absolutePath)
+  } catch (error) {
+    return errorField(error, "code") === "ENOENT" ? { state: "missing" } : { state: "unreadable" }
+  }
+  // A symlink is never followed here, so it is reported as unreadable.
+  if (!info.isFile()) return { state: "unreadable" }
+  const bytes = info.size
+  try {
+    const text = await readContextFile(absolutePath, signal)
+    return { state: text ? "ok" : "empty", bytes }
+  } catch (error) {
+    if (errorField(error, "name") === "AbortError") throw error
+    const code = errorField(error, "code")
+    if (code === "context_file_too_large") return { state: "too_large", bytes }
+    if (code === "context_file_invalid") return { state: "invalid", bytes }
+    return { state: "unreadable", bytes }
+  }
+}
+
+function errorField(error: unknown, field: "code" | "name"): unknown {
+  return typeof error === "object" && error !== null ? (error as Record<string, unknown>)[field] : undefined
+}
 
 export async function readContextFile(path: string, signal: AbortSignal): Promise<string> {
   signal.throwIfAborted()
