@@ -556,6 +556,29 @@ test("a lost managed save is confirmed only when the stored context status shows
   }
 })
 
+test("a durable saved_not_active acknowledgment survives an unconfirmed context status and keeps the draft blocked", async () => {
+  for (const status of [{ set: false }, "unavailable", "unsupported"] as const) {
+    const f = contextEditorFixture({ set: false })
+    f.api.save = async input => {
+      f.inputs.push(structuredClone(input))
+      // The server acknowledges the write; the stored path does not show the requested managed file.
+      Object.assign(f.snapshot, { revision: "r2", activeRevision: "r2" })
+      return { kind: "saved_not_active", revision: "r2", message: "Saved on disk. Effective activation is not verified." }
+    }
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    f.api.contextStatus = async () => structuredClone(status) as never
+    editor.setContextFile("managed")
+    const result = await editor.save()
+    assert.deepEqual(result, { kind: "saved_not_active", revision: "r2", message: "Saved on disk. Effective activation is not verified." }, JSON.stringify(status))
+    assert.equal(editor.state().contextChange, "managed")
+    assert.equal(editor.state().dirty, true)
+    assert.equal(editor.state().blocked, true)
+    assert.equal(editor.state().snapshot?.revision, "r1", "an unconfirmed readback is not adopted")
+    editor.dispose()
+  }
+})
+
 test("a lost none save is confirmed only when the stored context status shows no context file", async () => {
   for (const [status, confirmed] of [[{ set: false }, true], [{ set: true, path: "~/notes.md", absolute: "/server/notes.md", managed: false, state: "ok", bytes: 3 }, false]] as const) {
     const f = contextEditorFixture({ set: false })

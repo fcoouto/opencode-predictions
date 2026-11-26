@@ -218,6 +218,8 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
           result = await abortable(() => api.save(input, lifetime.signal), lifetime.signal)
         } catch { /* A lost reply is not proof that the write failed. Read back; never repeat it. */ }
         if (result?.kind === "saved") result = { kind: "saved_not_active", revision: result.revision, message: "Saved on disk. Effective activation is not verified." }
+        // The server's own durable acknowledgment: a later unconfirmed context status must not erase it.
+        const acknowledged = result?.kind === "saved_not_active"
         if (lifetime.signal.aborted) return failed("Settings editor closed.")
         if (!result || result.kind === "saved_not_active" || result.kind === "failed") {
           try {
@@ -228,7 +230,8 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
             // Administrative read-only snapshots can mask preferences, so they cannot prove a lost reset committed.
             if (fresh.writable && fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch && overridesMatch) {
               // An unrelated writer can change the revision while the fields still match, so a staged context action needs its own proof.
-              if (!await contextConfirmed(contextFile)) result = undefined
+              // Without that proof, only a lost or failed reply becomes uncertain; a durable acknowledgment is kept and the draft stays blocked.
+              if (!await contextConfirmed(contextFile)) { if (!acknowledged) result = undefined }
               else {
                 const parsed = parseOptions(expected)
                 const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every(key => JSON.stringify(fresh.effective![key]) === JSON.stringify(parsed.value[key]))
