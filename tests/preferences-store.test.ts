@@ -1,6 +1,7 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
-import fs, { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises"
+import fs, { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
 import { syncBuiltinESMExports } from "node:module"
 import { join, resolve } from "node:path"
 import { fork, type ChildProcess } from "node:child_process"
@@ -446,4 +447,78 @@ test("context file input accepts only managed and none", async () => {
   const before = await f.store.read(signal())
   await assert.rejects(f.store.write(before.revision, { fields: {}, contextFile: "/etc/passwd" as any }, signal()), /Invalid save input\./)
   assert.equal((await readdir(f.home)).includes("config"), false)
+})
+
+const changedContext = "it changed while it was checked"
+
+for (const mode of [0o200, 0o000]) test(`an owned context file with mode ${mode.toString(8)} that cannot be read is adopted`, async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "", { mode: 0o600 })
+  await chmod(context, mode)
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal((await stat(context)).mode & 0o777, mode)
+  assert.equal(JSON.parse(await readFile(f.file, "utf8")).settings.contextFile, "~/config/opencode/predictions-context.md")
+})
+
+for (const [name, replace] of [
+  ["a symbolic link", async (f: Awaited<ReturnType<typeof fixture>>, context: string) => {
+    await writeFile(join(f.home, "elsewhere.md"), "unchecked", { mode: 0o600 })
+    await unlink(context)
+    await symlink(join(f.home, "elsewhere.md"), context)
+  }],
+  ["a replacement file", async (_f: Awaited<ReturnType<typeof fixture>>, context: string) => {
+    await unlink(context)
+    await writeFile(context, "", { mode: 0o600 })
+  }],
+] as const) test(`a context file replaced by ${name} before commit is refused and never renamed over predictions.json`, async t => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "", { mode: 0o600 })
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  let swapped = false, committed = false
+  interceptRename(t, async (_from, to, original) => {
+    // The backup rename runs after adoption and before the final identity check.
+    if (to.endsWith(".backup") && !swapped) { swapped = true; await replace(f, context) }
+    if (to === f.file) committed = true
+    await original()
+  })
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(changedContext) })
+  assert.equal(swapped, true)
+  assert.equal(committed, false)
+  assert.deepEqual(await readFile(f.file), bytes)
+})
+
+test("an access-rule check cannot be fooled by swapping the file out and back during the inspection", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async t => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f), aside = join(f.home, "aside.md")
+  await writeFile(context, "", { mode: 0o600 })
+  await promisify(execFile)("/bin/chmod", ["+a", "everyone allow read", context])
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  // Between the open and the access-rule inspection a clean file takes the path; the original returns before the final lstat.
+  const realOpen = fs.open, realLstat = fs.lstat
+  let swapped = false, lstats = 0
+  const openMock = t.mock.method(fs, "open", (async (...args: any[]) => {
+    const handle = await (realOpen as any)(...args)
+    if (String(args[0]) === context && typeof args[1] === "number" && (args[1] & constants.O_WRONLY) === 0 && !swapped) {
+      swapped = true
+      await rename(context, aside)
+      await writeFile(context, "", { mode: 0o600 })
+    }
+    return handle
+  }) as any)
+  const lstatMock = t.mock.method(fs, "lstat", (async (...args: any[]) => {
+    if (String(args[0]) === context && ++lstats === 2) await rename(aside, context)
+    return (realLstat as any)(...args)
+  }) as any)
+  syncBuiltinESMExports()
+  t.after(() => { openMock.mock.restore(); lstatMock.mock.restore(); syncBuiltinESMExports() })
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(changedContext) })
+  assert.equal(swapped, true)
+  assert.equal(lstats >= 2, true)
+  assert.deepEqual(await readFile(f.file), bytes)
 })

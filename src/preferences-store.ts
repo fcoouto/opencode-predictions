@@ -18,6 +18,7 @@ const codeOf = (error: unknown) => (error as NodeJS.ErrnoException)?.code
 class Refusal extends Error {}
 class ContextRefusal extends Refusal {}
 const fail = (message: string): never => { throw new Refusal(message) }
+const changedContext = "it changed while it was checked"
 const refuseContext = (reason: string): never => { throw new ContextRefusal(`predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`) }
 const uncertain = "Changes may have been saved. Reopen settings before trying again."
 const identity = (value: Stats) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...(value.isDirectory() ? [] : [value.nlink])]
@@ -106,31 +107,62 @@ function contextShape(info: Stats): string | undefined {
   return undefined
 }
 
-// Adopts an existing context file only when it is still the same plain file after the open.
-async function adoptContextFile(path: string) {
-  const info = await lstat(path)
-  const shape = contextShape(info)
-  if (shape) refuseContext(shape)
-  if (process.platform === "darwin" && await hasAccessRules(path)) refuseContext("it has extra access rules")
-  let handle: FileHandle
+type ContextIdentity = { dev: number; ino: number }
+const sameFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino
+
+// A directory's mtime and ctime change on every create, unlink or rename inside it. An unchanged stamp
+// across a window proves no entry was swapped in that window.
+async function directoryStamp(directory: string): Promise<string> {
+  const stat = await lstat(directory, { bigint: true })
+  return `${stat.mtimeNs}:${stat.ctimeNs}`
+}
+
+// Adopts an existing context file. The access-rule check runs between two identity checks and a directory
+// stamp check, so a file swapped out and back during the inspection is refused. An unreadable file
+// (no read permission) cannot leak its contents, so its lstat checks stand in for the open.
+async function adoptContextFile(directory: string): Promise<ContextIdentity> {
+  const path = join(directory, contextFileName)
+  const before = await lstat(path)
+  const first = contextShape(before)
+  if (first) refuseContext(first)
+  const stamp = await directoryStamp(directory)
+  let handle: FileHandle | undefined
   try { handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)) }
-  catch (error) { if (codeOf(error) === "ELOOP") refuseContext("it is a link"); throw error }
+  catch (error) {
+    if (codeOf(error) === "ELOOP") refuseContext("it is a link")
+    if (codeOf(error) !== "EACCES") throw error
+  }
   try {
-    const opened = await handle.stat()
-    if (opened.dev !== info.dev || opened.ino !== info.ino) refuseContext("it changed while it was checked")
-    const late = contextShape(opened)
-    if (late) refuseContext(late)
-  } finally { await handle.close() }
+    if (handle) {
+      const opened = await handle.stat()
+      if (!sameFile(before, opened)) refuseContext(changedContext)
+      const shape = contextShape(opened)
+      if (shape) refuseContext(shape)
+    }
+    if (process.platform === "darwin" && await hasAccessRules(path)) refuseContext("it has extra access rules")
+    const after = await lstat(path)
+    if (!sameFile(before, after)) refuseContext(changedContext)
+    const shape = contextShape(after)
+    if (shape) refuseContext(shape)
+    if (await directoryStamp(directory) !== stamp) refuseContext(changedContext)
+    return { dev: after.dev, ino: after.ino }
+  } finally { await handle?.close() }
 }
 
 // Creates the fixed file empty and private when absent, then adopts whatever is there. Never truncates.
-async function ensureContextFile(directory: string) {
+async function ensureContextFile(directory: string): Promise<ContextIdentity> {
   const path = join(directory, contextFileName)
   try {
     const handle = await open(path, "wx", 0o600)
     try { await handle.chmod(0o600) } finally { await handle.close() }
   } catch (error) { if (codeOf(error) !== "EEXIST") throw error }
-  await adoptContextFile(path)
+  return adoptContextFile(directory)
+}
+
+// Run immediately before the commit rename: the fixed path must still be the file that was adopted.
+async function confirmContextFile(directory: string, identity: ContextIdentity) {
+  const current = await lstat(join(directory, contextFileName)).catch(() => undefined)
+  if (!current?.isFile() || current.dev !== identity.dev || current.ino !== identity.ino) refuseContext(changedContext)
 }
 
 function createWindowsStore(host: PreferencesHost) {
@@ -258,7 +290,8 @@ export function createPreferencesStore(host: PreferencesHost) {
         await mkdir(before.directory, { recursive: true, mode: 0o700 })
         const parent = await lstat(before.directory)
         await safe(parent, before.directory, true)
-        if (contextFile === "managed") await ensureContextFile(before.directory)
+        let contextIdentity: ContextIdentity | undefined
+        if (contextFile === "managed") contextIdentity = await ensureContextFile(before.directory)
         const recheck = async () => {
           const fresh = await inspect(signal), current = await lstat(before.directory)
           if (!fresh.writable || fresh.revision !== revision || fresh.source !== before.source || JSON.stringify(identity(current)) !== JSON.stringify(identity(parent))) fail("Prediction preferences changed. Reload settings before saving.")
@@ -284,6 +317,7 @@ export function createPreferencesStore(host: PreferencesHost) {
         }
         await recheck()
         signal.throwIfAborted()
+        if (contextIdentity) await confirmContextFile(before.directory, contextIdentity)
         // Simultaneous writers may both pass this check; atomic replacement does not prevent lost updates.
         await rename(next, before.source)
         committed = true
