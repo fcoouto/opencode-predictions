@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { changedFields, patchGroups, readGroups, waitForSetupSnapshot } from "../src/setup.ts"
 import { parseOptions } from "../src/options.ts"
-import { createSetupEditor, type SaveInput, type SettingsInput, type SetupAPI, type SetupSnapshot } from "../src/setup.ts"
+import { createSetupEditor, type SaveInput, type SaveResult, type SettingsInput, type SetupAPI, type SetupSnapshot } from "../src/setup.ts"
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 function editorFixture() {
@@ -528,6 +528,69 @@ test("a status that turns unsupported clears the staged context change, and Save
   assert.equal((await editor.save()).kind, "saved")
   assert.deepEqual(f.inputs[0], { revision: "r1", fields: { enabled: false } })
   assert.equal(Object.hasOwn(f.inputs[0], "contextFile"), false)
+  editor.dispose()
+})
+
+// A request whose answer the test decides later, so two requests can be pending at once.
+type Hold<T> = { promise: Promise<T>; resolve: (value: T) => void }
+const hold = <T,>(): Hold<T> => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
+// Holds the next status read and the next save. A save resolved with undefined runs the real save.
+function holdingFixture() {
+  const f = contextEditorFixture({ set: false })
+  const statusBase = f.api.contextStatus!, saveBase = f.api.save
+  let statusGate: Hold<string> | undefined, saveGate: Hold<SaveResult | undefined> | undefined
+  f.api.contextStatus = async signal => { const gate = statusGate; statusGate = undefined; return gate ? await gate.promise as never : statusBase(signal) }
+  f.api.save = async (input, signal) => { const gate = saveGate; saveGate = undefined; const outcome = gate ? await gate.promise : undefined; return outcome ?? saveBase(input, signal) }
+  return {
+    f,
+    holdStatus: () => (statusGate = hold<string>()),
+    holdSave: () => (saveGate = hold<SaveResult | undefined>()),
+  }
+}
+
+test("an unsupported status that arrives during a save keeps the staged change when the save fails, and the draft stays blocked", async () => {
+  const { f, holdStatus, holdSave } = holdingFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  const statusGate = holdStatus()
+  const refreshing = editor.refreshContext()
+  const saveGate = holdSave()
+  const saving = editor.save()
+  assert.equal(editor.state().saving, true)
+  statusGate.resolve("unsupported")
+  await refreshing
+  assert.equal(editor.state().context, "unsupported")
+  assert.equal(editor.state().contextChange, "managed", "the save in flight owns the staged change")
+  assert.equal(editor.state().dirty, true)
+  saveGate.resolve({ kind: "failed", message: "Settings were not saved. Reopen settings and try again." })
+  assert.equal((await saving).kind, "failed")
+  assert.equal(editor.state().contextChange, "managed", "a failed save keeps the change for Undo or Reload")
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().blocked, true, "the draft stays blocked, so nothing is sent until Reload")
+  assert.equal((await editor.save()).kind, "failed", "a blocked draft sends nothing")
+  assert.equal(f.inputs.length, 0)
+  editor.dispose()
+})
+
+test("an unsupported status that arrives during a save which then succeeds leaves the draft clean with nothing staged", async () => {
+  const { f, holdStatus, holdSave } = holdingFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  const statusGate = holdStatus()
+  const refreshing = editor.refreshContext()
+  const saveGate = holdSave()
+  const saving = editor.save()
+  statusGate.resolve("unsupported")
+  await refreshing
+  assert.equal(editor.state().contextChange, "managed")
+  saveGate.resolve(undefined)
+  assert.equal((await saving).kind, "saved")
+  assert.deepEqual(f.inputs, [{ revision: "r1", fields: {}, contextFile: "managed" }])
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  assert.equal(editor.state().blocked, false)
   editor.dispose()
 })
 

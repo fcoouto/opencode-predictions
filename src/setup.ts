@@ -135,7 +135,8 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
       if (request === contextRequest && !lifetime.signal.aborted) {
         state.context = status
         // An old server cannot apply a staged file action, so the staged change is dropped instead of sent.
-        if (status === "unsupported" && state.contextChange !== undefined) { state.contextChange = undefined; update() }
+        // While a save is in flight it owns the change, and a blocked draft (failed or uncertain save) sends nothing until Reload discards it.
+        if (status === "unsupported" && state.contextChange !== undefined && !state.saving && !state.blocked) { state.contextChange = undefined; update() }
       }
     } catch { if (request === contextRequest && !lifetime.signal.aborted) state.context = "unavailable" }
     finally { if (request === contextRequest) { state.contextLoading = false; notify() } }
