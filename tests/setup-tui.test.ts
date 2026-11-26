@@ -161,7 +161,7 @@ test("GitHub PR context is off by default in Advanced with the private-data disc
   const h = await harness(t)
   await h.run(pick("Advanced"), pick("Include GitHub PR context"), pick("About Advanced"), call => {
     assert.match(call.options.message, /private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models/)
-    assert.match(call.options.message, /Set contextFile in predictions\.json on the OpenCode server/)
+    assert.match(call.options.message, /Standing notes about you and your work, sent to prediction providers with every request/)
     return undefined
   }, cancel, cancel, yes(true))
   const before = option(h.calls[1], "Include GitHub PR context")
@@ -369,4 +369,151 @@ test("Edit keeps the current model in the picker's first results even in a long 
     call => { assert.ok(call.options.search("", call.options.options).some((item: any) => item.value === call.options.current), "the highlighted model is listed"); return undefined },
     cancel, cancel, cancel,
   )
+})
+
+// Context file menu: rows stay within the CLI width, and each state offers only the actions that apply.
+const okFile = { set: true, path: "~/predictions-context.md", absolute: "/fixture/predictions-context.md", managed: true, state: "ok", bytes: 1234 }
+const missingFile = { set: true, path: "~/predictions-context.md", absolute: "/fixture/predictions-context.md", managed: true, state: "missing" }
+
+test("Advanced lists the context file with its status; a not-set file offers only Use a context file, Check again and Details", async t => {
+  const h = await harness(t)
+  await h.run(pick("Advanced"), pick("Context file"), cancel, cancel, cancel)
+  assert.equal(option(h.calls[1], "Context file").description, "Not set")
+  assert.equal(h.calls[2].options.title, "Context file")
+  assert.deepEqual(titles(h.calls[2]), ["Use a context file", "Check again", "Details"])
+  assert.equal(saves(h), 0)
+})
+
+test("Use a context file stages a managed file; Save sends managed and the file is created empty", async t => {
+  const h = await harness(t)
+  await h.run(
+    pick("Advanced"), pick("Context file"), pick("Use a context file"),
+    call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return undefined },
+    call => { assert.equal(option(call, "Context file").description, "On when you save"); return undefined },
+    pick("Save changes"), ok, cancel,
+  )
+  assert.equal(saves(h), 1)
+  assert.equal(h.f.hooks.saveInputs.at(-1)?.contextFile, "managed")
+  assert.equal(await readFile(h.f.contextFile, "utf8"), "")
+  for (const call of h.calls.filter(item => item.kind === "select")) for (const row of call.options.options ?? []) {
+    if (row.description !== undefined) assert.ok(row.title.length + row.description.length <= 44, `${call.options.title} › ${row.title}: ${row.description}`)
+  }
+})
+
+test("a set file offers Stop using, Details shows the path, and Save sends none", async t => {
+  const h = await harness(t)
+  h.f.hooks.context = okFile as any
+  await h.run(
+    pick("Advanced"),
+    call => { assert.equal(option(call, "Context file").description, "On"); return pick("Context file")(call) },
+    call => { assert.deepEqual(titles(call), ["Stop using", "Check again", "Details"]); return pick("Stop using")(call) },
+    call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return pick("Details")(call) },
+    call => { assert.match(call.options.message, /~\/predictions-context\.md/); assert.match(call.options.message, /The context file will stop being used when you save\. The file stays on disk\./); return undefined },
+    cancel,
+    call => { assert.equal(option(call, "Context file").description, "Off when you save"); return undefined },
+    pick("Save changes"), ok, cancel,
+  )
+  assert.equal(h.f.hooks.saveInputs.at(-1)?.contextFile, "none")
+})
+
+test("Details shows the size of a set file", async t => {
+  const h = await harness(t)
+  h.f.hooks.context = okFile as any
+  await h.run(
+    pick("Advanced"), pick("Context file"),
+    call => { assert.deepEqual(titles(call), ["Stop using", "Check again", "Details"]); return pick("Details")(call) },
+    call => { assert.match(call.options.message, /^~\/predictions-context\.md · 1,234 of 8,192 bytes$/m); return undefined },
+    cancel, cancel, cancel,
+  )
+})
+
+test("Undo drops a staged change, and Save stays unavailable when nothing else changed", async t => {
+  const h = await harness(t)
+  h.f.hooks.context = okFile as any
+  await h.run(
+    pick("Advanced"), pick("Context file"), pick("Stop using"),
+    call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return pick("Undo")(call) },
+    call => { assert.deepEqual(titles(call), ["Stop using", "Check again", "Details"]); return undefined },
+    call => { assert.equal(option(call, "Context file").description, "On"); return undefined },
+    call => { assert.equal(option(call, "Save changes").disabled, true); return undefined },
+  )
+  assert.equal(saves(h), 0)
+})
+
+test("a missing managed file offers Create it again and stages managed", async t => {
+  const h = await harness(t)
+  h.f.hooks.context = missingFile as any
+  await h.run(
+    pick("Advanced"),
+    call => { assert.equal(option(call, "Context file").description, "Missing"); return pick("Context file")(call) },
+    call => { assert.deepEqual(titles(call), ["Create it again", "Stop using", "Check again", "Details"]); return pick("Create it again")(call) },
+    call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return undefined },
+    call => { assert.equal(option(call, "Context file").description, "On when you save"); return undefined },
+    pick("Save changes"), ok, cancel,
+  )
+  assert.equal(h.f.hooks.saveInputs.at(-1)?.contextFile, "managed")
+  assert.equal(await readFile(h.f.contextFile, "utf8"), "")
+})
+
+test("a missing file that is not the managed path offers Use predictions-context.md instead", async t => {
+  const h = await harness(t)
+  h.f.hooks.context = { set: true, path: "/elsewhere/notes.md", absolute: "/elsewhere/notes.md", managed: false, state: "missing" } as any
+  await h.run(
+    pick("Advanced"), pick("Context file"),
+    call => { assert.deepEqual(titles(call), ["Use predictions-context.md instead", "Stop using", "Check again", "Details"]); return undefined },
+    cancel, cancel,
+  )
+  assert.equal(saves(h), 0)
+})
+
+test("an unreadable status says so, and Check again restores the actions once it answers", async t => {
+  const h = await harness(t)
+  h.f.hooks.context = okFile as any
+  h.f.hooks.contextFailure = "internal"
+  await h.run(
+    pick("Advanced"),
+    call => { assert.equal(option(call, "Context file").description, "Status unavailable"); return pick("Context file")(call) },
+    call => { assert.deepEqual(titles(call), ["Check again", "Details"]); return pick("Details")(call) },
+    call => { assert.match(call.options.message, /Context file status is unavailable right now\./); return undefined },
+    call => { h.f.hooks.contextFailure = undefined; return pick("Check again")(call) },
+    call => { assert.deepEqual(titles(call), ["Stop using", "Check again", "Details"]); return undefined },
+    cancel, cancel,
+  )
+  assert.equal(saves(h), 0)
+})
+
+test("Save refuses a staged context change while the status is unavailable, and explains it", async t => {
+  const h = await harness(t)
+  await h.run(
+    pick("Advanced"), pick("Context file"), pick("Use a context file"),
+    call => { h.f.hooks.contextFailure = "internal"; return pick("Check again")(call) },
+    cancel, cancel,
+    pick("Save changes"),
+    call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, /Context file status is unavailable right now\./); return undefined },
+    cancel, yes(true),
+  )
+  assert.equal(saves(h), 0)
+})
+
+test("an older server shows only the update text and offers no file actions", async t => {
+  const h = await harness(t)
+  h.f.hooks.contextFailure = "method_not_found"
+  await h.run(
+    pick("Advanced"),
+    call => { assert.equal(option(call, "Context file").description, "Update the server"); return pick("Context file")(call) },
+    call => { assert.deepEqual(titles(call), ["Details"]); return pick("Details")(call) },
+    call => { assert.match(call.options.message, /Set contextFile in predictions\.json on the OpenCode server\./); assert.match(call.options.message, /Update the Predictions plugin on the server to manage the context file here\./); return undefined },
+    cancel, cancel, cancel,
+  )
+})
+
+test("a read-only configuration explains why a context file cannot be staged", async t => {
+  const h = await harness(t)
+  h.f.snapshot.writable = false
+  await h.run(
+    pick("Advanced"), pick("Context file"), pick("Use a context file"),
+    call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, /^Read-only\./); return undefined },
+    cancel, cancel, cancel,
+  )
+  assert.equal(saves(h), 0)
 })

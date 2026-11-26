@@ -20,14 +20,22 @@ export async function nativeFixture(t: TestContext) {
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, origins: resolvePreferences({}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
   let saves = 0, metadataReads = 0, unavailable = 0, contextReads = 0
-  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean; saveIssue?: SetupIssue; context: ContextFileStatus; contextErrors: string[] } = { context: { set: false }, contextErrors: [] }
+  const contextFile = join(root, "predictions-context.md")
+  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean; saveIssue?: SetupIssue; context: ContextFileStatus; contextErrors: string[]; contextFailure?: "method_not_found" | "internal"; saveInputs: SaveInput[] } = { context: { set: false }, contextErrors: [], saveInputs: [] }
   const save = async (input: SaveInput) => {
       saves++
+      hooks.saveInputs.push(input)
       if (hooks.saveIssue) return { kind: "invalid" as const, issues: [hooks.saveIssue] }
       if (input.revision !== snapshot.revision) return { kind: "conflict" as const, message: "Configuration changed. Reload settings before trying again." }
       await writeFile(file, JSON.stringify(input.fields)); hooks.afterWrite?.()
+      // A managed save creates the empty file, as the real service does, and a none save leaves it on disk.
+      if (input.contextFile === "managed") {
+        await writeFile(contextFile, "", { flag: "wx", mode: 0o600 }).catch(error => { if (error?.code !== "EEXIST") throw error })
+        hooks.context = { set: true, path: "~/predictions-context.md", absolute: contextFile, managed: true, state: "empty", bytes: 0 }
+      } else if (input.contextFile === "none") hooks.context = { set: false }
       snapshot.fields = { ...snapshot.fields, ...input.fields }; if (input.removeModels) delete snapshot.fields.models
-      const { revision: _, ...change } = input
+      // contextFile is a file action, not a preference: the real service strips it before applying preferences.
+      const { revision: _, contextFile: _contextFile, ...change } = input
       snapshot.overrides = applyPreferenceChange(snapshot.overrides, change)
       const resolved = resolvePreferences(snapshot.overrides)
       snapshot.fields = resolved.fields; snapshot.origins = resolved.origins
@@ -51,6 +59,7 @@ export async function nativeFixture(t: TestContext) {
     }
     else if (request.url?.includes("/contextFileStatus")) {
       contextReads++
+      if (hooks.contextFailure) { response.statusCode = hooks.contextFailure === "method_not_found" ? 404 : 500; response.end(JSON.stringify({ type: hooks.contextFailure === "method_not_found" ? "rpc.method_not_found" : "rpc.internal", message: "PRIVATE context" })); return }
       const type = hooks.contextErrors.shift()
       if (type) { response.statusCode = type === "rpc.method_not_found" ? 404 : 500; response.end(JSON.stringify({ type, message: "PRIVATE context" })); return }
       response.end(JSON.stringify({ output: hooks.context }))
@@ -62,5 +71,5 @@ export async function nativeFixture(t: TestContext) {
   t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
   const client = OpenCode.make({ baseUrl: url })
-  return { hooks, root, file, snapshot, location, client, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, metadataReads, contextReads }) }
+  return { hooks, root, file, contextFile, snapshot, location, client, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, metadataReads, contextReads }) }
 }
