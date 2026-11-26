@@ -1,33 +1,19 @@
 import { spawn } from "node:child_process"
 import { win32 } from "node:path"
+import { fileURLToPath } from "node:url"
 import type { PreferencesWriteResult } from "./preferences-store.ts"
-import { windowsScript } from "./preferences-windows-script.ts"
 
 const limit = 65536, wireLimit = 192 * 1024
 const unavailable = "Windows prediction preferences cannot be read or verified. Check the server's configuration directory."
-const helperUnavailable = "Windows PowerShell could not verify prediction preferences."
-const helperTimeout = "Windows PowerShell timed out while verifying prediction preferences."
+const helperUnavailable = "Windows prediction preferences verifier could not run. Check that the npm release is installed on the server."
+const helperTimeout = "Windows prediction preferences verifier timed out."
 const uncertain = "Changes may have been saved. Reopen settings before trying again."
 const readOnly = "Windows prediction preferences are not writable."
 const refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings."
 const conflict = "Prediction preferences changed. Reload settings before saving."
 const inputPrefix = "OPENCODE_PREDICTIONS_IO_"
 const inputChunk = 16 * 1024
-const bootstrap = Buffer.from(`
-  $ErrorActionPreference = 'Stop'
-  $inputPacket = [Text.StringBuilder]::new()
-  for ($i = 0; $i -lt ${wireLimit / inputChunk}; $i++) {
-    $key = '${inputPrefix}' + $i
-    $value = [Environment]::GetEnvironmentVariable($key)
-    if ($null -eq $value) { break }
-    [Environment]::SetEnvironmentVariable($key, $null)
-    [void]$inputPacket.Append($value)
-  }
-  $parts = $inputPacket.ToString().Split([char]10)
-  if ($parts.Length -ne 2) { throw 'Invalid input' }
-  $code = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))
-  & ([ScriptBlock]::Create($code))
-`, "utf16le").toString("base64")
+const verifier = fileURLToPath(new URL("../dist/predictions-verifier.exe", import.meta.url))
 
 export type WindowsSnapshot = {
   source: string; state: "user" | "managed" | "unavailable"; writable: boolean
@@ -47,21 +33,21 @@ export function windowsLocalRoot(value: string): boolean {
     && !/^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[0-9¹²³]) *(?:\.|$)/i.test(part))
 }
 
-export async function invokeWindows(request: Request, signal: AbortSignal, script = windowsScript): Promise<string> {
+export async function invokeWindows(request: Request, signal: AbortSignal, executable = verifier): Promise<string> {
   signal.throwIfAborted()
+  if (process.arch !== "x64") throw new HelperRefusal("Windows prediction preferences are supported on x64 servers only.")
   const root = process.env.SystemRoot
   if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new HelperRefusal(helperUnavailable)
-  const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0")
-  const packet = `${Buffer.from(script).toString("base64")}\n${Buffer.from(JSON.stringify(request)).toString("base64")}`
+  const system = win32.join(root, "System32")
+  const packet = Buffer.from(JSON.stringify(request)).toString("base64")
   if (packet.length > wireLimit) throw new HelperRefusal(helperUnavailable)
-  const env: NodeJS.ProcessEnv = { SystemRoot: root, PATH: system, PSModulePath: win32.join(powershell, "Modules"),
-    TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE }
+  const env: NodeJS.ProcessEnv = { SystemRoot: root, PATH: system, TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE }
   // Windows may stall on Bun's stdin pipe. Keep input out of command arguments
-  // and disk. The helper removes these child-only values before compilation.
+  // and disk. The verifier removes these child-only values before processing.
   for (let i = 0; i * inputChunk < packet.length; i++) env[inputPrefix + i] = packet.slice(i * inputChunk, (i + 1) * inputChunk)
   const deadline = AbortSignal.timeout(1800)
   try {
-    const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
+    const child = spawn(executable, [], {
       cwd: system, env, windowsHide: true, stdio: ["ignore", "pipe", "ignore"], signal: AbortSignal.any([signal, deadline]),
     })
     const bytes = await new Promise<Buffer>((resolve, reject) => {

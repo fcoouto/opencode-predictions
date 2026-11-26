@@ -18,8 +18,8 @@ const { APPDATA, OPENCODE_BIN, PREDICTIONS_PACKAGE } = process.env
 for (const [name, value] of Object.entries({ APPDATA, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
   assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
 }
-const precompiled = existsSync(join(dirname(dirname(PREDICTIONS_PACKAGE!)), "predictions-verifier.exe"))
-const helperName = precompiled ? "predictions-verifier.exe" : "powershell.exe"
+const helperName = "predictions-verifier.exe"
+assert.ok(existsSync(join(PREDICTIONS_PACKAGE!, "dist", helperName)), "The installed npm tarball must contain the Windows verifier.")
 
 async function entries(path: string): Promise<string[] | undefined> {
   try { return (await readdir(path)).sort() }
@@ -151,8 +151,7 @@ test("two Windows clients sustain status polling without accumulating helpers", 
   assert.equal((await closed)[0], 0, errors)
   const counts = output.match(/^ready\r?\n(\d+),(\d+)\s*$/)
   assert.ok(counts, `Unexpected sample output: ${output}`)
-  assert.ok((precompiled || Number(counts[1]) > 0) && Number(counts[1]) <= 2, `Peak helper count: ${counts[1]}`)
-  if (precompiled && Number(counts[1]) === 0) t.diagnostic("Process sampling did not observe a precompiled helper; peak unverified.")
+  assert.ok(Number(counts[1]) > 0 && Number(counts[1]) <= 2, `Peak helper count: ${counts[1]}`)
   assert.equal(Number(counts[2]), 0, "No helpers may remain after polling.")
   assert.deepEqual(f.calls, [])
   t.diagnostic(`Peak helpers: ${counts[1]}; slowest poll pair: ${slowest.toFixed(0)} ms`)

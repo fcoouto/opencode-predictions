@@ -38,6 +38,9 @@ test("packed setup surface: selected-server Save, no local bridge, writer only i
   const tui = await readFile(pkg.exports["./tui"], "utf8")
   // Clients may name predictions.json in help text, but only the server constructs the write paths.
   assert.ok(server.includes("predictions.json"))
+  assert.match(server, /new URL\("\.\.\/dist\/predictions-verifier\.exe", import\.meta\.url\)/)
+  assert.doesNotMatch(server, /powershell\.exe|Add-Type -ReferencedAssemblies/)
+  for (const client of [gui, tui]) assert.doesNotMatch(client, /predictions-verifier\.exe/)
   for (const marker of [".predictions.tmp-", ".backup", "node:fs/promises"]) {
     assert.ok(server.includes(marker), `server bundle owns ${marker}`)
     assert.equal(gui.includes(marker), false, `GUI bundle must not contain ${marker}`)

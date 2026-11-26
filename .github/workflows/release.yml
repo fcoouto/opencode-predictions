@@ -4,10 +4,15 @@ on:
     tags: ["v*"]
 permissions:
   contents: read
-  id-token: write
 jobs:
+  native-windows:
+    uses: ./.github/workflows/windows-preferences.yml
   publish:
+    needs: native-windows
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,7 +26,19 @@ jobs:
       - run: npm run test:package
       - name: Check release version
         run: node -e 'if (process.env.GITHUB_REF_NAME !== "v" + require("./package.json").version) process.exit(1)'
-      - run: npm publish --provenance --access public --ignore-scripts
+      - uses: actions/download-artifact@v4
+        with:
+          name: predictions-release-package
+          path: ${{ runner.temp }}/predictions-npm/
+      - name: Publish the tested archive
+        run: |
+          set -euo pipefail
+          directory="$RUNNER_TEMP/predictions-npm"
+          archive="$directory/predictions.tgz"
+          actual=$(sha256sum "$archive" | cut -d ' ' -f1)
+          test "$actual" = "$(tr -d '\r\n' < "$directory/sha256")"
+          tar -xOf "$archive" package/package.json | node -e 'const pkg = JSON.parse(require("node:fs").readFileSync(0, "utf8")); if (pkg.name !== "opencode-predictions" || "v" + pkg.version !== process.env.GITHUB_REF_NAME) process.exit(1)'
+          npm publish "$archive" --provenance --access public --ignore-scripts
   github-release:
     # Runs only after npm accepted the version, so a GitHub release always has a matching npm package.
     needs: publish

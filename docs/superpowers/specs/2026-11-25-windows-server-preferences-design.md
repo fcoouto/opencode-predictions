@@ -1,22 +1,24 @@
 # Native Windows server preferences
 
-Status: independently reviewed, revised, and approved. The user approved native Windows server support without weakening preference-file protections.
+Status: independently reviewed, revised, and approved. After the native experiment, the user approved packaging the precompiled Windows x64 verifier and testing the exact release archive.
 
 ## Intent and scope
 
 Let OpenCode servers running natively on Windows load and save prediction preferences from the same Desktop and CLI clients. Keep the existing `predictions.json` format and location: `%APPDATA%\opencode\predictions.json`, or an explicit absolute `XDG_CONFIG_HOME` override. Selection remains server-side. No migration, client or RPC changes, OpenCode configuration edits, or POSIX behavior changes.
 
-Start with local, drive-qualified NTFS paths. Do not treat a rooted path without a drive letter as absolute. Network shares, redirected roaming profiles on shares, device paths, and directory aliases through symlinks or junctions are out of scope on Windows. Update the Windows compatibility note only after native verification. Do not broaden the Linux claim.
+Start with x64 Windows servers using local, drive-qualified NTFS paths and the npm release. Do not treat a rooted path without a drive letter as absolute. Native ARM64, Windows Git installs without the built verifier, network shares, redirected roaming profiles on shares, device paths, and directory aliases through symlinks or junctions are out of scope. Update compatibility notes only after native verification of the actual package. Do not broaden the Linux claim.
 
 ## Approaches
 
-- **Windows security checks using built-in Windows PowerShell and .NET (selected):** keep file compatibility and avoid shipping a new binary. Windows PowerShell startup adds latency, and policy may block it. Measure normal RPC and polling latency on Windows and refuse unverified paths.
-- **Compiled Windows helper:** could inspect security directly without PowerShell startup, but adds native builds and distribution. Keep it out of this change.
+- **Windows PowerShell and .NET prototype:** kept file compatibility without a binary, but repeated native runs timed out on packaged OpenCode reads.
+- **Precompiled Windows x64 verifier (selected after testing):** uses the same .NET and Win32 checks without launching PowerShell. Build it in Windows CI; do not check in a binary or compile on install. [The experiment](https://github.com/fcoouto/opencode-predictions/actions/runs/45747428311) used a sidecar and does not qualify the release archive.
 - **OpenCode plugin storage:** avoids direct file checks, but changes manual editing and recovery and requires new storage and compatibility decisions. Do not use it for this change.
 
 ## Design
 
-Keep the existing store as owner of the transaction. Replace Unix ownership and mode checks only on Windows. Use Windows security identifiers (SIDs) from the server account and filesystem descriptors, not names, localized output, or Node's synthetic `uid` and `mode` bits. Run a fixed script through the OS-provided Windows PowerShell executable; pass paths as data. Do not search the workspace or `PATH` for the executable. Do not bypass enterprise execution policy. Bound time and output, propagate cancellation, and never return raw helper errors to clients. Batch checks per inspection and do not cache ACL decisions across transactions or status polls.
+Keep the existing store as owner of the transaction. Replace Unix ownership and mode checks only on Windows. Use Windows security identifiers (SIDs) from the server account and filesystem descriptors, not names, localized output, or Node's synthetic `uid` and `mode` bits. Launch the installed verifier beside the server bundle; never search the workspace or `PATH`. Do not bypass enterprise execution policy. Send bounded input through the isolated child environment, scrub it before processing, and never use command arguments or temp files for preference data. Bound time and output, propagate cancellation, and never return raw helper errors to clients. Do not cache ACL decisions across transactions or status polls.
+
+Build one npm archive on Windows per CI run. Both fresh-profile native jobs verify its digest and install the same bytes. On a release tag, publish that tested archive, not a new archive packed by the publish job. A missing or unsupported verifier fails closed. No install-time build or new package dependency.
 
 Verify the local volume and walk the chain from the volume root without following reparse points. The preferences directory and files must be owned by the server account. Ancestors may also be owned by Local System, built-in Administrators, or Windows Modules Installer (`TrustedInstaller`). These are the trusted principals for ancestor modifications; on the preferences directory and files, trust only the server account, Local System, and built-in Administrators. Use SIDs, not localized names, to enforce these rules. Reject grants that let other principals change data, ACLs, ownership, or replace relevant entries. Include inherited grants and parent delete-child rights. Ordinary access to traverse ancestors or create unrelated siblings must not disable default `%APPDATA%` use. Refuse ambiguous security descriptors or access rules that the verifier cannot safely interpret.
 

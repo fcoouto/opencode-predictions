@@ -5,6 +5,7 @@ import { syncBuiltinESMExports } from "node:module"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { test, type TestContext } from "node:test"
+import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 import { administrativePaths, createPreferencesStore, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
 
@@ -90,45 +91,44 @@ const getAcl = async (path: string) => (await utility("WindowsPowerShell\\v1.0\\
   "-NoProfile", "-NonInteractive", "-Command", "(Get-Acl -LiteralPath $env:PREDICTIONS_TEST_ACL_PATH).Sddl",
 ], { ...process.env, PREDICTIONS_TEST_ACL_PATH: path })).stdout.trim()
 
-test("the preference helper compiles in Windows PowerShell", native, async t => {
-  const f = await fixture(t)
-  const { windowsScript } = await import(new URL("../src/preferences-windows-script.ts", import.meta.url).href)
-  const path = join(f.root, "compile-helper.ps1")
-  const compileOnly = windowsScript.slice(0, windowsScript.indexOf("$reply = "))
-  await writeFile(path, compileOnly)
-  await utility("WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path])
+test("the direct Windows store tests use the verifier from the installed tarball", native, async () => {
+  const pkg = process.env.PREDICTIONS_PACKAGE
+  assert.ok(pkg, "Use the native CI staging runner.")
+  const packaged = await readFile(join(pkg, "dist", "predictions-verifier.exe"))
+  assert.equal(packaged.subarray(0, 2).toString("ascii"), "MZ")
+  assert.deepEqual(await readFile(new URL("../dist/predictions-verifier.exe", import.meta.url)), packaged)
 })
 
 test("Windows strips the child request environment before running the verifier", native, async t => {
   const f = await fixture(t)
-  const { invokeWindows } = await loadWindowsIO()
-  const probe = `
-    if (@([Environment]::GetEnvironmentVariables().Keys | Where-Object { $_ -like 'OPENCODE_PREDICTIONS_IO_*' }).Count -ne 0) {
-      throw 'The request environment was retained.'
-    }
-    if ([string]::IsNullOrEmpty($parts[1])) { throw 'The request was lost.' }
-    [Console]::WriteLine('scrubbed')
-  `
-  assert.equal((await invokeWindows({ op: "read", source: f.source, systemPaths: f.host.systemPaths }, signal(), probe)).trim(), "scrubbed")
+  const io = await checkpoint(f.root, "BEFORE_EXECUTE", `
+    if (Environment.GetEnvironmentVariables().Keys.Cast<string>().Any(key => key.StartsWith("OPENCODE_PREDICTIONS_IO_", StringComparison.Ordinal)))
+        throw new IOException("The request environment was retained.");
+  `)
+  const read = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  assert.equal(read.state, "user")
+  assert.equal(read.writable, true)
 })
 
-test("Windows can read and save with PowerShell JSON cmdlets unavailable", native, async t => {
+test("Windows reads and saves through only the bundled verifier, without a shell", native, async t => {
   const f = await fixture(t)
   const original = childProcess.spawn
+  const verifier = fileURLToPath(new URL("../dist/predictions-verifier.exe", import.meta.url))
+  let calls = 0
   const mock = t.mock.method(childProcess, "spawn", (file: string, args: readonly string[], options: childProcess.SpawnOptions) => {
-    const encoded = args.indexOf("-EncodedCommand") + 1
-    if (!encoded) return original(file, args, options)
-    const commands = [...args]
-    const deny = "function ConvertFrom-Json { throw 'Unexpected PowerShell JSON input' }\nfunction ConvertTo-Json { throw 'Unexpected PowerShell JSON output' }\n"
-    commands[encoded] = Buffer.from(deny + Buffer.from(commands[encoded], "base64").toString("utf16le"), "utf16le").toString("base64")
-    return original(file, commands, options)
+    assert.equal(file, verifier)
+    assert.deepEqual(args, [])
+    assert.notEqual(options.shell, true)
+    calls++
+    return original(file, args, options)
   })
   syncBuiltinESMExports()
   t.after(() => { mock.mock.restore(); syncBuiltinESMExports() })
   const before = await f.store.read(signal())
-  assert.equal(before.writable, true, before.reason ?? "The helper must not invoke the shell's JSON cmdlets.")
+  assert.equal(before.writable, true, before.reason ?? "The bundled verifier must open preferences.")
   assert.equal((await f.store.write(before.revision, edit, signal())).kind, "written")
   assert.deepEqual((await f.store.read(signal())).overrides, { debug: true })
+  assert.ok(calls > 0)
 })
 
 test("Windows reads create nothing and a second Save creates a private backup", native, async t => {
@@ -284,18 +284,21 @@ test("Windows refuses stale drafts and oversized preferences", native, async t =
   assert.equal(await readFile(f.config, "utf8"), f.configBytes)
 })
 
-async function checkpoint(name: string, code: string) {
+async function checkpoint(root: string, name: string, code: string) {
   const { createWindowsIO, invokeWindows } = await loadWindowsIO()
-  const { windowsScript } = await import(new URL("../src/preferences-windows-script.ts", import.meta.url).href)
+  const original = await readFile(new URL("../src/preferences-windows.cs", import.meta.url), "utf8")
   const marker = `/* ${name} */`
-  assert.equal(windowsScript.split(marker).length, 2, `Missing test boundary: ${name}`)
-  const script = windowsScript.replace(marker, () => code)
-  return createWindowsIO((request: unknown, abort: AbortSignal) => invokeWindows(request, abort, script))
+  assert.equal(original.split(marker).length, 2, `Missing test boundary: ${name}`)
+  const source = join(root, "checkpoint.cs"), executable = join(root, "checkpoint.exe")
+  await writeFile(source, original.replace(marker, () => code))
+  const compiler = join(process.env.SystemRoot!, "Microsoft.NET", "Framework64", "v4.0.30319", "csc.exe")
+  await run(compiler, ["/nologo", "/platform:x64", "/target:exe", `/out:${executable}`, source], { windowsHide: true, timeout: 10000 })
+  return createWindowsIO((request: unknown, abort: AbortSignal) => invokeWindows(request, abort, executable))
 }
 
 test("Windows staging is private before it receives preference bytes", native, async t => {
   const f = await fixture(t), observation = join(f.root, "staging-before-write")
-  const io = await checkpoint("BEFORE_STAGE_WRITE", `
+  const io = await checkpoint(f.root, "BEFORE_STAGE_WRITE", `
     var stagedPath = new System.IO.FileInfo(path);
     var stagedAcl = stagedPath.GetAccessControl().GetSecurityDescriptorSddlForm(AccessControlSections.Access);
     File.AppendAllText(${JSON.stringify(observation)}, stagedPath.Length + ":" + stagedAcl + Environment.NewLine);
@@ -317,7 +320,7 @@ test("Windows pins the verified directory until replacement finishes", native, a
   const spare = join(f.root, "spare")
   await mkdir(spare)
   await writeFile(join(spare, "sentinel"), "not a preferences directory")
-  const io = await checkpoint("BEFORE_ACTIVE_REPLACE", `
+  const io = await checkpoint(f.root, "BEFORE_ACTIVE_REPLACE", `
     try { Directory.Move(${JSON.stringify(f.directory)}, ${JSON.stringify(f.directory + "-moved")}); }
     catch (IOException) { File.WriteAllText(${JSON.stringify(observation)}, "pinned"); }
   `)
@@ -335,7 +338,7 @@ test("Windows pins the verified directory until replacement finishes", native, a
 for (const phase of ["before replacement", "lost readback", "different readback"]) test(`Windows reports a safe outcome for ${phase}`, native, async t => {
   const f = await fixture(t)
   const differing = '{"version":1,"settings":{"debug":false}}\n'
-  const io = await checkpoint(phase === "before replacement" ? "BEFORE_ACTIVE_REPLACE" : "AFTER_ACTIVE_REPLACE",
+  const io = await checkpoint(f.root, phase === "before replacement" ? "BEFORE_ACTIVE_REPLACE" : "AFTER_ACTIVE_REPLACE",
     phase === "different readback"
       ? `File.WriteAllText(${JSON.stringify(f.source)}, ${JSON.stringify(differing)});`
       : 'if (path.Length > 0) throw new IOException("private fixture failure");')

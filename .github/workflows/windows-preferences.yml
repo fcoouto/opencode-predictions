@@ -2,11 +2,44 @@ name: Native Windows preferences
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 jobs:
+  windows-package:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run bundle
+      - name: Pack the release candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'predictions-npm'
+          [void][IO.Directory]::CreateDirectory($directory)
+          $json = npm.cmd pack --ignore-scripts --json --pack-destination $directory | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Could not pack the predictions plugin.' }
+          $pack = ($json | ConvertFrom-Json)[0]
+          if ($pack.files.path -notcontains 'dist/predictions-verifier.exe') { throw 'Packed Windows verifier is missing.' }
+          $archive = Join-Path $directory 'predictions.tgz'
+          Move-Item -LiteralPath (Join-Path $directory $pack.filename) -Destination $archive
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $directory 'sha256') -Value $digest -Encoding Ascii
+          Write-Host "Release candidate SHA-256: $digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: predictions-release-package
+          path: ${{ runner.temp }}/predictions-npm/
+          if-no-files-found: error
   windows-preferences:
     name: Windows preferences (${{ matrix.first_root }} first)
+    needs: windows-package
     runs-on: windows-2025
     timeout-minutes: 15
     strategy:
@@ -18,9 +51,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 26
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - name: Stage the experimental plugin and pinned OpenCode server
+      - uses: actions/download-artifact@v4
+        with:
+          name: predictions-release-package
+          path: ${{ runner.temp }}/predictions-npm/
+      - name: Stage the release tarball and pinned OpenCode server
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -31,16 +66,18 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Could not protect the Windows test stage.' }
           icacls.exe $stage /inheritance:r
           if ($LASTEXITCODE -ne 0) { throw 'Could not disable inherited access to the Windows test stage.' }
-          # CI experiment only: never publish this bundle or its staged executable.
-          $compiler = Join-Path ([Runtime.InteropServices.RuntimeEnvironment]::GetRuntimeDirectory()) 'csc.exe'
-          node.exe tests/host/windows-preferences-precompiled.mjs $stage $compiler
-          if ($LASTEXITCODE -ne 0) { throw 'Could not build the precompiled verifier experiment.' }
           Set-Content -LiteralPath (Join-Path $stage 'package.json') -Value '{"private":true,"type":"module"}' -Encoding Ascii
-          $pack = npm.cmd pack --ignore-scripts --json --pack-destination $stage | Out-String
-          if ($LASTEXITCODE -ne 0) { throw 'Could not pack the predictions plugin.' }
-          $tarball = ($pack | ConvertFrom-Json)[0].filename
-          npm.cmd install --prefix $stage --ignore-scripts --no-audit --no-fund (Join-Path $stage $tarball)
+          $packageDir = Join-Path $env:RUNNER_TEMP 'predictions-npm'
+          $archive = Join-Path $packageDir 'predictions.tgz'
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($digest -ne (Get-Content -Raw -LiteralPath (Join-Path $packageDir 'sha256')).Trim()) {
+              throw 'Release candidate checksum mismatch.'
+          }
+          Write-Host "Installing release candidate SHA-256: $digest"
+          npm.cmd install --prefix $stage --ignore-scripts --no-audit --no-fund $archive
           if ($LASTEXITCODE -ne 0) { throw 'Could not install the packed predictions plugin.' }
+          [void][IO.Directory]::CreateDirectory((Join-Path $stage 'dist'))
+          Copy-Item -LiteralPath (Join-Path $stage 'node_modules\opencode-predictions\dist\predictions-verifier.exe') -Destination (Join-Path $stage 'dist')
 
           $zip = Join-Path $env:RUNNER_TEMP 'predictions-opencode-2.2.6.zip'
           Invoke-WebRequest -UseBasicParsing 'https://github.com/anomalyco/opencode/releases/download/v2.2.6/opencode-windows-x64.zip' -OutFile $zip

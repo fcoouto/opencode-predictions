@@ -1,7 +1,3 @@
-export const windowsScript = String.raw`
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-Add-Type -ReferencedAssemblies 'System.dll', 'System.Core.dll', 'System.Web.Extensions.dll' -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -431,8 +427,23 @@ public static class PredictionsPreferences {
             return json.Serialize(session.Run(request.op, request.source, request.systemPaths, request.expected, request.bytes));
         }
     }
+
+    public static int Main() {
+        try {
+            var input = new StringBuilder();
+            for (int i = 0; i < 12; i++) {
+                var key = "OPENCODE_PREDICTIONS_IO_" + i;
+                var value = Environment.GetEnvironmentVariable(key);
+                if (value == null) break;
+                Environment.SetEnvironmentVariable(key, null);
+                if (value.Length > 16 * 1024) return 1;
+                input.Append(value);
+            }
+            if (input.Length == 0) return 1;
+            Console.OutputEncoding = new UTF8Encoding(false);
+            /* BEFORE_EXECUTE */
+            Console.WriteLine(Execute(input.ToString()));
+            return 0;
+        } catch { return 1; }
+    }
 }
-'@
-$reply = [PredictionsPreferences]::Execute($parts[1])
-[Console]::WriteLine($reply)
-`
