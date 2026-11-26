@@ -123,7 +123,7 @@ export function createWindowsIO(invoke: Invoke = invokeWindows) {
         if (result.kind === "conflict") return { kind: "conflict", message: conflict }
         if (result.kind === "read_only") return { kind: "read_only", message: readOnly }
         if (result.kind === "failed") return { kind: "failed", message: refused }
-        // The verifier refuses before it replaces anything. A refusal that was not asked for, or carries an unknown reason, proves nothing.
+        // The verifier refuses before predictions.json is replaced; the backup copy may already have changed. A refusal that was not asked for, or carries an unknown reason, proves nothing.
         if (result.kind === "refused_context" && context === "create" && typeof result.reason === "string" && contextReasons.has(result.reason)) return { kind: "refused_context", message: contextRefusal(result.reason) }
         if (result.kind === "written") {
           const persisted = snapshot(result.snapshot, before.source)
