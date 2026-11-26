@@ -1,5 +1,6 @@
 param(
     [Parameter(Mandatory = $true)][string]$Stage,
+    [ValidateSet('appdata', 'override')][string]$FirstRoot = 'appdata',
     [switch]$StandardUser
 )
 
@@ -27,10 +28,17 @@ if ($StandardUser) {
     Set-Location -LiteralPath $env:USERPROFILE
     $env:OPENCODE_BIN = Join-Path $Stage 'opencode.exe'
     $env:PREDICTIONS_PACKAGE = Join-Path $Stage 'node_modules\opencode-predictions'
+    $env:PREDICTIONS_WINDOWS_FIRST_ROOT = $FirstRoot
     Write-Host "Native Windows $([Environment]::OSVersion.Version); account is non-admin; volume is $($volume.DriveFormat)."
+    Write-Host "First packaged config root: $FirstRoot."
     & $env:OPENCODE_BIN --version
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    & (Join-Path $Stage 'node.exe') --test --test-concurrency=1 (Join-Path $Stage 'tests\preferences-windows.test.ts') (Join-Path $Stage 'tests\host\windows-preferences.test.ts')
+    $node = Join-Path $Stage 'node.exe'
+    # Run the packaged host before any direct verifier tests can warm this profile.
+    & $node --test (Join-Path $Stage 'tests\host\windows-preferences.test.ts')
+    $hostResult = $LASTEXITCODE
+    & $node --test (Join-Path $Stage 'tests\preferences-windows.test.ts')
+    if ($hostResult -ne 0) { exit $hostResult }
     exit $LASTEXITCODE
 }
 
@@ -65,7 +73,7 @@ try {
 
     $launch = [Diagnostics.ProcessStartInfo]::new()
     $launch.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    $launch.Arguments = '-NoLogo -NoProfile -NonInteractive -File "{0}" -Stage "{1}" -StandardUser' -f $PSCommandPath, $Stage
+    $launch.Arguments = '-NoLogo -NoProfile -NonInteractive -File "{0}" -Stage "{1}" -FirstRoot {2} -StandardUser' -f $PSCommandPath, $Stage, $FirstRoot
     $launch.WorkingDirectory = $Stage
     $launch.UserName = $name
     $launch.Domain = $env:COMPUTERNAME

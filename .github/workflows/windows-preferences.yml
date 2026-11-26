@@ -6,8 +6,13 @@ permissions:
   contents: read
 jobs:
   windows-preferences:
+    name: Windows preferences (${{ matrix.first_root }} first)
     runs-on: windows-2025
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        first_root: [appdata, override]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -48,5 +53,7 @@ jobs:
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "PREDICTIONS_WINDOWS_STAGE=$stage" -Encoding UTF8
       - name: Run native RPC tests under a standard Windows account
         shell: powershell
+        env:
+          PREDICTIONS_WINDOWS_FIRST_ROOT: ${{ matrix.first_root }}
         run: |
-          & (Join-Path $env:PREDICTIONS_WINDOWS_STAGE 'tests\host\windows-preferences-runner.ps1') -Stage $env:PREDICTIONS_WINDOWS_STAGE
+          & (Join-Path $env:PREDICTIONS_WINDOWS_STAGE 'tests\host\windows-preferences-runner.ps1') -Stage $env:PREDICTIONS_WINDOWS_STAGE -FirstRoot $env:PREDICTIONS_WINDOWS_FIRST_ROOT

@@ -33,11 +33,15 @@ async function afterRestart(read: () => Promise<SetupSnapshot>, t: TestContext) 
   return read()
 }
 
-for (const [windowsConfig, name] of [
+const firstRoot = process.env.PREDICTIONS_WINDOWS_FIRST_ROOT ?? "appdata"
+assert.ok(firstRoot === "appdata" || firstRoot === "override", "The Windows smoke test order must be explicit.")
+const rootCases = [
   ["appdata", "default Windows profile saves and survives server restart"],
   ["override", "literal Windows config paths round-trip"],
-] as const) {
+] as const
+for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...rootCases].reverse()) {
   test(name, { timeout: 120000 }, async t => {
+    t.diagnostic(`${windowsConfig} runs ${windowsConfig === firstRoot ? "first" : "second"} in this profile.`)
     await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
       windowsConfig, projectConfig: true, seedPreferences: false,
     })
@@ -57,7 +61,9 @@ for (const [windowsConfig, name] of [
     const read = async () => await f.api.rpc(Predictions).settingsV2({}, { location, signal: AbortSignal.timeout(2000) }) as SetupSnapshot
     const saveFields = async (revision: string, fields: { automatic?: boolean; debug?: boolean }) =>
       await f.api.rpc(Predictions).saveSettings({ revision, fields }, { location, signal: AbortSignal.timeout(12000) }) as SaveResult
+    const began = performance.now()
     const before = await read()
+    t.diagnostic(`First settings read: ${Math.round(performance.now() - began)} ms; writable: ${before.writable}.`)
     assert.deepEqual(await entries(root), beforeRoot)
     assert.deepEqual(await entries(dirname(source)), beforeDir)
     assert.equal(before.source, source)
