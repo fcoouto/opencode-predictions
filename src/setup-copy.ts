@@ -19,6 +19,29 @@ export const setupTUIText = {
 }
 export const originLabels = { preferences: "Saved preference", default: "Default" } as const
 
+// Desktop context file row. contextFileManual above stays the old-server sentence.
+const grouped = (count: number) => String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",")
+export const contextFileText = {
+  checking: "Checking the context file…",
+  unavailable: "Context file status is unavailable right now.",
+  unsupported: "Update the Predictions plugin on the server to manage the context file here.",
+  staged: "predictions-context.md will be created when you save.",
+  stagedOff: "The context file will stop being used when you save. The file stays on disk.",
+  empty: "Empty — nothing is sent until you add text.",
+  openFailed: "Could not open the file on this computer.",
+  okLine: (path: string, bytes: number) => `${path} · ${grouped(bytes)} of 8,192 bytes`,
+  // The reason a set file cannot be used, or undefined when it can.
+  issue: (state: string, bytes?: number): string | undefined => {
+    if (state === "missing") return "Missing"
+    if (state === "invalid") return "Not UTF-8 text"
+    if (state === "unreadable") return "Cannot be read"
+    if (state === "too_large") return bytes === undefined ? "Too large" : `Too large: ${grouped(bytes)} of 8,192 bytes`
+    return undefined
+  },
+  // Names the file manager of the OS this desktop runs on.
+  reveal: (os?: string) => os === "macos" ? "Show in Finder" : os === "windows" ? "Show in File Explorer" : "Show in Folder",
+}
+
 export const contextFileIssue = (state?: Readonly<SetupState>) =>
   state?.issues.find(issue => issue.field === "contextFile")?.message
   ?? state?.snapshot?.issues.find(issue => issue.field === "contextFile")?.message

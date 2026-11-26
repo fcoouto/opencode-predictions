@@ -3,7 +3,7 @@ import type { Plugin as GUIPlugin } from "@opencode/plugin/gui"
 import { Index, Show, createComponent, createRenderEffect, createSignal, untrack } from "solid-js"
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
-import { setupText, contextFileIssue } from "./setup-copy.ts"
+import { setupText, contextFileIssue, contextFileText } from "./setup-copy.ts"
 import { createSetupEditor, parseSelector, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
@@ -332,6 +332,72 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     if (result.kind === "invalid") return result.issues.find(issue => issue.field === "contextFile")?.message ?? "Fix the highlighted settings before saving."
     return result.message
   }
+  // Context file row. The editor reads the status and stages changes; this decides what to show and which actions to offer.
+  const [contextOpenFailed, setContextOpenFailed] = createSignal(false)
+  const contextView = (): "checking" | "unsupported" | "unavailable" | "unset" | "set" => {
+    const value = state()
+    if (!value || value.contextLoading || value.context === undefined) return "checking"
+    if (value.context === "unsupported" || value.context === "unavailable") return value.context
+    return value.context.set ? "set" : "unset"
+  }
+  const contextStatusNow = () => { const value = state()?.context; return typeof value === "object" && value.set ? value : undefined }
+  const contextStaged = () => state()?.contextChange
+  const contextStagedCopy = () => { const change = contextStaged(); return change === "managed" ? contextFileText.staged : change === "none" ? contextFileText.stagedOff : undefined }
+  const contextMissing = () => contextStatusNow()?.state === "missing"
+  const contextLocked = () => locked() || !!state()?.contextLoading
+  // Open and Show need this computer: the desktop host exists and the editor is pinned to the built-in server.
+  const contextLocal = () => { version(); return !!ctx.desktop && pinned?.target.serverID === "sidecar" }
+  const contextPathLine = () => {
+    const status = contextStatusNow()
+    if (!status) return undefined
+    return status.state === "ok" && status.bytes !== undefined && !contextStaged() ? contextFileText.okLine(status.path, status.bytes) : status.path
+  }
+  const contextIssueLine = () => { const status = contextStatusNow(); return status && !contextStaged() ? contextFileText.issue(status.state, status.bytes) : undefined }
+  const stageContext = (change: "managed" | "none" | undefined) => {
+    current()?.setContextFile(change)
+    focusControl("predictions-advanced-context-file", ...(change === undefined ? ["Use a context file", "Stop using", "Create it again", "Use predictions-context.md instead"] : ["Undo"]))
+  }
+  // Only the file opened or shown can fail here; a successful action clears an earlier failure.
+  const openContextFile = async (show: boolean) => {
+    const status = contextStatusNow()
+    const desktop = ctx.desktop
+    if (!status || !desktop) return
+    let opened = false
+    try {
+      if (show) opened = await desktop.reveal(status.absolute)
+      else { await desktop.launch(status.absolute); opened = true }
+    } catch { opened = false }
+    if (!disposed) setContextOpenFailed(!opened)
+  }
+  const contextDescription = () => column(
+    when(() => contextView() === "checking", () => note(() => contextFileText.checking)),
+    when(() => contextView() === "unsupported", () => column(note(() => setupText.contextFileManual), note(() => contextFileText.unsupported))),
+    when(() => contextView() === "unavailable", () => note(() => contextFileText.unavailable)),
+    when(() => contextView() === "unset", () => note(() => contextStagedCopy() ?? setupText.contextFile)),
+    when(() => contextView() === "set", () => note(contextPathLine)),
+    when(() => contextView() === "set" && !contextStaged() && contextStatusNow()?.state === "empty", () => note(() => contextFileText.empty)),
+    when(() => contextView() === "set" && !!contextStaged(), () => note(contextStagedCopy)),
+    warnings(() => { const issue = contextIssueLine(); return issue ? [issue] : [] }),
+    when(() => contextOpenFailed(), () => note(() => contextFileText.openFailed, "alert")),
+    when(() => !!contextFileIssue(state()), () => note(() => contextFileIssue(state()), "alert")),
+  )
+  const contextActions = () => box(
+    when(() => contextView() === "checking", () => createComponent(ui.Loader, {})),
+    when(() => contextView() === "unset" && !contextStaged(), () => button(() => "Use a context file", () => stageContext("managed"), { variant: "contrast", disabled: contextLocked })),
+    when(() => contextView() === "set" && !contextStaged() && contextMissing() && contextStatusNow()?.managed === true, () => button(() => "Create it again", () => stageContext("managed"), { disabled: contextLocked })),
+    when(() => contextView() === "set" && !contextStaged() && contextMissing() && contextStatusNow()?.managed === false, () => button(() => "Use predictions-context.md instead", () => stageContext("managed"), { disabled: contextLocked })),
+    when(() => !!contextStaged(), () => button(() => "Undo", () => stageContext(undefined), { disabled: contextLocked })),
+    when(() => contextView() === "set" && !contextStaged(), () => button(() => "Stop using", () => stageContext("none"), { disabled: contextLocked })),
+    when(() => contextView() === "set" && contextLocal() && !contextMissing(), () => button(() => "Open file", () => void openContextFile(false))),
+    when(() => contextView() === "set" && contextLocal() && !contextMissing(), () => button(() => contextFileText.reveal(ctx.desktop?.os), () => void openContextFile(true))),
+    when(() => contextView() === "unset" || contextView() === "set" || contextView() === "unavailable", () => button(() => "Check again", () => void pinned?.editor.refreshContext(), { disabled: () => !!state()?.contextLoading })),
+  )
+  const contextFileRow = () => createComponent(ui.SettingsRow, {
+    id: "predictions-advanced-context-file", title: "Context file",
+    get description() { return contextDescription() },
+    get children() { return contextActions() },
+  })
+
   const content = () => createComponent(ui.SettingsLayout, {
     title: "Predictions",
     get description() { version(); return pinned ? `User prediction preferences on ${pinned.target.label}. ${setupText.scope}` : "Connect to an OpenCode server to review prediction settings." },
@@ -405,7 +471,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                 when(advanced, () => [
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-timeout", title: "Timeout per model", get description() { return column(note(() => `Milliseconds, a whole number from 1 to 2147483647. Default ${defaultTimeoutMs}.`), when(() => !!state()?.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error"), () => note(() => state()?.issues.find(issue => issue.field === "timeoutMs")?.message, "alert"))) }, get children() { return createComponent(ui.TextInput, { get value() { return timeoutText() ?? String(fields().timeoutMs ?? defaultTimeoutMs) }, onInput: (value: string) => { setTimeoutText(value); const text = value.trim(); edit({ timeoutMs: /^[0-9]+$/.test(text) ? Number(text) : null }) }, label: "Timeout per model", get disabled() { return locked() }, get invalid() { return !!state()?.issues.some(issue => issue.field === "timeoutMs" && issue.severity === "error") } }) } }),
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-context", title: "Recent interactions", description: "How many recent interactions predictions read, 1 to 5. Default 3.", get children() { return createComponent(ui.Select, { options: turnOptions, get value() { return String(fields().contextTurns ?? 3) }, onChange: (value: string) => edit({ contextTurns: Number(value) }), label: "Recent interactions", get disabled() { return locked() } }) } }),
-                  createComponent(ui.SettingsRow, { id: "predictions-advanced-context-file", title: "Context file", get description() { return column(note(() => setupText.contextFileManual), when(() => !!contextFileIssue(state()), () => note(() => contextFileIssue(state()), "alert"))) } }),
+                  contextFileRow(),
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-github", title: "Include GitHub PR context", description: setupText.github, get children() { return createComponent(ui.Switch, { get checked() { return flag("includeGithubPRContext", false) }, onChange: (checked: boolean) => edit({ includeGithubPRContext: checked }), label: "Include GitHub PR context", hideLabel: true, get disabled() { return locked() } }) } }),
                   createComponent(ui.SettingsRow, { id: "predictions-advanced-debug", title: "Debug notices", description: "Show safe progress and failure notices, never raw provider errors.", get children() { return createComponent(ui.Switch, { get checked() { return flag("debug", false) }, onChange: (checked: boolean) => edit({ debug: checked }), label: "Debug notices", hideLabel: true, get disabled() { return locked() } }) } }),
                 ]),
