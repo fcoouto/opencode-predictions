@@ -90,11 +90,17 @@ for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...ro
     assert.deepEqual(JSON.parse(await readFile(source, "utf8")), { version: 1, future, settings: { automatic: false, debug: true } })
     assert.deepEqual(await readFile(config), configBytes)
 
+    const secondBytes = await readFile(source)
+    const third = await saveFields(second.revision, { debug: false })
+    assert.equal(third.kind, "saved", JSON.stringify(third))
+    assert.deepEqual(await readFile(source + ".backup"), secondBytes)
+    assert.deepEqual(await readFile(config), configBytes)
+
     await f.restart()
     const restarted = await afterRestart(read, t)
     assert.equal(restarted.activeRevision, restarted.revision)
     assert.equal(restarted.effective?.automatic, false)
-    assert.equal(restarted.effective?.debug, true)
+    assert.equal(restarted.effective?.debug, false)
     assert.deepEqual(f.calls, [])
   })
 }

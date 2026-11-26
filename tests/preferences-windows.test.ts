@@ -82,6 +82,13 @@ async function fixture(t: TestContext) {
   return { host, source, directory, root, config, configBytes, store: createPreferencesStore(host) }
 }
 
+async function seedPrivate(f: Awaited<ReturnType<typeof fixture>>) {
+  const empty = await f.store.read(signal())
+  const first = await f.store.write(empty.revision, { fields: { automatic: false } }, signal())
+  assert.equal(first.kind, "written", JSON.stringify(first))
+  await writeFile(f.source, initial)
+}
+
 function utility(name: string, args: string[], env = process.env) {
   return run(join(process.env.SystemRoot!, "System32", name), args, { env, windowsHide: true, timeout: 6000 })
 }
@@ -153,16 +160,17 @@ test("Windows reads create nothing and a second Save creates a private backup", 
 
 test("Windows keeps a readable active file with a custom ACL read-only", native, async t => {
   const f = await fixture(t)
-  const empty = await f.store.read(signal())
-  assert.equal((await f.store.write(empty.revision, { fields: { automatic: false } }, signal())).kind, "written")
+  await seedPrivate(f)
   await icacls(f.source, "/grant", "*S-1-5-11:(R)")
   const bytes = await readFile(f.source), acl = await getAcl(f.source)
   const before = await f.store.read(signal())
   assert.equal(before.documentValid, true)
   assert.deepEqual(before.overrides, { automatic: false })
+  assert.equal(before.writable, false, "An extra read grant is not the standard private ACL.")
+  assert.equal((await f.store.write(before.revision, edit, signal())).kind, "read_only")
   assert.deepEqual(await readFile(f.source), bytes)
   assert.equal(await getAcl(f.source), acl)
-  assert.equal(before.writable, false, "An extra read grant is not the standard private ACL.")
+  await assert.rejects(readFile(f.source + ".backup"), { code: "ENOENT" })
 })
 
 test("Windows refuses an empty replacement directory with a stale revision", native, async t => {
@@ -178,7 +186,7 @@ test("Windows refuses an empty replacement directory with a stale revision", nat
 
 for (const kind of ["denied write", "read-only attribute"]) test(`Windows reads a valid file with ${kind} but refuses Save`, native, async t => {
   const f = await fixture(t)
-  await writeFile(f.source, initial)
+  await seedPrivate(f)
   if (kind === "denied write") {
     const { stdout } = await utility("whoami.exe", ["/user", "/fo", "csv", "/nh"])
     const sid = stdout.match(/S-1-[\d-]+/)?.[0]
@@ -245,7 +253,7 @@ test("Windows refuses a foreign-owned file in an otherwise verified directory", 
 
 for (const kind of ["untrusted reader", "hard link", "junction"]) test(`Windows refuses to overwrite a backup with ${kind}`, native, async t => {
   const f = await fixture(t), backup = f.source + ".backup"
-  await writeFile(f.source, initial)
+  await seedPrivate(f)
   if (kind === "junction") {
     const target = join(f.root, "backup-target")
     await mkdir(target)
@@ -281,7 +289,7 @@ test("Windows treats present or uncheckable administrative configuration as mana
 
 test("Windows refuses stale drafts and oversized preferences", native, async t => {
   const f = await fixture(t)
-  await writeFile(f.source, initial)
+  await seedPrivate(f)
   const before = await f.store.read(signal())
   assert.equal(before.writable, true, before.reason ?? "The original document must be writable.")
   const newer = JSON.stringify({ version: 1, settings: { contextTurns: 5 } })
@@ -318,7 +326,7 @@ test("Windows staging is private before it receives preference bytes", native, a
     var stagedAcl = item.Descriptor.GetSddlForm(AccessControlSections.Access);
     File.AppendAllText(${JSON.stringify(observation)}, size + ":" + stagedAcl + Environment.NewLine);
   `)
-  await writeFile(f.source, initial)
+  await seedPrivate(f)
   const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
   const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from('{"version":1,"settings":{}}\n'), signal())
   assert.equal(result.kind, "written", JSON.stringify(result))
@@ -330,6 +338,48 @@ test("Windows staging is private before it receives preference bytes", native, a
   }
 })
 
+test("Windows recognizes equivalent grants but not missing, inapplicable, or encrypted replacements", native, async t => {
+  const f = await fixture(t), observation = join(f.root, "replacement-policy")
+  const io = await checkpoint(f.root, "BEFORE_STAGE_WRITE", `
+    var sample = new Item { Info = item.Info, Descriptor = new RawSecurityDescriptor(item.SecurityBytes, 0) };
+    var ace = (CommonAce)sample.Descriptor.DiscretionaryAcl[0];
+    ace.AceFlags = AceFlags.Inherited;
+    ace.AccessMask = 0x10000000;
+    var equivalent = CanReplace(sample);
+    ace.AccessMask = 0x1f01fe;
+    var missing = CanReplace(sample);
+    ace.AccessMask = 0x10000000;
+    ace.AceFlags = AceFlags.InheritOnly;
+    var inapplicable = CanReplace(sample);
+    ace.AceFlags = AceFlags.Inherited;
+    sample.Info.Attributes |= 0x4000;
+    var encrypted = CanReplace(sample);
+    File.WriteAllText(${JSON.stringify(observation)}, String.Join(",", equivalent, missing, inapplicable, encrypted));
+  `)
+  const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(initial), signal())
+  assert.equal(result.kind, "written", JSON.stringify(result))
+  assert.equal(await readFile(observation, "utf8"), "True,False,False,False")
+})
+
+test("Windows refuses a narrower backup ACL before staging any preference bytes", native, async t => {
+  const f = await fixture(t), backup = f.source + ".backup", observation = join(f.root, "staging-started")
+  await seedPrivate(f)
+  const beforeBackup = await f.store.read(signal())
+  assert.equal((await f.store.write(beforeBackup.revision, edit, signal())).kind, "written")
+  await icacls(backup, "/deny", "*S-1-5-32-544:(RD)")
+  const activeBytes = await readFile(f.source), backupBytes = await readFile(backup), backupAcl = await getAcl(backup)
+  const io = await checkpoint(f.root, "BEFORE_STAGE_WRITE", `File.WriteAllText(${JSON.stringify(observation)}, "staged");`)
+  const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
+  assert.equal(before.writable, true, "Only the backup is ineligible.")
+  const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(initial), signal())
+  assert.equal(result.kind, "read_only", JSON.stringify(result))
+  await assert.rejects(readFile(observation), { code: "ENOENT" })
+  assert.deepEqual(await readFile(f.source), activeBytes)
+  assert.deepEqual(await readFile(backup), backupBytes)
+  assert.equal(await getAcl(backup), backupAcl)
+})
+
 test("Windows pins the verified directory until replacement finishes", native, async t => {
   const f = await fixture(t), observation = join(f.root, "rename-observed")
   const spare = join(f.root, "spare")
@@ -339,7 +389,7 @@ test("Windows pins the verified directory until replacement finishes", native, a
     try { Directory.Move(${JSON.stringify(f.directory)}, ${JSON.stringify(f.directory + "-moved")}); }
     catch (IOException) { File.WriteAllText(${JSON.stringify(observation)}, "pinned"); }
   `)
-  await writeFile(f.source, initial)
+  await seedPrivate(f)
   const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
   const complete = '{"version":1,"settings":{"debug":true}}\n'
   assert.equal((await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(complete), signal())).kind, "written")
@@ -357,7 +407,7 @@ for (const phase of ["before replacement", "lost readback", "different readback"
     phase === "different readback"
       ? `File.WriteAllText(${JSON.stringify(f.source)}, ${JSON.stringify(differing)});`
       : 'if (path.Length > 0) throw new IOException("private fixture failure");')
-  await writeFile(f.source, initial)
+  await seedPrivate(f)
   const before = await io.readWindowsPreferences(f.source, f.host.systemPaths, signal())
   const next = '{"version":1,"settings":{"debug":true}}\n'
   const result = await io.commitWindowsPreferences(before, f.host.systemPaths, Buffer.from(next), signal())

@@ -14,8 +14,8 @@ using Microsoft.Win32.SafeHandles;
 public static class PredictionsPreferences {
     const uint ReadControl = 0x20000, Delete = 0x10000, WriteDac = 0x40000, WriteOwner = 0x80000;
     const uint ReadData = 1, WriteData = 2, AppendData = 4, WriteEa = 0x10, DeleteChild = 0x40, ReadAttr = 0x80, WriteAttr = 0x100;
-    const uint Security = 0x77, ProtectedDacl = 0x80000004;
-    const uint DirectoryFlag = 0x10, Reparse = 0x400, ReadOnly = 1;
+    const uint Security = 0x77, FullFileAccess = 0x1f01ff;
+    const uint DirectoryFlag = 0x10, Reparse = 0x400, ReadOnly = 1, Encrypted = 0x4000;
     const uint NoFollow = 0x00200000, DirectoryHandle = 0x02000000, ShareRead = 1, ShareWrite = 2, ShareDelete = 4;
     const uint GenericRead = 0x80000000, GenericWrite = 0x40000000, CreateNew = 1, OpenExisting = 3;
     const uint Mutate = Delete | WriteDac | WriteOwner | WriteEa | WriteAttr;
@@ -38,7 +38,6 @@ public static class PredictionsPreferences {
     [DllImport("kernel32.dll", SetLastError=true)] static extern bool FlushFileBuffers(SafeFileHandle file);
     [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr memory);
     [DllImport("advapi32.dll")] static extern uint GetSecurityInfo(SafeFileHandle file, int type, uint information, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
-    [DllImport("advapi32.dll")] static extern uint SetSecurityInfo(SafeFileHandle file, int type, uint information, IntPtr owner, IntPtr group, IntPtr dacl, IntPtr sacl);
     [DllImport("advapi32.dll")] static extern uint GetSecurityDescriptorLength(IntPtr descriptor);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool DuplicateToken(IntPtr token, int level, out SafeFileHandle duplicate);
     [DllImport("advapi32.dll", SetLastError=true)] static extern bool AccessCheck(byte[] descriptor, SafeFileHandle token, uint desired, ref GenericMapping mapping, IntPtr privileges, ref uint size, out uint granted, [MarshalAs(UnmanagedType.Bool)] out bool allowed);
@@ -153,7 +152,7 @@ public static class PredictionsPreferences {
         }
 
         bool Can(Item item, uint desired) {
-            var mapping = new GenericMapping { Read = 0x120089, Write = 0x120116, Execute = 0x1200a0, All = 0x1f01ff };
+            var mapping = new GenericMapping { Read = 0x120089, Write = 0x120116, Execute = 0x1200a0, All = FullFileAccess };
             uint size = 1024, granted;
             bool allowed;
             var privileges = Marshal.AllocHGlobal((int)size);
@@ -161,6 +160,18 @@ public static class PredictionsPreferences {
                 if (!AccessCheck(item.SecurityBytes, token, desired, ref mapping, privileges, ref size, out granted, out allowed)) throw LastError();
                 return allowed;
             } finally { Marshal.FreeHGlobal(privileges); }
+        }
+
+        bool CanReplace(Item file) {
+            if ((file.Info.Attributes & (ReadOnly | Encrypted)) != 0) return false;
+            var principals = new HashSet<SecurityIdentifier> { user, SystemSid, AdminSid };
+            foreach (var entry in file.Descriptor.DiscretionaryAcl) {
+                var ace = entry as CommonAce;
+                if (ace == null || ace.IsCallback || ace.AceType != AceType.AccessAllowed
+                    || (ace.AceFlags & ~AceFlags.Inherited) != 0 || Expand((uint)ace.AccessMask) != FullFileAccess
+                    || !principals.Remove(ace.SecurityIdentifier)) return false;
+            }
+            return principals.Count == 0;
         }
 
         static string[] Components(string path) {
@@ -264,7 +275,7 @@ public static class PredictionsPreferences {
                 if (file != null) {
                     Safe(file, false, false);
                     bytes = ReadFile(file);
-                    writable = writable && (file.Info.Attributes & ReadOnly) == 0 && Can(file, WriteData);
+                    writable = writable && CanReplace(file) && Can(file, WriteData);
                     AddItem(stamp, file); stamp.Write(bytes.Length); stamp.Write(bytes);
                 }
                 stamp.Flush();
@@ -279,7 +290,7 @@ public static class PredictionsPreferences {
             var flags = directory ? AceFlags.ContainerInherit | AceFlags.ObjectInherit : AceFlags.None;
             var acl = new RawAcl(GenericAcl.AclRevision, 3);
             foreach (var sid in new[] { user, SystemSid, AdminSid })
-                acl.InsertAce(acl.Count, new CommonAce(flags, AceQualifier.AccessAllowed, 0x1f01ff, sid, false, null));
+                acl.InsertAce(acl.Count, new CommonAce(flags, AceQualifier.AccessAllowed, (int)FullFileAccess, sid, false, null));
             return new RawSecurityDescriptor(ControlFlags.DiscretionaryAclPresent | ControlFlags.DiscretionaryAclProtected, user, null, null, acl);
         }
 
@@ -328,34 +339,28 @@ public static class PredictionsPreferences {
             WithBytes(new byte[] { 1 }, p => SetFileInformationByHandle(file, 4, p, 1));
         }
 
-        void NarrowAcl(SafeFileHandle file, RawAcl previous) {
-            var privateAcl = new RawAcl(previous.Revision, previous.Count);
-            foreach (CommonAce ace in previous) {
-                if (ace.AceType == AceType.AccessAllowed && !Trusted(ace.SecurityIdentifier, false)) continue;
-                var copy = (CommonAce)ace.Copy();
-                copy.AceFlags &= ~AceFlags.Inherited;
-                privateAcl.InsertAce(privateAcl.Count, copy);
+        bool CanReplaceBackup(string path) {
+            using (var existing = Open(path, false, true)) {
+                if (existing == null) return true;
+                Safe(existing, false, false, true);
+                return CanReplace(existing);
             }
-            var bytes = new byte[privateAcl.BinaryLength];
-            privateAcl.GetBinaryForm(bytes, 0);
-            var error = WithBytes(bytes, p => SetSecurityInfo(file, 1, ProtectedDacl, IntPtr.Zero, IntPtr.Zero, p, IntPtr.Zero));
-            if (error != 0) throw new Win32Exception((int)error);
         }
 
-        SafeFileHandle Stage(string directory, byte[] bytes, RawAcl activeAcl) {
+        SafeFileHandle Stage(string directory, byte[] bytes) {
             var path = Path.Combine(directory, ".predictions.tmp-" + Guid.NewGuid().ToString("N"));
-            var file = WithAttributes(Private(false), attrs => CreateFileW(path, ReadControl | ReadAttr | WriteDac | Delete | GenericWrite, ShareRead, attrs, CreateNew, NoFollow, IntPtr.Zero));
+            var file = WithAttributes(Private(false), attrs => CreateFileW(path, ReadControl | ReadAttr | Delete | GenericWrite, ShareRead, attrs, CreateNew, NoFollow, IntPtr.Zero));
             if (file.IsInvalid) { var error = LastError(); file.Dispose(); throw error; }
             try {
                 var item = new Item { Path = path, Handle = file };
                 Inspect(item);
                 Require(item.Info.Links == 1 && (item.Info.Attributes & (Reparse | DirectoryFlag)) == 0);
                 Safe(item, false, false, true);
+                Require(CanReplace(item));
                 /* BEFORE_STAGE_WRITE */
                 int written;
                 if (!WriteFile(file, bytes, bytes.Length, out written, IntPtr.Zero)) throw LastError();
                 Require(written == bytes.Length);
-                if (activeAcl != null) NarrowAcl(file, activeAcl);
                 if (!FlushFileBuffers(file)) throw LastError();
                 return file;
             } catch { Discard(file); file.Dispose(); throw; }
@@ -382,22 +387,18 @@ public static class PredictionsPreferences {
                         if (before.bytes != null) return Result("conflict");
                         if (!before.writable) return Result("read_only");
                     }
-                    RawAcl activeAcl = null;
-                    using (var active = Open(chain.FilePath, false, true)) {
-                        if (active != null) {
-                            Safe(active, false, false);
-                            activeAcl = active.Descriptor.DiscretionaryAcl;
-                        }
-                    }
                     var path = chain.FilePath;
-                    using (var stage = Stage(chain.Physical, next, activeAcl)) {
+                    var backup = path + ".backup";
+                    if (before.bytes != null && !CanReplaceBackup(backup)) return Result("read_only");
+                    using (var stage = Stage(chain.Physical, next)) {
                         try {
                             if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
                             if (before.bytes != null) {
-                                var backup = path + ".backup";
-                                using (var existing = Open(backup, false, true)) if (existing != null) Safe(existing, false, false, true);
-                                using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes), null)) {
-                                    try { Rename(copy, backup); }
+                                using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes))) {
+                                    try {
+                                        if (!CanReplaceBackup(backup)) { Discard(copy); return Result("read_only"); }
+                                        Rename(copy, backup);
+                                    }
                                     catch { Discard(copy); throw; }
                                 }
                             }
