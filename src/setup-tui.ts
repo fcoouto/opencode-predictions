@@ -215,7 +215,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       })
       if (choice === undefined) return
       if (choice === "about") { await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n")); continue }
-      // The context file menu checks editability itself, because Undo and Check again work on a read-only configuration.
+      // The context file menu checks editability itself, because Details and Check again work on a read-only configuration.
       if (choice === "context-file") { await contextFile(editor); continue }
       if (!await editable(editor)) continue
       if (choice === "github" || choice === "debug") edit(editor, { [choice === "github" ? "includeGithubPRContext" : "debug"]: !flag(editor, choice === "github" ? "includeGithubPRContext" : "debug", false) })
