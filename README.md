@@ -415,12 +415,17 @@ fallback and paid models.**
    **Settings → Predictions → Advanced**. Select **Context file**, then
    **Use a context file**.
 
-2. Select **Save changes**. OpenCode creates an empty `predictions-context.md`
-   next to `predictions.json` on the OpenCode server. It uses the same folder as
-   your preferences: `~/.config/opencode/` on macOS and Linux, and `%APPDATA%\opencode\`
-   on Windows.
+2. Select **Save changes**. Save puts `predictions-context.md` in the same folder
+   as `predictions.json` on the OpenCode server. The default folder is
+   `~/.config/opencode/` on macOS and Linux, and `%APPDATA%\opencode\` on Windows.
+   An absolute `XDG_CONFIG_HOME` moves the folder on any platform.
 
-3. Open the file on the server and write your notes. For example:
+   Save creates an empty file only when none exists. If `predictions-context.md`
+   already exists and passes the safety checks below, Save reuses it, and its
+   current text is sent with every prediction.
+
+3. Open the file on the server and write your notes. Check the file first if it
+   already has text, because all of it is sent. For example:
 
    ```markdown
    For inventory reports, prefer XLSX.
@@ -439,8 +444,8 @@ Windows, **Show in Folder** on Linux) appear when the server runs on this
 computer. Remote servers show the path and status only.
 
 To stop sharing it in new predictions, select **Stop using**, then **Save
-changes**. The file stays on disk. If you turn it on again later, the same text is
-sent again.
+changes**. The file stays on disk. If you turn it on again later with **Use a
+context file** and **Save changes**, the same text is sent again.
 
 ### Hand-set path
 
@@ -451,9 +456,17 @@ and its status. Use an absolute path or `~/` for the server user's home:
 "contextFile": "~/.config/opencode/predictions.md"
 ```
 
-To switch to `predictions-context.md`, select **Stop using**, save, then select
-**Use a context file**. If the path is missing, the row offers **Use
-predictions-context.md instead**.
+To switch to `predictions-context.md`, select **Stop using**, then **Save
+changes**. Then select **Use a context file** and **Save changes** again. Selecting
+an action only changes the draft until you save.
+
+If the hand-set path is missing, the row offers **Use
+predictions-context.md instead**. Select it, then **Save changes**. This replaces
+the hand-set path.
+
+Stopping a hand-set path does not remember it. **Use a context file** selects
+`predictions-context.md`, not the old path. To use the old path again, edit
+`predictions.json` by hand and add `contextFile` back.
 
 <details>
 <summary><strong>File rules and when edits take effect</strong></summary>
