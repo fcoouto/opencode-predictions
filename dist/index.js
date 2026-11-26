@@ -1696,7 +1696,9 @@ function createSetupService(store, models, runtime, paths) {
     },
     async contextStatus(signal) {
       await runtime.refresh(signal);
-      const value = runtime.state().stored.contextFile;
+      const stored = runtime.state().stored;
+      if (!stored.documentValid) throw new Error("Context file status is unavailable.");
+      const value = stored.contextFile;
       if (value === void 0) return { set: false };
       if (typeof value !== "string" || !parseOptions({ contextFile: value }).ok) return { set: true, path: String(value), absolute: "", managed: false, state: "unreadable" };
       const absolute = expandContextPath(value, paths.home);

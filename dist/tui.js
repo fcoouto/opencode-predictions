@@ -985,6 +985,7 @@ function validateSettings(fields, contextFile) {
   const contextIssue = parsed.reason.startsWith("contextFile");
   return [{ field: contextIssue ? "contextFile" : settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason + (contextIssue ? ". Correct it in predictions.json on the server." : "") }];
 }
+var blocksSave = (issues) => issues.some((issue) => issue.severity === "error" && issue.code !== "unsafe_context_file");
 function createSetupEditor(api, changed) {
   const state = { fields: {}, reset: [], origins: resolvePreferences({}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false, contextLoading: false };
   const lifetime = new AbortController();
@@ -1049,7 +1050,7 @@ function createSetupEditor(api, changed) {
     try {
       const status = await read(lifetime.signal);
       if (typeof status !== "object") return false;
-      return change === "managed" ? status.set && status.managed : !status.set;
+      return change === "managed" ? status.set && status.managed && status.state !== "missing" : !status.set;
     } catch {
       return false;
     }
@@ -1079,6 +1080,7 @@ function createSetupEditor(api, changed) {
     } finally {
       if (request === contextRequest) {
         state.contextLoading = false;
+        if (state.lastSave?.kind === "invalid" && state.lastSave.issues[0]?.code === "context_status_pending") state.lastSave = void 0;
         notify();
       }
     }
@@ -1178,8 +1180,8 @@ function createSetupEditor(api, changed) {
       }
       if (!state.dirty) return failed("No changes to save.");
       if (!state.snapshot.writable) return { kind: "read_only", message: state.snapshot.reason ?? "This configuration is read-only." };
-      if (state.contextChange !== void 0 && typeof state.context !== "object") {
-        const refused = { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] };
+      if (state.contextChange !== void 0 && (state.contextLoading || typeof state.context !== "object")) {
+        const refused = { kind: "invalid", issues: [state.contextLoading ? { field: "contextFile", severity: "error", code: "context_status_pending", message: "Checking the context file\u2026" } : { field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] };
         state.lastSave = refused;
         notify();
         return refused;
@@ -1290,7 +1292,14 @@ function createTUISetupAPI(ctx, location) {
       return snapshot;
     },
     preview: async (fields, signal) => await selected().previewSettings({ fields }, { location: pinned, signal }),
-    contextStatus: async (signal) => await readContextStatus(async (signal2) => await selected().contextFileStatus({}, { location: pinned, signal: signal2 }), signal),
+    // A reply, or an old server's refusal, counts only while the pinned client is still the selected one.
+    contextStatus: async (signal) => await readContextStatus(async (signal2) => {
+      try {
+        return await selected().contextFileStatus({}, { location: pinned, signal: signal2 });
+      } finally {
+        selected();
+      }
+    }, signal),
     async save(input, signal) {
       const waiting = AbortSignal.any([signal, AbortSignal.timeout(12e3)]);
       const result = await abortable(() => selected().saveSettings(input, { location: pinned, signal: waiting }), waiting);
@@ -1324,7 +1333,8 @@ var contextFileText = {
   checking: "Checking the context file\u2026",
   unavailable: "Context file status is unavailable right now.",
   unsupported: "Update the Predictions plugin on the server to manage the context file here.",
-  staged: "predictions-context.md will be created when you save.",
+  // Save adopts an existing file as it is, so this must not promise a new, empty one.
+  staged: "Save will use predictions-context.md. If it already exists, its current text will be sent with predictions.",
   stagedOff: "The context file will stop being used when you save. The file stays on disk.",
   empty: "Empty \u2014 nothing is sent until you add text.",
   openFailed: "Could not open the file on this computer.",
@@ -1452,7 +1462,7 @@ function registerSetupTUI(ctx, openStatus) {
   async function root(editor) {
     for (; ; ) {
       const state = editor.state();
-      const invalid = state.issues.some((issue) => issue.severity === "error");
+      const invalid = blocksSave(state.issues);
       const choice = await dialog.select({
         title: state.dirty ? `${title} \u2014 unsaved changes` : title,
         placeholder: "Choose a section",
