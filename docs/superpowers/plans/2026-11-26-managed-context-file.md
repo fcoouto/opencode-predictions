@@ -30,7 +30,7 @@
 - `applyPreferenceChange` keeps its signature. Callers that pass a whole save change (`setup-service.ts:77`, `setup.ts:157`) strip `contextFile` first; only the stores apply it.
 - Copy (verbatim):
   - Not set: "Standing notes about you and your work, sent to prediction providers with every request. Up to 8 KB of text."
-  - Staged on: "predictions-context.md will be created when you save."
+  - Staged on: "Save will use predictions-context.md. If it already exists, its current text will be sent with predictions."
   - Staged off: "The context file will stop being used when you save. The file stays on disk."
   - Ok: "<path> · <bytes> of 8,192 bytes" (bytes with thousands separators).
   - Empty: "Empty — nothing is sent until you add text."

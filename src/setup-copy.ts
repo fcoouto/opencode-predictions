@@ -25,7 +25,8 @@ export const contextFileText = {
   checking: "Checking the context file…",
   unavailable: "Context file status is unavailable right now.",
   unsupported: "Update the Predictions plugin on the server to manage the context file here.",
-  staged: "predictions-context.md will be created when you save.",
+  // Save adopts an existing file as it is, so this must not promise a new, empty one.
+  staged: "Save will use predictions-context.md. If it already exists, its current text will be sent with predictions.",
   stagedOff: "The context file will stop being used when you save. The file stays on disk.",
   empty: "Empty — nothing is sent until you add text.",
   openFailed: "Could not open the file on this computer.",

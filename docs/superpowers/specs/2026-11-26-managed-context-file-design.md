@@ -55,7 +55,8 @@ Not set:   Context file
            Standing notes about you and your work, sent to prediction
            providers with every request. Up to 8 KB of text.        [Use a context file]
 Staged:    Context file
-           predictions-context.md will be created when you save.     [Undo]
+           Save will use predictions-context.md. If it already exists,
+           its current text will be sent with predictions.           [Undo]
 Set, ok:   Context file
            ~/.config/opencode/predictions-context.md · 1,204 of 8,192 bytes
                                          [Open file] [Show in Finder] [⋯ Stop using]
@@ -81,7 +82,7 @@ The user chose C, kept the rule, and asked for Windows in this change.
 ## Copy
 
 - Row description (not set): "Standing notes about you and your work, sent to prediction providers with every request. Up to 8 KB of text."
-- Staged on: "predictions-context.md will be created when you save." Staged off: "The context file will stop being used when you save. The file stays on disk."
+- Staged on: "Save will use predictions-context.md. If it already exists, its current text will be sent with predictions." Staged off: "The context file will stop being used when you save. The file stays on disk."
 - README: replace "set it directly in `predictions.json`" guidance with the Settings flow; keep a short manual-setup note for hand-set paths.
 
 ## Constraints

@@ -537,7 +537,7 @@ test("a staged change stays explained in Details when the status becomes unavail
     pick("Advanced"), pick("Context file"), pick("Use a context file"),
     call => { on.f.hooks.contextFailure = "internal"; return pick("Check again")(call) },
     call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return pick("Details")(call) },
-    call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, /Context file status is unavailable right now\./); assert.match(call.options.message, /predictions-context\.md will be created when you save\./); return undefined },
+    call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, /Context file status is unavailable right now\./); assert.match(call.options.message, /Save will use predictions-context\.md\. If it already exists, its current text will be sent with predictions\./); return undefined },
     cancel, cancel, cancel, yes(true),
   )
   const off = await harness(t)
