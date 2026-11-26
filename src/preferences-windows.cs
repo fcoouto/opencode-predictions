@@ -58,6 +58,7 @@ public static class PredictionsPreferences {
     public sealed class Reply {
         public string kind { get; set; }
         public Snapshot snapshot { get; set; }
+        public string reason { get; set; }
     }
     public sealed class Request {
         public string op { get; set; }
@@ -65,8 +66,10 @@ public static class PredictionsPreferences {
         public string[] systemPaths { get; set; }
         public string expected { get; set; }
         public string bytes { get; set; }
+        public string context { get; set; }
     }
     static Reply Result(string kind, Snapshot snapshot = null) { return new Reply { kind = kind, snapshot = snapshot }; }
+    static Reply Refused(string reason) { return new Reply { kind = "refused_context", reason = reason }; }
 
     sealed class Item : IDisposable {
         public string Path;
@@ -383,11 +386,79 @@ public static class PredictionsPreferences {
             } catch { Discard(file); file.Dispose(); throw; }
         }
 
+        const string ContextName = "predictions-context.md";
+        const string ChangedContext = "it changed while it was checked";
+
+        // Opens the fixed context file itself, never a link target. It asks for no data access, so the
+        // handle reads nothing and an editor that has the file open does not make the open fail.
+        static Item OpenContext(string path, bool confirming) {
+            var handle = CreateFileW(path, ReadControl | ReadAttr, ShareRead | ShareWrite | ShareDelete, IntPtr.Zero, OpenExisting, NoFollow | DirectoryHandle, IntPtr.Zero);
+            if (handle.IsInvalid) {
+                var error = LastError();
+                handle.Dispose();
+                // A file deleted while another handle is open reports access denied (5) until that handle closes.
+                if (error.NativeErrorCode == 2 || (confirming && error.NativeErrorCode == 5)) return null;
+                throw error;
+            }
+            try {
+                var item = new Item { Path = path, Handle = handle };
+                Inspect(item);
+                return item;
+            } catch {
+                handle.Dispose();
+                throw;
+            }
+        }
+
+        // The adoption rules, in order. Null means the file may be used.
+        string ContextProblem(Item item) {
+            if ((item.Info.Attributes & Reparse) != 0) return "it is a link";
+            if ((item.Info.Attributes & DirectoryFlag) != 0) return "it is not a regular file";
+            if (item.Info.Links != 1) return "it has more than one link";
+            if (item.Descriptor.Owner != user) return "it is owned by another user";
+            try { Safe(item, false, false); }
+            catch (IOException) { return "other users can write to it"; }
+            return null;
+        }
+
+        // Creates the fixed context file empty and private when it is absent, then judges whatever is there.
+        // It never overwrites or truncates. The caller keeps the returned handle open until the preferences
+        // are replaced, so the file ID cannot be reused in between. Null with a reason means refusal.
+        Item HoldContext(string directory, out string reason) {
+            var path = Path.Combine(directory, ContextName);
+            // The outcome of the create is not read. An entry that already exists makes it fail, and the
+            // open below then judges that entry.
+            WithAttributes(Private(false), attrs => CreateFileW(path, ReadControl | ReadAttr, ShareRead | ShareWrite | ShareDelete, attrs, CreateNew, NoFollow, IntPtr.Zero)).Dispose();
+            var item = OpenContext(path, false);
+            // Nothing is there, so the create failed for a cause other than an existing entry.
+            Require(item != null);
+            try { reason = ContextProblem(item); }
+            catch {
+                item.Dispose();
+                throw;
+            }
+            if (reason == null) return item;
+            item.Dispose();
+            return null;
+        }
+
+        // Run immediately before the preferences are replaced. The fixed path must still name the held file,
+        // and that file must pass the rules again. A link or an extra link reports its own reason.
+        string ConfirmContext(Item held) {
+            using (var fresh = OpenContext(held.Path, true)) {
+                if (fresh == null) return ChangedContext;
+                var reason = ContextProblem(fresh);
+                if (reason != null) return reason;
+                bool same = fresh.Info.Volume == held.Info.Volume && fresh.Info.IdHigh == held.Info.IdHigh && fresh.Info.IdLow == held.Info.IdLow;
+                return same ? null : ChangedContext;
+            }
+        }
+
         static Snapshot Masked(string source, string state) {
             return new Snapshot { source = source, state = state, writable = false, expected = "", bytes = null };
         }
 
-        public Reply Run(string op, string source, string[] administration, string expected, string content) {
+        public Reply Run(string op, string source, string[] administration, string expected, string content, string context) {
             bool committed = false;
             try {
                 if (Managed(administration)) return op == "read" ? Result("snapshot", Masked(source, "managed")) : Result("read_only");
@@ -408,27 +479,37 @@ public static class PredictionsPreferences {
                     var backup = path + ".backup";
                     var backupState = before.bytes == null ? BackupState.Absent : CheckBackup(backup);
                     if (backupState == BackupState.ReadOnly) return Result("read_only");
-                    using (var stage = Stage(chain.Physical, next)) {
-                        try {
-                            if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
-                            if (before.bytes != null) {
-                                using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes))) {
-                                    bool installed = false;
-                                    try {
-                                        var rechecked = CheckBackup(backup);
-                                        if (rechecked == BackupState.ReadOnly) return Result("read_only");
-                                        if (rechecked != backupState) return Result("conflict");
-                                        installed = Rename(copy, backup, backupState == BackupState.Replaceable);
-                                        if (!installed) return Result("conflict");
+                    // The context file is created or adopted in the pinned directory before any preference bytes are staged.
+                    string refusal = null;
+                    using (var held = context == "create" ? HoldContext(chain.Physical, out refusal) : null) {
+                        if (refusal != null) return Refused(refusal);
+                        using (var stage = Stage(chain.Physical, next)) {
+                            try {
+                                if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
+                                if (before.bytes != null) {
+                                    using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes))) {
+                                        bool installed = false;
+                                        try {
+                                            var rechecked = CheckBackup(backup);
+                                            if (rechecked == BackupState.ReadOnly) return Result("read_only");
+                                            if (rechecked != backupState) return Result("conflict");
+                                            installed = Rename(copy, backup, backupState == BackupState.Replaceable);
+                                            if (!installed) return Result("conflict");
+                                        }
+                                        finally { if (!installed) Discard(copy); }
                                     }
-                                    finally { if (!installed) Discard(copy); }
                                 }
-                            }
-                            if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
-                            /* BEFORE_ACTIVE_REPLACE */
-                            if (!Rename(stage, path, before.bytes != null)) return Result("conflict");
-                            committed = true;
-                        } finally { if (!committed) Discard(stage); }
+                                if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
+                                /* BEFORE_CONTEXT_CONFIRM */
+                                if (held != null) {
+                                    refusal = ConfirmContext(held);
+                                    if (refusal != null) return Refused(refusal);
+                                }
+                                /* BEFORE_ACTIVE_REPLACE */
+                                if (!Rename(stage, path, before.bytes != null)) return Result("conflict");
+                                committed = true;
+                            } finally { if (!committed) Discard(stage); }
+                        }
                     }
                     /* AFTER_ACTIVE_REPLACE */
                     var persisted = Read(chain, source);
@@ -446,8 +527,9 @@ public static class PredictionsPreferences {
         var json = new JavaScriptSerializer { MaxJsonLength = 3 * Limit, RecursionLimit = 16 };
         var request = json.Deserialize<Request>(new UTF8Encoding(false, true).GetString(Convert.FromBase64String(packet)));
         Require(request != null && (request.op == "read" || request.op == "commit") && !String.IsNullOrEmpty(request.source));
+        Require(request.context == null || (request.op == "commit" && request.context == "create"));
         using (var session = new Session()) {
-            return json.Serialize(session.Run(request.op, request.source, request.systemPaths, request.expected, request.bytes));
+            return json.Serialize(session.Run(request.op, request.source, request.systemPaths, request.expected, request.bytes, request.context));
         }
     }
 

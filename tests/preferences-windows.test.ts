@@ -7,7 +7,7 @@ import { dirname, join } from "node:path"
 import { test, type TestContext } from "node:test"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
-import { administrativePaths, createPreferencesStore, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
+import { administrativePaths, createPreferencesStore, createWindowsStore, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
 
 const native = { skip: process.platform !== "win32", timeout: 25000 }
 const signal = () => new AbortController().signal
@@ -92,6 +92,105 @@ test("Windows reports cancellation after Save dispatch as uncertain without retr
   controller.abort()
   assert.deepEqual(await save, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
   assert.equal(commits, 1)
+})
+
+const refusedContext = (reason: string) => `predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`
+const windowsReasons = ["it is a link", "it is not a regular file", "it has more than one link", "it is owned by another user", "other users can write to it", "it changed while it was checked"]
+type Packet = { op: string; bytes?: string; context?: string }
+const written = (request: Packet) => JSON.stringify({ kind: "written", reason: null, snapshot: { ...candidate, bytes: request.bytes } })
+
+test("Windows asks the verifier to create the context file only when requested", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  const commits: Packet[] = []
+  const io = createWindowsIO(async (request: Packet) => {
+    if (request.op === "read") return JSON.stringify({ kind: "snapshot", snapshot: candidate })
+    commits.push(request)
+    return written(request)
+  })
+  const before = await io.readWindowsPreferences(candidate.source, administration, signal())
+  assert.equal((await io.commitWindowsPreferences(before, administration, Buffer.from(initial), signal())).kind, "written")
+  assert.equal((await io.commitWindowsPreferences(before, administration, Buffer.from(initial), signal(), "create")).kind, "written")
+  assert.equal(Object.hasOwn(commits[0], "context"), false)
+  assert.equal(commits[1].context, "create")
+})
+
+test("Windows reports a refused context file with the refusal copy", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  for (const reason of windowsReasons) {
+    const io = createWindowsIO(async (request: Packet) => request.op === "read"
+      ? JSON.stringify({ kind: "snapshot", snapshot: candidate })
+      : JSON.stringify({ kind: "refused_context", snapshot: null, reason }))
+    const before = await io.readWindowsPreferences(candidate.source, administration, signal())
+    assert.deepEqual(await io.commitWindowsPreferences(before, administration, Buffer.from(initial), signal(), "create"), { kind: "refused_context", message: refusedContext(reason) })
+  }
+})
+
+test("Windows treats a malformed or unrequested context refusal as an uncertain failure", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  const uncertain = { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." }
+  for (const reason of [undefined, null, 7, "", "private helper output", "it has extra access rules", ["it is a link"]]) {
+    const io = createWindowsIO(async (request: Packet) => request.op === "read"
+      ? JSON.stringify({ kind: "snapshot", snapshot: candidate })
+      : JSON.stringify({ kind: "refused_context", snapshot: null, reason }))
+    const before = await io.readWindowsPreferences(candidate.source, administration, signal())
+    const result = await io.commitWindowsPreferences(before, administration, Buffer.from(initial), signal(), "create")
+    assert.deepEqual(result, uncertain, `accepted reason ${JSON.stringify(reason)}`)
+    assert.doesNotMatch(JSON.stringify(result), /private helper output/)
+  }
+  const io = createWindowsIO(async (request: Packet) => request.op === "read"
+    ? JSON.stringify({ kind: "snapshot", snapshot: candidate })
+    : JSON.stringify({ kind: "refused_context", snapshot: null, reason: "it is a link" }))
+  const before = await io.readWindowsPreferences(candidate.source, administration, signal())
+  assert.deepEqual(await io.commitWindowsPreferences(before, administration, Buffer.from(initial), signal()), uncertain)
+})
+
+async function fakeWindowsStore(reply: (request: Packet) => string = written) {
+  const { createWindowsIO } = await loadWindowsIO()
+  const host: PreferencesHost = { home: "C:\\Users\\Example", platform: "win32", env: { APPDATA: "C:\\Users\\Example\\AppData\\Roaming" }, systemPaths: [] }
+  const source = preferencesPath(host), commits: Packet[] = []
+  let stored: string | null = Buffer.from('{"version":1,"settings":{"automatic":false,"contextFile":"C:\\\\notes.md"}}\n').toString("base64")
+  const store = createWindowsStore(host, createWindowsIO(async (request: Packet) => {
+    if (request.op === "read") return JSON.stringify({ kind: "snapshot", snapshot: { ...candidate, source, bytes: stored } })
+    commits.push(request)
+    const text = reply(request), result = JSON.parse(text)
+    if (result.kind === "written") { result.snapshot.source = source; stored = request.bytes!; return JSON.stringify(result) }
+    return text
+  }))
+  const saved = () => JSON.parse(Buffer.from(stored!, "base64").toString()).settings
+  return { store, commits, saved }
+}
+
+test("the Windows store saves the fixed context path and asks the verifier to create the file", async () => {
+  const f = await fakeWindowsStore()
+  const before = await f.store.read(signal())
+  assert.equal(before.contextFile, "C:\\notes.md")
+  assert.equal((await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal(f.commits.length, 1)
+  assert.equal(f.commits[0].context, "create")
+  assert.deepEqual(f.saved(), { automatic: false, contextFile: "~/AppData/Roaming/opencode/predictions-context.md", debug: true })
+})
+
+test("the Windows store stops using a context file without asking the verifier to create one", async () => {
+  const f = await fakeWindowsStore()
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "none" }, signal())).kind, "written")
+  assert.equal(Object.hasOwn(f.commits[0], "context"), false)
+  assert.deepEqual(f.saved(), { automatic: false })
+  const next = await f.store.read(signal())
+  assert.equal((await f.store.write(next.revision, { fields: { debug: true } }, signal())).kind, "written")
+  assert.equal(Object.hasOwn(f.commits[1], "context"), false)
+  assert.deepEqual(f.saved(), { automatic: false, debug: true })
+})
+
+test("the Windows store returns a context refusal and rejects any other context value", async () => {
+  const f = await fakeWindowsStore(() => JSON.stringify({ kind: "refused_context", snapshot: null, reason: "it is a link" }))
+  const before = await f.store.read(signal())
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext("it is a link") })
+  assert.deepEqual(f.saved(), { automatic: false, contextFile: "C:\\notes.md" })
+  for (const bad of ["C:\\other.md", "", null, true]) {
+    await assert.rejects(f.store.write(before.revision, { fields: {}, contextFile: bad as never }, signal()), { message: "Invalid save input." })
+  }
+  assert.equal(f.commits.length, 1)
 })
 
 async function fixture(t: TestContext) {

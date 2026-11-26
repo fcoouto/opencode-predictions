@@ -5,7 +5,7 @@ import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { applyPreferenceChange, parsePreferences, preferenceFields, type PreferenceDocument } from "./preferences.ts"
-import { commitWindowsPreferences, readWindowsPreferences, windowsLocalRoot, type WindowsSnapshot } from "./preferences-windows.ts"
+import { commitWindowsPreferences, contextRefusal, readWindowsPreferences, windowsLocalRoot, type WindowsIO, type WindowsSnapshot } from "./preferences-windows.ts"
 import type { SaveInput, SettingsInput } from "./setup.ts"
 
 export type PreferencesHost = { home: string; platform: NodeJS.Platform; env: Record<string, string | undefined>; systemPaths: readonly string[] }
@@ -19,7 +19,7 @@ class Refusal extends Error {}
 class ContextRefusal extends Refusal {}
 const fail = (message: string): never => { throw new Refusal(message) }
 const changedContext = "it changed while it was checked"
-const refuseContext = (reason: string): never => { throw new ContextRefusal(`predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`) }
+const refuseContext = (reason: string): never => { throw new ContextRefusal(contextRefusal(reason)) }
 const uncertain = "Changes may have been saved. Reopen settings before trying again."
 const identity = (value: Stats) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...(value.isDirectory() ? [] : [value.nlink])]
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
@@ -181,10 +181,11 @@ async function confirmContextFile(directory: string, hold: ContextHold) {
   await verifyContextFile(directory, expected)
 }
 
-function createWindowsStore(host: PreferencesHost) {
+// io is replaceable so the store's own logic runs in unit tests without the Windows verifier.
+export function createWindowsStore(host: PreferencesHost, io: WindowsIO = { readWindowsPreferences, commitWindowsPreferences }) {
   const revision = (state: WindowsSnapshot) => hash([state.source, state.state, state.expected])
   const systemPaths = () => host.systemPaths.map(path => windowsLocalRoot(path) ? path : "")
-  const inspect = (signal: AbortSignal) => readWindowsPreferences(preferencesPath(host), systemPaths(), signal)
+  const inspect = (signal: AbortSignal) => io.readWindowsPreferences(preferencesPath(host), systemPaths(), signal)
   const invalid = (source: string, reason?: string): PreferenceRead => ({
     revision: hash([source, "unavailable"]), source, writable: false, documentValid: false, policy: "user", overrides: {},
     reason: reason ?? "Windows prediction preferences cannot be read or verified. Check the server's configuration directory.",
@@ -210,6 +211,9 @@ function createWindowsStore(host: PreferencesHost) {
     },
     async write(current: string, input: Omit<SaveInput, "revision">, signal: AbortSignal): Promise<PreferencesWriteResult> {
       signal.throwIfAborted()
+      // The context file is applied here, never by applyPreferenceChange, which rejects unknown members.
+      const { contextFile, ...change } = input
+      if (contextFile !== undefined && contextFile !== "managed" && contextFile !== "none") throw new Error("Invalid save input.")
       let before: WindowsSnapshot, document: PreferenceDocument
       try {
         before = await inspect(signal)
@@ -222,13 +226,16 @@ function createWindowsStore(host: PreferencesHost) {
       if (revision(before) !== current) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." }
       let bytes: Buffer
       try {
-        const settings = applyPreferenceChange(document.settings, input)
+        const settings = applyPreferenceChange(document.settings, change)
+        if (contextFile === "managed") settings.contextFile = managedContextPath(host).stored
+        if (contextFile === "none") delete settings.contextFile
         bytes = Buffer.from(JSON.stringify({ ...document, settings }, null, 2) + "\n")
         decodePreferences(bytes)
       } catch (error) {
         return { kind: "failed", message: error instanceof Refusal ? error.message : "Prediction preference changes are invalid." }
       }
-      const result = await commitWindowsPreferences(before, systemPaths(), bytes, signal)
+      // The verifier creates or adopts the file inside the directory chain it has pinned, before it replaces the preferences.
+      const result = await io.commitWindowsPreferences(before, systemPaths(), bytes, signal, contextFile === "managed" ? "create" : undefined)
       return result.kind === "written" ? { kind: "written", revision: revision(result.snapshot) } : result
     },
   }
