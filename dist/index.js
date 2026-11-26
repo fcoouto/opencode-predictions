@@ -925,6 +925,7 @@ var windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())) | ConvertFrom-Json
+[Console]::Error.WriteLine('WP2')
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -1344,7 +1345,9 @@ public static class PredictionsPreferences {
     }
 }
 '@
+[Console]::Error.WriteLine('WP3')
 $reply = [PredictionsPreferences]::Execute($request.op, $request.source, [string[]]$request.systemPaths, $request.expected, $request.bytes)
+[Console]::Error.WriteLine('WP4')
 [Console]::WriteLine((ConvertTo-Json -InputObject $reply -Depth 4 -Compress))
 `;
 
@@ -1359,7 +1362,7 @@ var readOnly = "Windows prediction preferences are not writable.";
 var refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings.";
 var conflict = "Prediction preferences changed. Reload settings before saving.";
 var bootstrap = Buffer.from(
-  "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
+  "$ErrorActionPreference='Stop'; [Console]::Error.WriteLine('WP1'); $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
   "utf16le"
 ).toString("base64");
 var HelperRefusal = class extends Error {
@@ -1378,7 +1381,7 @@ async function invokeWindows(request, signal, script = windowsScript) {
   const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
     cwd: system,
     windowsHide: true,
-    stdio: ["pipe", "pipe", "ignore"],
+    stdio: ["pipe", "pipe", "pipe"],
     signal: AbortSignal.any([signal, deadline]),
     env: {
       SystemRoot: root,
@@ -1392,11 +1395,15 @@ async function invokeWindows(request, signal, script = windowsScript) {
   return new Promise((resolve2, reject) => {
     const output = [];
     let length = 0, failed = false;
+    let phases = "";
     child.on("error", () => {
       failed = true;
     });
     child.stdin.on("error", () => {
       failed = true;
+    });
+    child.stderr.on("data", (chunk) => {
+      phases = (phases + chunk.toString("utf8")).slice(0, 120);
     });
     child.stdout.on("data", (chunk) => {
       length += chunk.length;
@@ -1406,8 +1413,10 @@ async function invokeWindows(request, signal, script = windowsScript) {
       } else output.push(chunk);
     });
     child.once("close", (code) => {
-      if (deadline.aborted) reject(new HelperRefusal(helperTimeout));
-      else if (failed || code !== 0) reject(new HelperRefusal(helperUnavailable));
+      if (deadline.aborted) {
+        const last = [...phases.matchAll(/^WP([1-4])\r?$/gm)].at(-1)?.[1] ?? "0";
+        reject(new HelperRefusal(`${helperTimeout} Stage ${last}.`));
+      } else if (failed || code !== 0) reject(new HelperRefusal(helperUnavailable));
       else {
         try {
           resolve2(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output)));

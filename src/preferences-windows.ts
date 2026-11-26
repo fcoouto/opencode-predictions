@@ -12,7 +12,7 @@ const readOnly = "Windows prediction preferences are not writable."
 const refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings."
 const conflict = "Prediction preferences changed. Reload settings before saving."
 const bootstrap = Buffer.from(
-  "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
+  "$ErrorActionPreference='Stop'; [Console]::Error.WriteLine('WP1'); $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
   "utf16le",
 ).toString("base64")
 
@@ -41,7 +41,7 @@ export async function invokeWindows(request: Request, signal: AbortSignal, scrip
   const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0")
   const deadline = AbortSignal.timeout(1800)
   const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
-    cwd: system, windowsHide: true, stdio: ["pipe", "pipe", "ignore"],
+    cwd: system, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
     signal: AbortSignal.any([signal, deadline]),
     env: { SystemRoot: root, PATH: system, PSModulePath: win32.join(powershell, "Modules"),
       TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE },
@@ -49,8 +49,10 @@ export async function invokeWindows(request: Request, signal: AbortSignal, scrip
   return new Promise((resolve, reject) => {
     const output: Buffer[] = []
     let length = 0, failed = false
+    let phases = ""
     child.on("error", () => { failed = true })
     child.stdin.on("error", () => { failed = true })
+    child.stderr.on("data", (chunk: Buffer) => { phases = (phases + chunk.toString("utf8")).slice(0, 120) })
     child.stdout.on("data", (chunk: Buffer) => {
       length += chunk.length
       if (length > wireLimit) {
@@ -59,7 +61,10 @@ export async function invokeWindows(request: Request, signal: AbortSignal, scrip
       } else output.push(chunk)
     })
     child.once("close", code => {
-      if (deadline.aborted) reject(new HelperRefusal(helperTimeout))
+      if (deadline.aborted) {
+        const last = [...phases.matchAll(/^WP([1-4])\r?$/gm)].at(-1)?.[1] ?? "0"
+        reject(new HelperRefusal(`${helperTimeout} Stage ${last}.`))
+      }
       else if (failed || code !== 0) reject(new HelperRefusal(helperUnavailable))
       else {
         try { resolve(new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(output))) }

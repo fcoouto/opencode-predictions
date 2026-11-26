@@ -26,8 +26,8 @@ async function entries(path: string): Promise<string[] | undefined> {
 async function coldRead(read: () => Promise<SetupSnapshot>, t: TestContext) {
   try {
     const state = await read()
-    if (state.reason !== "Windows PowerShell timed out while verifying prediction preferences." || state.writable) return state
-    t.diagnostic("Cold PowerShell startup hit the read deadline. Reopening settings once.")
+    if (!state.reason?.startsWith("Windows PowerShell timed out while verifying prediction preferences.") || state.writable) return state
+    t.diagnostic(`${state.reason} Reopening settings once.`)
   } catch (error) {
     const failure = error as { cause?: { cause?: { code?: string } } }
     if (failure.cause?.cause?.code !== "ECONNRESET") throw error
