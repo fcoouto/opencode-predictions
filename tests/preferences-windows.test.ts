@@ -151,6 +151,20 @@ test("Windows reads create nothing and a second Save creates a private backup", 
   assert.equal(await readFile(f.config, "utf8"), f.configBytes)
 })
 
+test("Windows keeps a readable active file with a custom ACL read-only", native, async t => {
+  const f = await fixture(t)
+  const empty = await f.store.read(signal())
+  assert.equal((await f.store.write(empty.revision, { fields: { automatic: false } }, signal())).kind, "written")
+  await icacls(f.source, "/grant", "*S-1-5-11:(R)")
+  const bytes = await readFile(f.source), acl = await getAcl(f.source)
+  const before = await f.store.read(signal())
+  assert.equal(before.documentValid, true)
+  assert.deepEqual(before.overrides, { automatic: false })
+  assert.deepEqual(await readFile(f.source), bytes)
+  assert.equal(await getAcl(f.source), acl)
+  assert.equal(before.writable, false, "An extra read grant is not the standard private ACL.")
+})
+
 test("Windows refuses an empty replacement directory with a stale revision", native, async t => {
   const f = await fixture(t)
   const before = await f.store.read(signal())

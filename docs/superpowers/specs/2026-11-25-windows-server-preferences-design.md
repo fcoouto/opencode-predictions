@@ -26,6 +26,12 @@ Bind verification to filesystem objects. Pin each verified directory until the o
 
 Evaluate the server account's file write access separately from its ability to replace an entry through the parent. Honor a file's read-only attribute and deny Save if the account cannot write the existing file, even if replacement is technically possible. A verified readable file stays active in that case.
 
+### Save policy after parity review
+
+Use the Unix risk model: preserve ordinary access permissions, keep staging and backups private, and accept best-effort revision checks and last-writer-wins. Do not try to rewrite or merge an arbitrary Windows ACL. Replace an existing active file or backup only if its verified discretionary permissions match the private file policy used for new files. Extra or narrower grants are read-only for an otherwise readable active file. Decide active-file eligibility from the same open file that supplies the revision and bytes. Refuse replacement of an EFS-encrypted active file or existing backup before writing preference bytes to staging.
+
+Save does not preserve all filesystem metadata. Keep the existing refusal of detectable unsupported integrity or access policies, but do not require privileged audit ACL inspection or guarantee preservation of opaque audit metadata. This limit matches the Unix store's metadata guarantee and must not prevent repeat Save on ordinary app-created files.
+
 Retain exclusive same-directory staging, bounded UTF-8 validation, file sync, backup, stale-draft checks, atomic replacement, and postcommit readback. On Windows, stage files with verified private ACLs **before** writing preference bytes. Do not loosen an existing file's ACL or alter an existing OpenCode directory's ACL. If protections cannot be established before commit, leave the active bytes unchanged and return a safe reason. If replacement succeeds but readback fails or observes different bytes, use the existing uncertain outcome and require a fresh read before another Save. Do not retry, roll back, or claim success. Directory pins protect path identity; they do not serialize writers. No save locks, auto-repair, or new authentication. Concurrent writers retain the existing last-writer-wins risk, not permission to operate on an unverified path.
 
 ## Native acceptance
