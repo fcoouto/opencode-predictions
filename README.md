@@ -36,8 +36,7 @@
 
 ## Get started
 
-**Requires OpenCode V2.** Check [compatibility](#compatibility) if your server
-runs on Windows.
+**Requires OpenCode V2.** If you use Windows, check [compatibility](#compatibility).
 
 <a id="1-add-the-plugin"></a>
 
@@ -679,11 +678,11 @@ task, it favors a short contextual reply instead of repeating the proposal.
   including shared-service and standalone setups. Prediction behavior was
   also tested on Desktop `2.2.7`. These are tested versions, not minimums.
   See the [qualification record](docs/research/2026-11-18-predictions-preferences-qualification.md).
-- **Tested on Windows:** Preferences on a native x64 OpenCode `2.2.6` server
-  with local NTFS, including `%APPDATA%` and `XDG_CONFIG_HOME`. The Windows
-  server needs an npm release that includes the prebuilt verifier. Git installs
-  without the verifier and native ARM64 servers cannot load or save preferences.
-  This qualifies the server, not the Windows Desktop UI. See the
+- **Tested on Windows:** Loading and saving preferences with OpenCode `2.2.6`
+  on local NTFS, including `%APPDATA%` and `XDG_CONFIG_HOME`. Use the npm release,
+  which includes the required verifier. Native ARM64 and Git installs without
+  the verifier cannot load or save preferences. The tests covered preferences,
+  not the Windows Desktop UI. See the
   [Windows qualification record](docs/research/2026-11-26-windows-preferences-qualification.md).
 - **Linux:** File and permission behavior has not been tested on a native host.
 - **Node.js:** The npm package declares Node.js `>=22`. Contributors use
