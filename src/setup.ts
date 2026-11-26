@@ -192,6 +192,14 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
   }
 }
 
+// A selector names a catalog model only when its base is exactly that model's provider/id; anything else is edited as a pattern.
+export function parseSelector(selector: string, catalog: readonly CatalogModel[]): { kind: "model"; model: CatalogModel; variant?: string } | { kind: "pattern" } {
+  const hash = selector.indexOf("#")
+  const base = hash < 0 ? selector : selector.slice(0, hash)
+  const model = catalog.find(item => item.providerID + "/" + item.id === base)
+  return model ? { kind: "model", model, variant: hash < 0 ? undefined : selector.slice(hash + 1) } : { kind: "pattern" }
+}
+
 export function readGroups(fields: SettingsInput): string[][] | undefined {
   if (fields.models === undefined) return undefined
   const parsed = parseOptions({ models: fields.models })
