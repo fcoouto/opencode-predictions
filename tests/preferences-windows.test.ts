@@ -71,6 +71,29 @@ test("Windows does not replay a commit after losing the helper reply", async () 
   assert.equal(commits, 1)
 })
 
+test("Windows reports cancellation after Save dispatch as uncertain without retrying", async () => {
+  const { createWindowsIO } = await loadWindowsIO()
+  const controller = new AbortController()
+  let markDispatched!: () => void
+  const dispatched = new Promise<void>(resolve => { markDispatched = resolve })
+  let commits = 0
+  const io = createWindowsIO(async (request: { op: string }, abort: AbortSignal) => {
+    if (request.op === "read") return JSON.stringify({ kind: "snapshot", snapshot: candidate })
+    commits++
+    abort.throwIfAborted()
+    return new Promise<string>((_resolve, reject) => {
+      abort.addEventListener("abort", () => reject(abort.reason), { once: true })
+      markDispatched()
+    })
+  })
+  const before = await io.readWindowsPreferences(candidate.source, administration, signal())
+  const save = io.commitWindowsPreferences(before, administration, Buffer.from(initial), controller.signal)
+  await dispatched
+  controller.abort()
+  assert.deepEqual(await save, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+  assert.equal(commits, 1)
+})
+
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), "predictions-win-"))
   t.after(() => rm(root, { recursive: true, force: true }))
