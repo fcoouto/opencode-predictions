@@ -85,7 +85,8 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
       signal.throwIfAborted()
       if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["revision", "fields", "removeModels", "reset", "contextFile"].includes(key))) throw new Error("Unknown save field.")
       if (typeof input.revision !== "string" || !input.revision || Buffer.byteLength(JSON.stringify(input)) > 65536) throw new Error("Invalid save input.")
-      if (input.contextFile !== undefined && input.contextFile !== "managed" && input.contextFile !== "none") throw new Error("Invalid save input.")
+      // Presence, not value, decides: a present undefined is still a choice, and only managed or none may appear.
+      if (Object.hasOwn(input, "contextFile") && input.contextFile !== "managed" && input.contextFile !== "none") throw new Error("Invalid save input.")
       const invalid = validation(input.fields)
       if (invalid.length) return { kind: "invalid", issues: invalid }
       const { revision: _revision, contextFile, ...change } = input
