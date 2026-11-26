@@ -1534,7 +1534,7 @@ ${setupTUIText.fuller}`);
     setGroups(editor, next);
     await editor.preview();
   }
-  ctx.keymap.layer(() => ({ priority: 20, commands: [{ id: "predictions.setup", title, group: "Predictions", palette: true, run: () => void run() }] }));
+  ctx.keymap.layer(() => ({ mode: "global", priority: 20, commands: [{ id: "predictions.setup", title, group: "Predictions", palette: true, run: () => void run() }] }));
   return () => {
     disposed = true;
   };
@@ -1612,11 +1612,13 @@ var tui_default = Plugin.define({
       },
       diagnostics: () => ({ host: "CLI", hostVersion: ctx.app.version, clientVersion: pluginVersion, feedbackRevision, composerEligible: adapter.eligible() })
     });
+    ctx.keymap.layer(() => ({ mode: "global", priority: 20, commands: [
+      { id: "predictions.request", title: "Predict next prompt", group: "Predictions", palette: true, run: () => client.request() },
+      { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() }
+    ] }));
     ctx.keymap.layer(() => ({ priority: 20, commands: [
       { id: "predictions.accept", bind: "tab", run: () => client.accept() ? void 0 : false },
-      { id: "predictions.request", title: "Predict next prompt", group: "Predictions", palette: true, run: () => client.request() },
-      { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() },
-      { id: "predictions.status", title: "Prediction status and preview", group: "Predictions", palette: true, run: () => client.status() }
+      { id: "predictions.request-shortcut", title: "Predict next prompt", bind: "alt+shift+p", run: () => client.requestFromShortcut() }
     ] }));
     const stopSetup = registerSetupTUI(ctx, () => client.status());
     const stopConfig = ctx.data.on("config.updated", () => client.invalidate({ suppressAutomatic: true }));
