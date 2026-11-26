@@ -14,17 +14,19 @@ import type { Status } from "../../src/service.ts"
 import type { ContextFileStatus, SaveInput, SaveResult, SetupSnapshot } from "../../src/setup.ts"
 import { createFixture } from "./fixture.mjs"
 
-assert.equal(process.platform, "win32", "This qualification test requires native Windows.")
+// On another platform every case is registered as skipped, so loading this file does not fail there.
+const skip = process.platform === "win32" ? false : "This qualification test requires native Windows."
 const { APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE } = process.env
-for (const [name, value] of Object.entries({ APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
-  assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
-}
 const helperName = "predictions-verifier.exe"
-assert.ok(existsSync(join(PREDICTIONS_PACKAGE!, "dist", helperName)), "The installed npm tarball must contain the Windows verifier.")
-
 const assertNoAdminConfig = () => assert.rejects(lstat(join(ProgramData!, "opencode")), { code: "ENOENT" })
-before(assertNoAdminConfig)
-after(assertNoAdminConfig)
+if (!skip) {
+  for (const [name, value] of Object.entries({ APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
+    assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
+  }
+  assert.ok(existsSync(join(PREDICTIONS_PACKAGE!, "dist", helperName)), "The installed npm tarball must contain the Windows verifier.")
+  before(assertNoAdminConfig)
+  after(assertNoAdminConfig)
+}
 
 async function entries(path: string): Promise<string[] | undefined> {
   try { return (await readdir(path)).sort() }
@@ -48,7 +50,7 @@ const rootCases = [
   ["override", "literal Windows config paths round-trip"],
 ] as const
 for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...rootCases].reverse()) {
-  test(name, { timeout: 120000 }, async t => {
+  test(name, { skip, timeout: 120000 }, async t => {
     t.diagnostic(`${windowsConfig} runs ${windowsConfig === firstRoot ? "first" : "second"} in this profile; helper: ${helperName}.`)
     await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
       windowsConfig, projectConfig: true, seedPreferences: false,
@@ -110,7 +112,7 @@ for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...ro
   })
 }
 
-test("two Windows clients sustain status polling without accumulating helpers", { timeout: 90000 }, async t => {
+test("two Windows clients sustain status polling without accumulating helpers", { skip, timeout: 90000 }, async t => {
   await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
     windowsConfig: "override", projectConfig: true, seedPreferences: false,
   })
@@ -197,8 +199,10 @@ async function assertPrivateAcl(path: string, directory = false) {
 }
 
 // Every case gets its own configuration root, so a context file left by one case cannot reach another.
+// These seven extra server starts met a slow period on one CI runner, where three starts in a row needed
+// more than the default 10 s to activate the plugin. They wait longer; the other cases keep the default.
 const contextFixture = () => createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
-  windowsConfig: "override", projectConfig: true, seedPreferences: false,
+  windowsConfig: "override", projectConfig: true, seedPreferences: false, readyMs: 45000,
 })
 // RPC results are compared as plain JSON, whatever objects the client decodes them into.
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value))
@@ -233,7 +237,7 @@ async function seedPreferences(c: ContextClient) {
   assert.deepEqual(await c.status(), { set: false })
 }
 
-test("Windows first Save creates the missing directory and an empty private context file", { timeout: 120000 }, async t => {
+test("Windows first Save creates the missing directory and an empty private context file", { skip, timeout: 120000 }, async t => {
   await using f = await contextFixture()
   const c = contextClient(f)
   // The server can create its configuration directory when it starts. Remove it while it is empty,
@@ -266,7 +270,7 @@ test("Windows first Save creates the missing directory and an empty private cont
   assert.deepEqual(f.calls, [])
 })
 
-test("Windows adopts an existing safe context file without changing it", { timeout: 120000 }, async () => {
+test("Windows adopts an existing safe context file without changing it", { skip, timeout: 120000 }, async () => {
   await using f = await contextFixture()
   const c = contextClient(f)
   await seedPreferences(c)
@@ -343,7 +347,7 @@ async function occupy(kind: typeof unsafeEntries[number][0], path: string, outsi
 }
 
 for (const [kind, reason] of unsafeEntries) {
-  test(`Windows refuses a context file path that holds ${kind}`, { timeout: 120000 }, async t => {
+  test(`Windows refuses a context file path that holds ${kind}`, { skip, timeout: 120000 }, async t => {
     await using f = await contextFixture()
     const c = contextClient(f)
     await seedPreferences(c)

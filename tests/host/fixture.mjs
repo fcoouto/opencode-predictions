@@ -1,7 +1,7 @@
 import { createServer } from "node:http"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises"
 import { resolve, join } from "node:path"
 import { tmpdir } from "node:os"
 import { OpenCode } from "@opencode/client"
@@ -9,7 +9,7 @@ import { Service } from "@opencode/client/service"
 
 export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
 
-export async function createFixture(packagePath = resolve("."), settings = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "", seedPreferences = true, legacyOptions = {}, windowsConfig = "" } = {}) {
+export async function createFixture(packagePath = resolve("."), settings = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "", seedPreferences = true, legacyOptions = {}, windowsConfig = "", readyMs = 10000 } = {}) {
   if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
@@ -94,6 +94,14 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
     await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()))
     await writeFile(join(configDirectory, "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
   }
+  const redact = text => text.replace(/server password \S+/g, "server password [redacted]")
+  // The server reports little on its output. The end of its newest log file shows what a slow start was doing.
+  const serverLog = async () => {
+    try {
+      const logs = join(env.XDG_DATA_HOME, "opencode", "log")
+      return redact((await readFile(join(logs, (await readdir(logs)).sort().at(-1)), "utf8")).slice(-8000))
+    } catch { return "" }
+  }
   let child
   let address = ""
   let headers = { authorization: "" }
@@ -115,12 +123,17 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
     const password = output.match(/server password (\S+)/)?.[1]
     headers = { authorization: "Basic " + Buffer.from("opencode:" + password).toString("base64") }
     api = OpenCode.make({ baseUrl: address, headers })
-    const ready = AbortSignal.timeout(10000)
-    for (;;) {
-      ready.throwIfAborted()
-      const plugins = await api.plugin.list({ location: { directory } }, { signal: ready })
-      if (plugins.data.some(plugin => plugin.id === "opencode-predictions" && plugin.state.status === "active")) break
-      await new Promise(resolve => setTimeout(resolve, 50))
+    const ready = AbortSignal.timeout(readyMs)
+    try {
+      for (;;) {
+        ready.throwIfAborted()
+        const plugins = await api.plugin.list({ location: { directory } }, { signal: ready })
+        if (plugins.data.some(plugin => plugin.id === "opencode-predictions" && plugin.state.status === "active")) break
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+    } catch (error) {
+      if (!ready.aborted) throw error
+      throw new Error(`Fixture plugin was not active after ${readyMs} ms: ${redact(output)}\n${await serverLog()}`, { cause: error })
     }
   }
   const stopChild = async () => {
@@ -135,5 +148,5 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
     provider.closeAllConnections(); provider.close()
   }
   const restart = async () => { await stopChild(); await start() }
-  return { root, directory, env, get api() { return api }, get address() { return address }, get pid() { return child.pid }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
+  return { root, directory, env, get api() { return api }, get address() { return address }, get pid() { return child.pid }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => redact(output), restart, stop, [Symbol.asyncDispose]: stop }
 }
