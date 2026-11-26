@@ -116,7 +116,7 @@ The standard install does not update automatically. To update it, run
 `opencode plugin update opencode-predictions`.
 
 Replace `opencode-predictions` in the install command or `plugins` array with
-`opencode-predictions@0.4.4` to pin that release, or
+`opencode-predictions@0.5.0` to pin that release, or
 `github:fcoouto/opencode-predictions#main` to follow the development branch.
 
 </details>
