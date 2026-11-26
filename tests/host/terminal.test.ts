@@ -69,7 +69,7 @@ for (const outcome of ["success", "abstention", "error", "timeout", "typing", "f
   assert.equal(fixture.calls.filter(call => !isPredictionCall(call)).length, initial)
 })
 
-for (const columns of [100, 56]) test(`real CLI PTY Predictions Setup edits and saves through real dialogs at ${columns} columns without generating`, { timeout: 90000 }, async () => {
+for (const columns of [100, 56]) test(`real CLI PTY Ctrl+P opens Predictions Setup and saves at ${columns} columns without generating`, { timeout: 90000 }, async () => {
   await using fixture = await createFixture(process.env.PREDICTIONS_PACKAGE, { automatic: false, models: [["fixture/model"]] }, {}, { configSource: "global-jsonc", projectConfig: true })
   const session = await fixture.api.session.create({ location: { directory: fixture.directory }, model: { providerID: "fixture", id: "model" } })
   const observation = join(fixture.root, "setup.json")

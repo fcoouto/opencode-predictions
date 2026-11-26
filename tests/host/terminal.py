@@ -140,7 +140,14 @@ try:
         print(json.dumps({"fullSetup": True, "host": json.loads(pathlib.Path(observation + ".host").read_text())}))
     elif os.environ.get("PREDICTIONS_SETUP_TEST") == "1":
         pump_until(lambda: pathlib.Path(observation + ".ready").exists())
-        send_and_wait(b"\x1b[17~", "Predictions Setup")
+        send_and_wait(b"\x10", "Commands")  # Ctrl+P opens OpenCode's command palette.
+        output.clear()
+        os.write(master, b"Predic")
+        commands = ("Predictions Setup", "Predict next prompt", "Prediction status and preview")
+        pump_until(lambda: all(command in screen_text() for command in commands))
+        send_and_wait(b"tions Set", "tions Set")
+        output.clear()
+        os.write(master, b"\r")
         pump_until(lambda: "Behavior" in screen_text() and "Advanced" in screen_text())
         capture("root")
         assert "unsaved" not in screen_text()

@@ -293,6 +293,6 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     await editor.preview()
   }
 
-  ctx.keymap.layer(() => ({ priority: 20, commands: [{ id: "predictions.setup", title, group: "Predictions", palette: true, run: () => void run() }] }))
+  ctx.keymap.layer(() => ({ mode: "global", priority: 20, commands: [{ id: "predictions.setup", title, group: "Predictions", palette: true, run: () => void run() }] }))
   return () => { disposed = true }
 }
