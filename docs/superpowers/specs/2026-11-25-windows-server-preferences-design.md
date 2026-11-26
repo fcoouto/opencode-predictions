@@ -24,6 +24,8 @@ Verify the local volume and walk the chain from the volume root without followin
 
 Bind verification to filesystem objects. Pin each verified directory until the operation finishes so it cannot be replaced between verification and use. Verify the active file's identity and permissions on the object opened for data access. Refuse symlinked, hard-linked, reparse-point, or nonregular active files or backups. Keep staging and replacement under the pinned, verified directory. Reject changed identities or security at the existing precommit checks. If the runtime cannot provide these guarantees, fail closed rather than falling back to a separate pathname-only ACL check. Check `%ProgramData%\opencode` before using preferences. An existing administrative source or unknown/uncheckable administrative path remains managed and suppresses user preferences.
 
+The administrative lookup checks presence only. Permit ordinary attribute and extended-attribute rights on its ancestor directories below the volume root, and recheck the pinned ancestors before accepting absence. Keep ownership, reparse, permission-change, and delete checks. This exception never applies to the user preferences path or grants permission to write.
+
 Evaluate the server account's file write access separately from its ability to replace an entry through the parent. Honor a file's read-only attribute and deny Save if the account cannot write the existing file, even if replacement is technically possible. A verified readable file stays active in that case.
 
 ### Save policy after parity review

@@ -66,8 +66,7 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
   if (windowsConfig) {
     for (const name of ["SystemRoot", "SystemDrive", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "USERNAME"]) env[name] = process.env[name]
     env.TMP = env.TEMP = temporary
-    env.ProgramData = join(root, "program-data")
-    await mkdir(env.ProgramData)
+    env.ProgramData = process.env.ProgramData
     if (windowsConfig === "appdata") delete env.XDG_CONFIG_HOME
     else env.XDG_CONFIG_HOME = join(root, "O'Brien [测试]")
     await writeFile(join(directory, "opencode.jsonc"), '// Preserve this project configuration.\n{"$schema":"https://opencode.ai/config.json"}\n')

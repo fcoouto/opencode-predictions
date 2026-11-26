@@ -136,13 +136,18 @@ public static class PredictionsPreferences {
             return mask & 0x0fffffff;
         }
 
-        void Safe(Item item, bool ancestor, bool directory, bool privateFile = false) {
+        void Safe(Item item, bool ancestor, bool directory, bool privateFile = false, bool adminProbe = false) {
             var sd = item.Descriptor;
             Require(ancestor ? Trusted(sd.Owner, true) : sd.Owner == user);
             Require(sd.DiscretionaryAcl != null && (sd.ControlFlags & ControlFlags.DiscretionaryAclPresent) != 0);
             // Replacement must not drop a file's integrity label or central access policy.
             if (!directory) Require(sd.SystemAcl == null || sd.SystemAcl.Count == 0);
             uint forbidden = Mutate | (directory ? DeleteChild : 0) | (ancestor ? 0 : WriteData | AppendData);
+            // Stock ProgramData grants attribute writes. The presence check never writes there.
+            if (adminProbe) {
+                Require(ancestor && directory && !privateFile);
+                forbidden &= ~(WriteEa | WriteAttr);
+            }
             foreach (var entry in sd.DiscretionaryAcl) {
                 var ace = entry as CommonAce;
                 Require(ace != null && !ace.IsCallback && (ace.AceType == AceType.AccessAllowed || ace.AceType == AceType.AccessDenied));
@@ -220,7 +225,7 @@ public static class PredictionsPreferences {
                     chain.Items.Add(child);
                     chain.Physical = path;
                     chain.Next++;
-                    Safe(child, administrative || !chain.DirectoryExists, true);
+                    Safe(child, administrative || !chain.DirectoryExists, true, adminProbe: administrative);
                 }
                 return chain;
             } catch { chain.Dispose(); throw; }
@@ -231,9 +236,15 @@ public static class PredictionsPreferences {
             foreach (var source in paths) {
                 try {
                     using (var chain = Pin(source, true)) {
-                        if (!chain.DirectoryExists) continue;
                         // Any existing entry suppresses preferences; inability to inspect it does too.
-                        using (var item = Open(chain.FilePath, true, true, true)) if (item != null) return true;
+                        if (chain.DirectoryExists) {
+                            using (var item = Open(chain.FilePath, true, true, true)) if (item != null) return true;
+                        }
+                        foreach (var pinned in chain.Items) {
+                            Inspect(pinned);
+                            Require((pinned.Info.Attributes & (Reparse | DirectoryFlag)) == DirectoryFlag);
+                            Safe(pinned, true, true, adminProbe: pinned != chain.Items[0]);
+                        }
                     }
                 } catch { return true; }
             }

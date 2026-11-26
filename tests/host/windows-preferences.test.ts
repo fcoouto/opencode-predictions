@@ -2,10 +2,10 @@ import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { existsSync } from "node:fs"
-import { readFile, readdir, writeFile } from "node:fs/promises"
+import { lstat, readFile, readdir, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join } from "node:path"
 import { setTimeout as pause } from "node:timers/promises"
-import { test, type TestContext } from "node:test"
+import { after, before, test, type TestContext } from "node:test"
 import { pathToFileURL } from "node:url"
 import { OpenCode } from "@opencode/client"
 import { Predictions } from "../../src/rpc.ts"
@@ -14,12 +14,16 @@ import type { SaveResult, SetupSnapshot } from "../../src/setup.ts"
 import { createFixture } from "./fixture.mjs"
 
 assert.equal(process.platform, "win32", "This qualification test requires native Windows.")
-const { APPDATA, OPENCODE_BIN, PREDICTIONS_PACKAGE } = process.env
-for (const [name, value] of Object.entries({ APPDATA, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
+const { APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE } = process.env
+for (const [name, value] of Object.entries({ APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
   assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
 }
 const helperName = "predictions-verifier.exe"
 assert.ok(existsSync(join(PREDICTIONS_PACKAGE!, "dist", helperName)), "The installed npm tarball must contain the Windows verifier.")
+
+const assertNoAdminConfig = () => assert.rejects(lstat(join(ProgramData!, "opencode")), { code: "ENOENT" })
+before(assertNoAdminConfig)
+after(assertNoAdminConfig)
 
 async function entries(path: string): Promise<string[] | undefined> {
   try { return (await readdir(path)).sort() }
@@ -112,6 +116,7 @@ test("two Windows clients sustain status polling without accumulating helpers", 
   const location = { directory: f.directory }
   const clients = [f.api, OpenCode.make({ baseUrl: f.address, headers: f.headers })]
   const before = await clients[0].rpc(Predictions).settingsV2({}, { location, signal: AbortSignal.timeout(2000) }) as SetupSnapshot
+  assert.equal(before.writable, true, before.reason ?? "Stock CommonApplicationData must not suppress user preferences.")
   const save = await clients[0].rpc(Predictions).saveSettings({ revision: before.revision, fields: { models: "fixture/model", automatic: false } },
     { location, signal: AbortSignal.timeout(12000) }) as SaveResult
   assert.equal(save.kind, "saved", JSON.stringify(save))

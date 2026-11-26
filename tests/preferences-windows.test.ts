@@ -310,6 +310,27 @@ test("Windows treats present or uncheckable administrative configuration as mana
   }
 })
 
+test("Windows allows ordinary attribute rights only on the administrative presence path", native, async t => {
+  const f = await fixture(t), parent = join(f.root, "admin-root"), policy = join(parent, "opencode")
+  f.host.systemPaths = [policy]
+  await mkdir(parent)
+  await icacls(parent, "/grant", "*S-1-5-11:(WEA,WA)")
+  const absent = await f.store.read(signal())
+  assert.equal(absent.policy, "user")
+  assert.equal(absent.writable, true, absent.reason ?? "An absent administrative entry must not block user preferences.")
+
+  const userPath = createPreferencesStore({ ...f.host, env: { XDG_CONFIG_HOME: join(parent, "user") } })
+  const unverified = await userPath.read(signal())
+  assert.equal(unverified.documentValid, false)
+  assert.equal(unverified.writable, false)
+
+  await mkdir(policy)
+  assert.equal((await f.store.read(signal())).policy, "managed")
+  f.host.systemPaths = [join(parent, "absent-policy")]
+  await icacls(parent, "/grant", "*S-1-5-11:(DC)")
+  assert.equal((await f.store.read(signal())).policy, "managed")
+})
+
 test("Windows refuses stale drafts and oversized preferences", native, async t => {
   const f = await fixture(t)
   await seedPrivate(f)

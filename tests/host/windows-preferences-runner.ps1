@@ -16,9 +16,11 @@ if ($StandardUser) {
     $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
     $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
     $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+    $env:ProgramData = [Environment]::GetFolderPath('CommonApplicationData')
     if (!$env:USERPROFILE -or !$env:APPDATA -or !$env:LOCALAPPDATA) {
         throw 'The standard account profile did not load.'
     }
+    if (!$env:ProgramData) { throw 'Windows CommonApplicationData is unavailable.' }
     $volume = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:APPDATA))
     if ($volume.DriveType -ne [IO.DriveType]::Fixed -or $volume.DriveFormat -ne 'NTFS') {
         throw 'Native qualification requires an APPDATA profile on a fixed NTFS volume.'
@@ -30,6 +32,7 @@ if ($StandardUser) {
     $env:PREDICTIONS_PACKAGE = Join-Path $Stage 'node_modules\opencode-predictions'
     $env:PREDICTIONS_WINDOWS_FIRST_ROOT = $FirstRoot
     Write-Host "Native Windows $([Environment]::OSVersion.Version); account is non-admin; volume is $($volume.DriveFormat)."
+    Write-Host "CommonApplicationData: $env:ProgramData"
     Write-Host "First packaged config root: $FirstRoot."
     & $env:OPENCODE_BIN --version
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
