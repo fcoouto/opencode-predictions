@@ -2,7 +2,6 @@ export const windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())) | ConvertFrom-Json
-[Console]::Error.WriteLine('WP2')
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -422,8 +421,6 @@ public static class PredictionsPreferences {
     }
 }
 '@
-[Console]::Error.WriteLine('WP3')
 $reply = [PredictionsPreferences]::Execute($request.op, $request.source, [string[]]$request.systemPaths, $request.expected, $request.bytes)
-[Console]::Error.WriteLine('WP4')
 [Console]::WriteLine((ConvertTo-Json -InputObject $reply -Depth 4 -Compress))
 `
