@@ -1,7 +1,6 @@
 export const windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())) | ConvertFrom-Json
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;

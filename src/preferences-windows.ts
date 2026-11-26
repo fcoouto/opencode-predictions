@@ -11,10 +11,24 @@ const uncertain = "Changes may have been saved. Reopen settings before trying ag
 const readOnly = "Windows prediction preferences are not writable."
 const refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings."
 const conflict = "Prediction preferences changed. Reload settings before saving."
-const bootstrap = Buffer.from(
-  "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
-  "utf16le",
-).toString("base64")
+const inputPrefix = "OPENCODE_PREDICTIONS_IO_"
+const inputChunk = 16 * 1024
+const bootstrap = Buffer.from(`
+  $ErrorActionPreference = 'Stop'
+  $inputPacket = [Text.StringBuilder]::new()
+  for ($i = 0; $i -lt ${wireLimit / inputChunk}; $i++) {
+    $key = '${inputPrefix}' + $i
+    $value = [Environment]::GetEnvironmentVariable($key)
+    if ($null -eq $value) { break }
+    [Environment]::SetEnvironmentVariable($key, $null)
+    [void]$inputPacket.Append($value)
+  }
+  $parts = $inputPacket.ToString().Split([char]10)
+  if ($parts.Length -ne 2) { throw 'Invalid input' }
+  $code = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))
+  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[1])) | ConvertFrom-Json
+  & ([ScriptBlock]::Create($code))
+`, "utf16le").toString("base64")
 
 export type WindowsSnapshot = {
   source: string; state: "user" | "managed" | "unavailable"; writable: boolean
@@ -24,10 +38,6 @@ type WindowsCommit = { kind: "written"; snapshot: WindowsSnapshot } | Exclude<Pr
 type Request = { op: "read"; source: string; systemPaths: readonly string[] }
   | { op: "commit"; source: string; systemPaths: readonly string[]; expected: string; bytes: string }
 type Invoke = (request: Request, signal: AbortSignal) => Promise<string>
-type ChildOptions = { cwd: string; windowsHide: true; signal: AbortSignal; env: NodeJS.ProcessEnv }
-type BunRuntime = { spawn: (args: string[], options: ChildOptions & { stdin: Blob; stdout: "pipe"; stderr: "ignore" }) => {
-  stdout: ReadableStream<Uint8Array>; exited: Promise<number>; kill(): void
-} }
 class HelperRefusal extends Error {}
 
 export function windowsLocalRoot(value: string): boolean {
@@ -43,19 +53,32 @@ export async function invokeWindows(request: Request, signal: AbortSignal, scrip
   const root = process.env.SystemRoot
   if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new HelperRefusal(helperUnavailable)
   const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0")
+  const packet = `${Buffer.from(script).toString("base64")}\n${Buffer.from(JSON.stringify(request)).toString("base64")}`
+  if (packet.length > wireLimit) throw new HelperRefusal(helperUnavailable)
+  const env: NodeJS.ProcessEnv = { SystemRoot: root, PATH: system, PSModulePath: win32.join(powershell, "Modules"),
+    TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE }
+  // Windows may stall on Bun's stdin pipe. Keep input out of command arguments
+  // and disk. The helper removes these child-only values before compilation.
+  for (let i = 0; i * inputChunk < packet.length; i++) env[inputPrefix + i] = packet.slice(i * inputChunk, (i + 1) * inputChunk)
   const deadline = AbortSignal.timeout(1800)
-  const args = [win32.join(powershell, "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap]
-  const options: ChildOptions = {
-    cwd: system, windowsHide: true,
-    signal: AbortSignal.any([signal, deadline]),
-    env: { SystemRoot: root, PATH: system, PSModulePath: win32.join(powershell, "Modules"),
-      TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE },
-  }
-  const packet = `${Buffer.from(script).toString("base64")}\n${Buffer.from(JSON.stringify(request)).toString("base64")}\n`
-  const bun = (globalThis as typeof globalThis & { Bun?: BunRuntime }).Bun
   try {
-    // Bun's Node-style Windows stdin pipe can stall; pass the complete packet at spawn.
-    const bytes = bun ? await runBun(bun, args, options, packet) : await runNode(args, options, packet)
+    const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
+      cwd: system, env, windowsHide: true, stdio: ["ignore", "pipe", "ignore"], signal: AbortSignal.any([signal, deadline]),
+    })
+    const bytes = await new Promise<Buffer>((resolve, reject) => {
+      const output: Buffer[] = []
+      let length = 0, failed = false
+      child.on("error", () => { failed = true })
+      child.stdout.on("data", (chunk: Buffer) => {
+        length += chunk.length
+        if (length > wireLimit) { failed = true; child.kill() }
+        else output.push(chunk)
+      })
+      child.once("close", code => {
+        if (failed || code !== 0) reject(new Error(helperUnavailable))
+        else resolve(Buffer.concat(output))
+      })
+    })
     if (deadline.aborted) throw new HelperRefusal(helperTimeout)
     signal.throwIfAborted()
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes)
@@ -63,49 +86,6 @@ export async function invokeWindows(request: Request, signal: AbortSignal, scrip
     signal.throwIfAborted()
     throw new HelperRefusal(deadline.aborted ? helperTimeout : helperUnavailable)
   }
-}
-
-async function runBun(bun: BunRuntime, args: string[], options: ChildOptions, packet: string) {
-  const child = bun.spawn(args, { ...options, stdin: new Blob([packet]), stdout: "pipe", stderr: "ignore" })
-  const reader = child.stdout.getReader(), output: Uint8Array[] = []
-  let length = 0
-  try {
-    for (;;) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      length += chunk.value.length
-      if (length > wireLimit) throw new Error(helperUnavailable)
-      output.push(chunk.value)
-    }
-    if (await child.exited !== 0) throw new Error(helperUnavailable)
-    return Buffer.concat(output)
-  } catch (error) {
-    child.kill()
-    await child.exited
-    throw error
-  } finally { reader.releaseLock() }
-}
-
-function runNode([file, ...args]: string[], options: ChildOptions, packet: string): Promise<Buffer> {
-  const child = spawn(file, args, { ...options, stdio: ["pipe", "pipe", "ignore"] })
-  return new Promise((resolve, reject) => {
-    const output: Buffer[] = []
-    let length = 0, failed = false
-    child.on("error", () => { failed = true })
-    child.stdin.on("error", () => { failed = true })
-    child.stdout.on("data", (chunk: Buffer) => {
-      length += chunk.length
-      if (length > wireLimit) {
-        failed = true
-        child.kill()
-      } else output.push(chunk)
-    })
-    child.once("close", code => {
-      if (failed || code !== 0) reject(new Error(helperUnavailable))
-      else resolve(Buffer.concat(output))
-    })
-    child.stdin.end(packet)
-  })
 }
 
 const denied = (source: string, reason = unavailable): WindowsSnapshot => ({

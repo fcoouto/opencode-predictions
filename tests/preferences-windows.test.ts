@@ -93,9 +93,21 @@ test("the preference helper compiles in Windows PowerShell", native, async t => 
   const f = await fixture(t)
   const { windowsScript } = await import(new URL("../src/preferences-windows-script.ts", import.meta.url).href)
   const path = join(f.root, "compile-helper.ps1")
-  const compileOnly = windowsScript.slice(0, windowsScript.indexOf("$reply = ")).replace(/^\$request = .*$/m, "")
+  const compileOnly = windowsScript.slice(0, windowsScript.indexOf("$reply = "))
   await writeFile(path, compileOnly)
   await utility("WindowsPowerShell\\v1.0\\powershell.exe", ["-NoProfile", "-NonInteractive", "-File", path])
+})
+
+test("Windows strips the child request environment before running the verifier", native, async t => {
+  const f = await fixture(t)
+  const { invokeWindows } = await loadWindowsIO()
+  const probe = `
+    if (@([Environment]::GetEnvironmentVariables().Keys | Where-Object { $_ -like 'OPENCODE_PREDICTIONS_IO_*' }).Count -ne 0) {
+      throw 'The request environment was retained.'
+    }
+    [Console]::WriteLine($request.source)
+  `
+  assert.equal((await invokeWindows({ op: "read", source: f.source, systemPaths: f.host.systemPaths }, signal(), probe)).trim(), f.source)
 })
 
 test("Windows reads create nothing and a second Save creates a private backup", native, async t => {

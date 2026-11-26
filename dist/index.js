@@ -924,7 +924,6 @@ import { win32 } from "node:path";
 var windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())) | ConvertFrom-Json
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -1358,10 +1357,24 @@ var uncertain = "Changes may have been saved. Reopen settings before trying agai
 var readOnly = "Windows prediction preferences are not writable.";
 var refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings.";
 var conflict = "Prediction preferences changed. Reload settings before saving.";
-var bootstrap = Buffer.from(
-  "$ErrorActionPreference='Stop'; $code=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine())); & ([ScriptBlock]::Create($code))",
-  "utf16le"
-).toString("base64");
+var inputPrefix = "OPENCODE_PREDICTIONS_IO_";
+var inputChunk = 16 * 1024;
+var bootstrap = Buffer.from(`
+  $ErrorActionPreference = 'Stop'
+  $inputPacket = [Text.StringBuilder]::new()
+  for ($i = 0; $i -lt ${wireLimit / inputChunk}; $i++) {
+    $key = '${inputPrefix}' + $i
+    $value = [Environment]::GetEnvironmentVariable($key)
+    if ($null -eq $value) { break }
+    [Environment]::SetEnvironmentVariable($key, $null)
+    [void]$inputPacket.Append($value)
+  }
+  $parts = $inputPacket.ToString().Split([char]10)
+  if ($parts.Length -ne 2) { throw 'Invalid input' }
+  $code = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))
+  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[1])) | ConvertFrom-Json
+  & ([ScriptBlock]::Create($code))
+`, "utf16le").toString("base64");
 var HelperRefusal = class extends Error {
 };
 function windowsLocalRoot(value) {
@@ -1374,27 +1387,45 @@ async function invokeWindows(request, signal, script = windowsScript) {
   const root = process.env.SystemRoot;
   if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new HelperRefusal(helperUnavailable);
   const system = win32.join(root, "System32"), powershell = win32.join(system, "WindowsPowerShell", "v1.0");
-  const deadline = AbortSignal.timeout(1800);
-  const args = [win32.join(powershell, "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap];
-  const options = {
-    cwd: system,
-    windowsHide: true,
-    signal: AbortSignal.any([signal, deadline]),
-    env: {
-      SystemRoot: root,
-      PATH: system,
-      PSModulePath: win32.join(powershell, "Modules"),
-      TMP: process.env.TMP,
-      TEMP: process.env.TEMP,
-      USERPROFILE: process.env.USERPROFILE
-    }
-  };
   const packet = `${Buffer.from(script).toString("base64")}
-${Buffer.from(JSON.stringify(request)).toString("base64")}
-`;
-  const bun = globalThis.Bun;
+${Buffer.from(JSON.stringify(request)).toString("base64")}`;
+  if (packet.length > wireLimit) throw new HelperRefusal(helperUnavailable);
+  const env = {
+    SystemRoot: root,
+    PATH: system,
+    PSModulePath: win32.join(powershell, "Modules"),
+    TMP: process.env.TMP,
+    TEMP: process.env.TEMP,
+    USERPROFILE: process.env.USERPROFILE
+  };
+  for (let i = 0; i * inputChunk < packet.length; i++) env[inputPrefix + i] = packet.slice(i * inputChunk, (i + 1) * inputChunk);
+  const deadline = AbortSignal.timeout(1800);
   try {
-    const bytes = bun ? await runBun(bun, args, options, packet) : await runNode(args, options, packet);
+    const child = spawn(win32.join(powershell, "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", bootstrap], {
+      cwd: system,
+      env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      signal: AbortSignal.any([signal, deadline])
+    });
+    const bytes = await new Promise((resolve2, reject) => {
+      const output = [];
+      let length = 0, failed = false;
+      child.on("error", () => {
+        failed = true;
+      });
+      child.stdout.on("data", (chunk) => {
+        length += chunk.length;
+        if (length > wireLimit) {
+          failed = true;
+          child.kill();
+        } else output.push(chunk);
+      });
+      child.once("close", (code) => {
+        if (failed || code !== 0) reject(new Error(helperUnavailable));
+        else resolve2(Buffer.concat(output));
+      });
+    });
     if (deadline.aborted) throw new HelperRefusal(helperTimeout);
     signal.throwIfAborted();
     return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -1402,53 +1433,6 @@ ${Buffer.from(JSON.stringify(request)).toString("base64")}
     signal.throwIfAborted();
     throw new HelperRefusal(deadline.aborted ? helperTimeout : helperUnavailable);
   }
-}
-async function runBun(bun, args, options, packet) {
-  const child = bun.spawn(args, { ...options, stdin: new Blob([packet]), stdout: "pipe", stderr: "ignore" });
-  const reader = child.stdout.getReader(), output = [];
-  let length = 0;
-  try {
-    for (; ; ) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      length += chunk.value.length;
-      if (length > wireLimit) throw new Error(helperUnavailable);
-      output.push(chunk.value);
-    }
-    if (await child.exited !== 0) throw new Error(helperUnavailable);
-    return Buffer.concat(output);
-  } catch (error) {
-    child.kill();
-    await child.exited;
-    throw error;
-  } finally {
-    reader.releaseLock();
-  }
-}
-function runNode([file, ...args], options, packet) {
-  const child = spawn(file, args, { ...options, stdio: ["pipe", "pipe", "ignore"] });
-  return new Promise((resolve2, reject) => {
-    const output = [];
-    let length = 0, failed = false;
-    child.on("error", () => {
-      failed = true;
-    });
-    child.stdin.on("error", () => {
-      failed = true;
-    });
-    child.stdout.on("data", (chunk) => {
-      length += chunk.length;
-      if (length > wireLimit) {
-        failed = true;
-        child.kill();
-      } else output.push(chunk);
-    });
-    child.once("close", (code) => {
-      if (failed || code !== 0) reject(new Error(helperUnavailable));
-      else resolve2(Buffer.concat(output));
-    });
-    child.stdin.end(packet);
-  });
 }
 var denied = (source, reason = unavailable) => ({
   source,
