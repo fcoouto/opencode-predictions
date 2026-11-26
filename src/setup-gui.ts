@@ -4,7 +4,7 @@ import { Index, Show, createComponent, createRenderEffect, createSignal, untrack
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
 import { setupText, contextFileIssue } from "./setup-copy.ts"
-import { createSetupEditor, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { createSetupEditor, parseSelector, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
 type GUIContext = Parameters<GUIPlugin.Setup>[0]
@@ -135,34 +135,34 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     return element
   }
 
-  const addDialog = (destination: number | "new") => ctx.dialogs.open(dialog => {
-    const [query, setQuery] = createSignal("")
-    const [picked, setPicked] = createSignal<CatalogModel | undefined>()
-    const [variant, setVariant] = createSignal("")
-    const matches = () => {
-      const words = query().toLowerCase().split(/\s+/).filter(Boolean)
-      return (state()?.snapshot?.catalog ?? []).filter(model => words.every(word => (model.providerID + "/" + model.id + " " + (model.name ?? "")).toLowerCase().includes(word))).slice(0, 50)
-    }
-    const add = () => {
-      const model = picked()
-      if (!model) return
-      const next = groups().map(group => [...group])
-      if (destination === "new" || !next[destination]) next.push([selectorFor(model, variant() || undefined)]); else next[destination].push(selectorFor(model, variant() || undefined))
-      setGroups(next); dialog.close()
-    }
-    return createComponent(ui.Dialog, {
-      title: "Add a model", description: "Search by provider or model name. Choosing a model does not change your session model. " + setupText.cost, size: "large",
-      get children() {
-        return stack(
-          createComponent(ui.TextInput, { get value() { return query() }, onInput: setQuery, label: "Search models", type: "search", autofocus: true }),
-          when(() => !picked(), () => createComponent(Index as any, { get each() { return matches() }, children: (model: () => CatalogModel) => button(() => `${model().name ?? model().id} (${model().providerID}/${model().id})${model().enabled ? "" : " — disabled"}`, () => { setPicked(model()); setVariant("") }, { variant: "ghost" }) }),
-            () => stack(text(() => `${picked()!.name ?? picked()!.id} (${picked()!.providerID}/${picked()!.id})`),
-              createComponent(ui.Select, { get options() { return [{ value: "", label: "Default reasoning" }, ...picked()!.variants.map(item => ({ value: item.id, label: item.id }))] }, get value() { return variant() }, onChange: setVariant, label: "Reasoning variant" }))),
-          when(() => matches().length === 0 && !picked(), () => note(() => "No models match. Add a model pattern instead, or connect a provider in OpenCode.")))
-      },
-      get footer() { return box(button(() => "Cancel", () => dialog.close()), button(() => "Add model", add, { variant: "contrast", disabled: () => !picked() })) },
+  // The host's own searchable pickers: the model, then its reasoning level when it has any. Dismissing either step changes nothing.
+  const pickModel = async (current?: string): Promise<string | undefined> => {
+    const catalog = state()?.snapshot?.catalog ?? []
+    if (!catalog.length) { await ctx.dialogs.alert({ title: "No models available", description: "This server lists no models. Add a model pattern instead, or connect a provider in OpenCode." }); return undefined }
+    const parsed = current === undefined ? undefined : parseSelector(current, catalog)
+    const was = parsed?.kind === "model" ? parsed : undefined
+    const model = await ctx.dialogs.select<CatalogModel>({
+      title: current === undefined ? "Add a model" : "Change model", placeholder: "Search by provider or model name", current: was?.model,
+      options: catalog.map(item => ({ title: item.name ?? item.id, description: item.providerID + "/" + item.id + (item.enabled ? "" : " — disabled"), group: item.providerID, value: item })),
     })
-  })
+    if (!model || disposed) return undefined
+    if (!model.variants.length) return selectorFor(model, undefined)
+    // A level the model no longer offers falls back to highlighting the default.
+    const kept = model === was?.model && model.variants.some(item => item.id === was.variant) ? was.variant! : null
+    const variant = await ctx.dialogs.select<string | null>({
+      title: `Reasoning for ${model.name ?? model.id}`, current: kept,
+      options: [{ title: "Default reasoning", value: null }, ...model.variants.map(item => ({ title: item.id, value: item.id }))],
+    })
+    if (variant === undefined || disposed) return undefined
+    return selectorFor(model, variant ?? undefined)
+  }
+  const addTo = (destination: number | "new", selector: string) => {
+    if (locked()) return
+    const next = groups().map(group => [...group])
+    if (destination === "new" || !next[destination]) next.push([selector]); else next[destination].push(selector)
+    setGroups(next)
+  }
+  const addModel = async (destination: number | "new") => { const selector = await pickModel(); if (selector) addTo(destination, selector) }
   const patternDialog = (destination: number | "new") => ctx.dialogs.open(dialog => {
     const [value, setValue] = createSignal("")
     const problem = () => { const text = value().trim(); if (!text) return undefined; return validateSettings({ models: [[text]] })[0]?.message }
@@ -203,7 +203,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     keyed(() => String(locked()), () => createComponent(ui.Menu, {
       label, icon, trigger, placement: "bottom-end", disabled: locked(),
       items: [
-        { label: "Model…", icon: "models", onSelect: () => addDialog(destination()) },
+        { label: "Model…", icon: "models", onSelect: () => void addModel(destination()) },
         { label: "Pattern… (for example provider/family-*)", icon: "code", onSelect: () => patternDialog(destination()) },
       ],
     }))
@@ -351,7 +351,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                 () => createComponent(ui.SettingsRow, {
                   id: "predictions-models", title: "No models configured",
                   get description() { return column(note(() => "Add a model or a model pattern to start predicting."), explanation()) },
-                  get children() { return box(button(() => "Add a model", () => addDialog("new"), { variant: "contrast", disabled: locked }), button(() => "Add model pattern", () => patternDialog("new"), { disabled: locked })) },
+                  get children() { return box(button(() => "Add a model", () => void addModel("new"), { variant: "contrast", disabled: locked }), button(() => "Add model pattern", () => patternDialog("new"), { disabled: locked })) },
                 }),
                 () => createComponent(ui.SettingsRow, {
                   id: "predictions-models", title: "Fallback order",
