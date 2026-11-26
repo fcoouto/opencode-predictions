@@ -15,8 +15,6 @@ jobs:
           node-version: 26
           cache: npm
       - run: npm ci --ignore-scripts
-      # Diagnostic-only: never publish or qualify the instrumented bundle.
-      - run: node tests/host/windows-preferences-timing.mjs
       - run: npm run bundle
       - name: Stage the packaged plugin and pinned OpenCode server
         shell: powershell

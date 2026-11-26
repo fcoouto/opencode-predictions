@@ -26,7 +26,6 @@ const bootstrap = Buffer.from(`
   $parts = $inputPacket.ToString().Split([char]10)
   if ($parts.Length -ne 2) { throw 'Invalid input' }
   $code = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))
-  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[1])) | ConvertFrom-Json
   & ([ScriptBlock]::Create($code))
 `, "utf16le").toString("base64")
 

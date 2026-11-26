@@ -924,7 +924,7 @@ import { win32 } from "node:path";
 var windowsScript = String.raw`
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
-Add-Type -TypeDefinition @'
+Add-Type -ReferencedAssemblies 'System.dll', 'System.Core.dll', 'System.Web.Extensions.dll' -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -935,6 +935,7 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Web.Script.Serialization;
 using Microsoft.Win32.SafeHandles;
 
 public static class PredictionsPreferences {
@@ -985,6 +986,13 @@ public static class PredictionsPreferences {
     public sealed class Reply {
         public string kind { get; set; }
         public Snapshot snapshot { get; set; }
+    }
+    public sealed class Request {
+        public string op { get; set; }
+        public string source { get; set; }
+        public string[] systemPaths { get; set; }
+        public string expected { get; set; }
+        public string bytes { get; set; }
     }
     static Reply Result(string kind, Snapshot snapshot = null) { return new Reply { kind = kind, snapshot = snapshot }; }
 
@@ -1338,13 +1346,18 @@ public static class PredictionsPreferences {
         }
     }
 
-    public static Reply Execute(string op, string source, string[] administration, string expected, string content) {
-        using (var session = new Session()) return session.Run(op, source, administration, expected, content);
+    public static string Execute(string packet) {
+        var json = new JavaScriptSerializer { MaxJsonLength = 3 * Limit, RecursionLimit = 16 };
+        var request = json.Deserialize<Request>(new UTF8Encoding(false, true).GetString(Convert.FromBase64String(packet)));
+        Require(request != null && (request.op == "read" || request.op == "commit") && !String.IsNullOrEmpty(request.source));
+        using (var session = new Session()) {
+            return json.Serialize(session.Run(request.op, request.source, request.systemPaths, request.expected, request.bytes));
+        }
     }
 }
 '@
-$reply = [PredictionsPreferences]::Execute($request.op, $request.source, [string[]]$request.systemPaths, $request.expected, $request.bytes)
-[Console]::WriteLine((ConvertTo-Json -InputObject $reply -Depth 4 -Compress))
+$reply = [PredictionsPreferences]::Execute($parts[1])
+[Console]::WriteLine($reply)
 `;
 
 // src/preferences-windows.ts
@@ -1372,7 +1385,6 @@ var bootstrap = Buffer.from(`
   $parts = $inputPacket.ToString().Split([char]10)
   if ($parts.Length -ne 2) { throw 'Invalid input' }
   $code = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[0]))
-  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($parts[1])) | ConvertFrom-Json
   & ([ScriptBlock]::Create($code))
 `, "utf16le").toString("base64");
 var HelperRefusal = class extends Error {

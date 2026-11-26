@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
-import { execFile } from "node:child_process"
+import childProcess, { execFile } from "node:child_process"
 import { link, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { syncBuiltinESMExports } from "node:module"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { test, type TestContext } from "node:test"
@@ -105,9 +106,29 @@ test("Windows strips the child request environment before running the verifier",
     if (@([Environment]::GetEnvironmentVariables().Keys | Where-Object { $_ -like 'OPENCODE_PREDICTIONS_IO_*' }).Count -ne 0) {
       throw 'The request environment was retained.'
     }
-    [Console]::WriteLine($request.source)
+    if ([string]::IsNullOrEmpty($parts[1])) { throw 'The request was lost.' }
+    [Console]::WriteLine('scrubbed')
   `
-  assert.equal((await invokeWindows({ op: "read", source: f.source, systemPaths: f.host.systemPaths }, signal(), probe)).trim(), f.source)
+  assert.equal((await invokeWindows({ op: "read", source: f.source, systemPaths: f.host.systemPaths }, signal(), probe)).trim(), "scrubbed")
+})
+
+test("Windows can read and save with PowerShell JSON cmdlets unavailable", native, async t => {
+  const f = await fixture(t)
+  const original = childProcess.spawn
+  const mock = t.mock.method(childProcess, "spawn", (file: string, args: readonly string[], options: childProcess.SpawnOptions) => {
+    const encoded = args.indexOf("-EncodedCommand") + 1
+    if (!encoded) return original(file, args, options)
+    const commands = [...args]
+    const deny = "function ConvertFrom-Json { throw 'Unexpected PowerShell JSON input' }\nfunction ConvertTo-Json { throw 'Unexpected PowerShell JSON output' }\n"
+    commands[encoded] = Buffer.from(deny + Buffer.from(commands[encoded], "base64").toString("utf16le"), "utf16le").toString("base64")
+    return original(file, commands, options)
+  })
+  syncBuiltinESMExports()
+  t.after(() => { mock.mock.restore(); syncBuiltinESMExports() })
+  const before = await f.store.read(signal())
+  assert.equal(before.writable, true, before.reason ?? "The helper must not invoke the shell's JSON cmdlets.")
+  assert.equal((await f.store.write(before.revision, edit, signal())).kind, "written")
+  assert.deepEqual((await f.store.read(signal())).overrides, { debug: true })
 })
 
 test("Windows reads create nothing and a second Save creates a private backup", native, async t => {
