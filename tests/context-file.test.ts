@@ -1,6 +1,7 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
 import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { renameSync, symlinkSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
@@ -94,4 +95,52 @@ test("context inspection honors cancellation", async t => {
   const controller = new AbortController()
   controller.abort()
   await assert.rejects(inspectContextFile(f.path, controller.signal), { name: "AbortError" })
+})
+
+// Aborting synchronously right after the call means the abort lands while the open is still pending,
+// because no I/O callback can run before this synchronous code finishes. This is deterministic.
+test("context inspection rejects when cancelled while a missing path is being opened", async t => {
+  const f = await fixture(t)
+  const controller = new AbortController()
+  const pending = inspectContextFile(f.path, controller.signal)
+  controller.abort()
+  await assert.rejects(pending, { name: "AbortError" })
+})
+
+test("context inspection rejects when cancelled while a directory is being opened", async t => {
+  const f = await fixture(t)
+  const controller = new AbortController()
+  const pending = inspectContextFile(f.directory, controller.signal)
+  controller.abort()
+  await assert.rejects(pending, { name: "AbortError" })
+})
+
+test("context inspection rethrows a custom abort reason instead of reporting unreadable", async t => {
+  const f = await fixture(t)
+  await writeFile(f.path, "hello")
+  const controller = new AbortController()
+  const reason = new Error("caller stopped")
+  const pending = inspectContextFile(f.path, controller.signal)
+  controller.abort(reason)
+  await assert.rejects(pending, error => error === reason)
+})
+
+// Race regression: a 5-byte regular file is atomically replaced by a symlink to a 9000-byte target
+// while inspection is pending. rename() keeps the path present at every instant, so the only possible
+// outcomes are the original file (ok, bytes 5) or the symlink (unreadable, refused by the no-follow open).
+// A too_large result would mean the target was read with the original file's size.
+test("context inspection never classifies a replacement symlink swapped in after inspection starts", async t => {
+  const f = await fixture(t)
+  const target = join(f.directory, "target.md")
+  const swap = join(f.directory, "swap-link")
+  await writeFile(target, "x".repeat(9000))
+  for (let i = 0; i < 50; i++) {
+    await rm(f.path, { force: true })
+    await writeFile(f.path, "hello")
+    const pending = inspectContextFile(f.path, f.signal)
+    symlinkSync(target, swap)
+    renameSync(swap, f.path)
+    const result = await pending
+    assert.ok(result.state === "unreadable" || (result.state === "ok" && result.bytes === 5), JSON.stringify(result))
+  }
 })
