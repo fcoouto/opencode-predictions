@@ -17,6 +17,17 @@ Both jobs installed the same npm release candidate, including `dist/predictions-
 
 The [pre-change baseline](https://github.com/fcoouto/opencode-predictions/actions/runs/45725431297) reproduced the original ownership refusal on both paths. The [precompiled experiment](https://github.com/fcoouto/opencode-predictions/actions/runs/45747428311) staged its verifier separately; only the release-candidate run qualifies the npm package.
 
+## Save policy follow-up
+
+[Native CI run 45781228149](https://github.com/fcoouto/opencode-predictions/actions/runs/45781228149) tested the simplified policy at `1508b11`. Both runners installed archive SHA-256 `b56b6357c485414d61d7714f818a931e0d4556362bf03e42d2e9fa1807fbe895`. Each ran 32 tests with no skips; each config path completed three Saves, replaced the existing backup with the previous document, and reloaded after restart.
+
+| Fresh-profile order | First settings read | Slowest poll pair |
+| --- | ---: | ---: |
+| `%APPDATA%` first | 85 ms | 148 ms |
+| `XDG_CONFIG_HOME` first | 90 ms | 121 ms |
+
+The direct tests confirmed that a readable custom ACL stays read-only and that a narrower backup ACL is refused before staging writes. The replacement predicate was tested with synthetic encryption metadata; no EFS file was encrypted or replaced in this run. Save does not guarantee preservation of opaque audit metadata.
+
 ## Scope
 
 Windows qualification covers the x64 OpenCode server on local NTFS with the packaged verifier. It does not cover the Windows Desktop UI, native ARM64, Git installs without the verifier, network shares, redirected network profiles, junctions, or symlinks in the preferences path. Native Linux filesystem behavior is not qualified by this run. See the [macOS evidence](2026-11-18-predictions-preferences-qualification.md) for earlier qualification.
