@@ -441,7 +441,9 @@ files add nothing.
 
 On Desktop, **Open file** and **Show in Finder** (**Show in File Explorer** on
 Windows, **Show in Folder** on Linux) appear when the server runs on this
-computer. Remote servers show the path and status only.
+computer. Remote servers show the path and status only. For a
+[hand-set path](#hand-set-path), **Open file** appears only when the name ends in
+`.md`, `.markdown` or `.txt`; other files can only be shown in their folder.
 
 To stop sharing it in new predictions, select **Stop using**, then **Save
 changes**. The file stays on disk. If you turn it on again later with **Use a

@@ -936,6 +936,31 @@ test("Save with a staged file sends nothing while Check again is still running, 
   } finally { await page.close() }
 })
 
+test("Open file is offered only for the server's own file or a hand-set text file; other paths get the reveal action only", async () => {
+  const handSet = (absolute: string) => ({ set: true, path: absolute, absolute, managed: false, state: "ok", bytes: 12 })
+  const cases: { name: string; file: unknown; open: boolean; reveal: boolean }[] = [
+    { name: "an invalid hand-set path has no target", file: { set: true, path: "relative.md", absolute: "", managed: false, state: "unreadable" }, open: false, reveal: false },
+    { name: "a relative target is not a document path", file: handSet("notes/context.md"), open: false, reveal: false },
+    { name: "the server's own file", file: okFile, open: true, reveal: true },
+    { name: "hand-set .md", file: handSet("/Users/tester/notes/context.md"), open: true, reveal: true },
+    { name: "hand-set .MARKDOWN", file: handSet("/Users/tester/notes/CONTEXT.MARKDOWN"), open: true, reveal: true },
+    { name: "hand-set .Txt on Windows", file: handSet("C:\\Users\\tester\\notes.Txt"), open: true, reveal: true },
+    { name: "hand-set executable", file: handSet("/Users/tester/bin/run.command"), open: false, reveal: true },
+    { name: "hand-set .exe on Windows", file: handSet("C:\\Users\\tester\\tool.exe"), open: false, reveal: true },
+    { name: "hand-set path with no extension", file: handSet("/Users/tester/notes"), open: false, reveal: true },
+    { name: "text name followed by another extension", file: handSet("/Users/tester/notes.md.sh"), open: false, reveal: true },
+  ]
+  for (const item of cases) {
+    const page = await mount({ contextFile: item.file })
+    try {
+      await openAdvanced(page)
+      await contextButton(page, "Stop using").waitFor()
+      assert.equal(await contextButton(page, "Open file").count(), item.open ? 1 : 0, `${item.name}: Open file`)
+      assert.equal(await contextButton(page, "Show in Finder").count(), item.reveal ? 1 : 0, `${item.name}: Show in Finder`)
+    } finally { await page.close() }
+  }
+})
+
 test("with no connected server the page explains instead of editing", async () => {
   const page = await mount({ noTarget: true })
   try {

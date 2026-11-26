@@ -347,6 +347,11 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   const contextLocked = () => locked() || !!state()?.contextLoading
   // Open and Show need this computer: the desktop host exists and the editor is pinned to the built-in server.
   const contextLocal = () => { version(); return !!ctx.desktop && pinned?.target.serverID === "sidecar" }
+  // Show needs a real absolute path on this computer. Open hands the path to the system's default handler, which runs a program,
+  // so it is offered only for the server's own file or a hand-set path with a text extension.
+  const contextTarget = () => { const status = contextStatusNow(); return status && status.state !== "missing" && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(status.absolute) ? status : undefined }
+  const contextRevealable = () => contextView() === "set" && contextLocal() && !!contextTarget()
+  const contextOpenable = () => { const target = contextTarget(); return contextRevealable() && !!target && (target.managed || /\.(?:md|markdown|txt)$/i.test(target.absolute)) }
   const contextPathLine = () => {
     const status = contextStatusNow()
     if (!status) return undefined
@@ -359,9 +364,9 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   }
   // Only the file opened or shown can fail here; a successful action clears an earlier failure.
   const openContextFile = async (show: boolean) => {
-    const status = contextStatusNow()
+    const status = contextTarget()
     const desktop = ctx.desktop
-    if (!status || !desktop) return
+    if (!status || !desktop || !(show ? contextRevealable() : contextOpenable())) return
     let opened = false
     try {
       if (show) opened = await desktop.reveal(status.absolute)
@@ -389,8 +394,8 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     when(() => contextView() === "set" && !contextStaged() && contextMissing() && contextStatusNow()?.managed === false, () => button(() => "Use predictions-context.md instead", () => stageContext("managed"), { disabled: contextLocked })),
     when(() => !!contextStaged(), () => button(() => "Undo", () => stageContext(undefined), { disabled: contextLocked })),
     when(() => contextView() === "set" && !contextStaged(), () => button(() => "Stop using", () => stageContext("none"), { disabled: contextLocked })),
-    when(() => contextView() === "set" && contextLocal() && !contextMissing(), () => button(() => "Open file", () => void openContextFile(false))),
-    when(() => contextView() === "set" && contextLocal() && !contextMissing(), () => button(() => contextFileText.reveal(ctx.desktop?.os), () => void openContextFile(true))),
+    when(contextOpenable, () => button(() => "Open file", () => void openContextFile(false))),
+    when(contextRevealable, () => button(() => contextFileText.reveal(ctx.desktop?.os), () => void openContextFile(true))),
     when(() => contextView() === "unset" || contextView() === "set" || contextView() === "unavailable", () => button(() => "Check again", () => void pinned?.editor.refreshContext(), { disabled: () => !!state()?.contextLoading })),
   )
   const contextFileRow = () => createComponent(ui.SettingsRow, {
