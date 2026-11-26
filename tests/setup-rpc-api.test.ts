@@ -86,6 +86,29 @@ for (const host of ["CLI", "Desktop"] as const) {
     await assert.rejects(f.api.save({ revision: "r1", fields: { debug: true } }, signal()), /target changed/)
     assert.equal(f.calls.length, 0)
   })
+  for (const outcome of ["a status", "method not found"] as const) test(`${host} does not accept ${outcome} from a client replaced while the context status was pending`, async () => {
+    const f = fixture()
+    let finish!: () => void
+    const reads: unknown[][] = []
+    const answered = new Promise<void>(resolve => { finish = resolve })
+    Object.assign(f.rpc, { contextFileStatus: async (...args: unknown[]) => {
+      reads.push(args)
+      await answered
+      if (outcome === "method not found") throw Object.assign(new Error("method not found"), { type: "rpc.method_not_found" })
+      return { set: false }
+    } })
+    const pending = f.api.contextStatus!(signal())
+    f.replace(); finish()
+    assert.equal(await pending, "unavailable", "the earlier client says nothing about this target")
+    assert.equal(reads.length, 1, "the read is not repeated against the new client")
+  })
+  test(`${host} still reports a context status and an old server from an unchanged client`, async () => {
+    const f = fixture()
+    Object.assign(f.rpc, { contextFileStatus: async () => ({ set: false }) })
+    assert.deepEqual(await f.api.contextStatus!(signal()), { set: false })
+    Object.assign(f.rpc, { contextFileStatus: async () => { throw Object.assign(new Error("method not found"), { type: "rpc.method_not_found" }) } })
+    assert.equal(await f.api.contextStatus!(signal()), "unsupported")
+  })
   test(`${host} preserves the draft after target replacement and never repeats Save`, async () => {
     const f = fixture(), editor = createSetupEditor(f.api, () => {})
     await editor.load()

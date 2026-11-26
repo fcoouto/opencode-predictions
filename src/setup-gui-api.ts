@@ -19,7 +19,11 @@ export function createGUISetupAPI(ctx: Pick<Parameters<GUIPlugin.Setup>[0], "ser
       return snapshot
     },
     preview: async (fields, signal) => await selected().previewSettings({ fields }, { location: pinned.location, signal }) as SetupPreview,
-    contextStatus: async signal => await readContextStatus(async signal => await selected().contextFileStatus({}, { location: pinned.location, signal }) as ContextFileStatus, signal),
+    // A reply, or an old server's refusal, counts only while the pinned client is still the selected one.
+    contextStatus: async signal => await readContextStatus(async signal => {
+      try { return await selected().contextFileStatus({}, { location: pinned.location, signal }) as ContextFileStatus }
+      finally { selected() }
+    }, signal),
     async save(input, signal) {
       const waiting = AbortSignal.any([signal, AbortSignal.timeout(12000)])
       const result = await abortable(() => selected().saveSettings(input, { location: pinned.location, signal: waiting }), waiting) as SaveResult
