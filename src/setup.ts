@@ -112,11 +112,23 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
       }
     }
   }
+  // One status read decides whether the stored path shows the requested action. A failed or unclear read does not confirm it.
+  const contextConfirmed = async (change: "managed" | "none" | undefined): Promise<boolean> => {
+    if (change === undefined) return true
+    const read = api.contextStatus?.bind(api)
+    if (!read) return false
+    try {
+      const status = await read(lifetime.signal)
+      if (typeof status !== "object") return false
+      return change === "managed" ? status.set && status.managed : !status.set
+    } catch { return false }
+  }
   // Only the newest request may write its reply, so a slow older status cannot replace a newer one.
   const refreshContext = async (): Promise<void> => {
     const request = ++contextRequest
     const read = api.contextStatus?.bind(api)
-    if (!read) { state.context = "unsupported"; state.contextLoading = false; notify(); return }
+    // A missing method is not an old server: "unsupported" is reserved for the explicit method_not_found reply.
+    if (!read) { state.context = "unavailable"; state.contextLoading = false; notify(); return }
     state.contextLoading = true; notify()
     try {
       const status = await abortable(() => read(lifetime.signal), lifetime.signal)
@@ -215,12 +227,16 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
             const overridesMatch = settingKeys.every(key => Object.hasOwn(fresh.overrides, key) === Object.hasOwn(overrides, key) && JSON.stringify(fresh.overrides[key]) === JSON.stringify(overrides[key]))
             // Administrative read-only snapshots can mask preferences, so they cannot prove a lost reset committed.
             if (fresh.writable && fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch && overridesMatch) {
-              const parsed = parseOptions(expected)
-              const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every(key => JSON.stringify(fresh.effective![key]) === JSON.stringify(parsed.value[key]))
-              result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion }
-                : { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." }
-              adopt(fresh)
-              state.contextChange = undefined; void refreshContext()
+              // An unrelated writer can change the revision while the fields still match, so a staged context action needs its own proof.
+              if (!await contextConfirmed(contextFile)) result = undefined
+              else {
+                const parsed = parseOptions(expected)
+                const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every(key => JSON.stringify(fresh.effective![key]) === JSON.stringify(parsed.value[key]))
+                result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion }
+                  : { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." }
+                adopt(fresh)
+                state.contextChange = undefined; void refreshContext()
+              }
             }
           } catch { /* Retain the draft and any durable acknowledgement when readback is unavailable. */ }
         }

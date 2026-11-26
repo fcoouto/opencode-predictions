@@ -415,9 +415,17 @@ test("parseSelector tells catalog models from patterns and splits the reasoning 
 function contextEditorFixture(status: unknown = { set: false }) {
   const f = editorFixture()
   const inputs: SaveInput[] = []
+  let stored = structuredClone(status) as unknown
   const save = f.api.save
-  f.api.save = async (input, signal) => { inputs.push(structuredClone(input)); return save(input, signal) }
-  f.api.contextStatus = async () => structuredClone(status) as never
+  f.api.save = async (input, signal) => {
+    inputs.push(structuredClone(input))
+    const result = await save(input, signal)
+    // A successful save leaves the stored path that the server's status reports.
+    if (input.contextFile === "managed") stored = { set: true, path: "~/predictions-context.md", absolute: "/server/predictions-context.md", managed: true, state: "empty", bytes: 0 }
+    if (input.contextFile === "none") stored = { set: false }
+    return result
+  }
+  f.api.contextStatus = async () => structuredClone(stored) as never
   return { ...f, inputs }
 }
 
@@ -504,12 +512,70 @@ test("a read-only snapshot or an unknown context status cannot stage a context c
   absentEditor.dispose()
 })
 
-test("a missing contextStatus method reports unsupported and stages nothing", async () => {
+test("a missing contextStatus method reports unavailable and stages nothing", async () => {
   const f = editorFixture()
   const editor = createSetupEditor(f.api, () => {})
   await editor.load()
-  assert.equal(editor.state().context, "unsupported")
+  assert.equal(editor.state().context, "unavailable")
+  editor.setContextFile("managed")
+  assert.equal(editor.state().contextChange, undefined)
   editor.dispose()
+})
+
+test("a lost managed save is confirmed only when the stored context status shows the managed file", async () => {
+  const managed = { set: true, path: "~/predictions-context.md", absolute: "/server/predictions-context.md", managed: true, state: "empty", bytes: 0 } as const
+  for (const [status, confirmed] of [[managed, true], [{ set: false }, false], [{ set: true, path: "~/other.md", absolute: "/server/other.md", managed: false, state: "ok", bytes: 3 }, false], ["unavailable", false], ["unsupported", false]] as const) {
+    const f = contextEditorFixture({ set: false })
+    f.api.save = async input => {
+      f.inputs.push(structuredClone(input))
+      // An unrelated writer changes the revision while fields and overrides still match.
+      Object.assign(f.snapshot, { revision: "external", activeRevision: "external" })
+      throw new Error("Lost reply")
+    }
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    // Stage from a readable status first, then let the save's own readback see the status under test.
+    f.api.contextStatus = async () => ({ set: false })
+    await editor.refreshContext()
+    editor.setContextFile("managed")
+    f.api.contextStatus = async () => structuredClone(status) as never
+    const result = await editor.save()
+    assert.equal(f.inputs[0]?.contextFile, "managed")
+    if (confirmed) {
+      assert.notEqual(result.kind, "failed")
+      assert.equal(editor.state().contextChange, undefined)
+      assert.equal(editor.state().dirty, false)
+    } else {
+      assert.deepEqual(result, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+      assert.equal(editor.state().contextChange, "managed")
+      assert.equal(editor.state().dirty, true)
+      assert.equal(editor.state().blocked, true)
+      assert.equal(editor.state().snapshot?.revision, "r1", "an unverified readback is not adopted")
+    }
+    editor.dispose()
+  }
+})
+
+test("a lost none save is confirmed only when the stored context status shows no context file", async () => {
+  for (const [status, confirmed] of [[{ set: false }, true], [{ set: true, path: "~/notes.md", absolute: "/server/notes.md", managed: false, state: "ok", bytes: 3 }, false]] as const) {
+    const f = contextEditorFixture({ set: false })
+    f.api.save = async () => {
+      Object.assign(f.snapshot, { revision: "external", activeRevision: "external" })
+      throw new Error("Lost reply")
+    }
+    f.api.contextStatus = async () => structuredClone(status) as never
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    editor.setContextFile("none")
+    const result = await editor.save()
+    if (confirmed) assert.notEqual(result.kind, "failed")
+    else {
+      assert.equal(result.kind, "failed")
+      assert.equal(editor.state().contextChange, "none")
+      assert.equal(editor.state().blocked, true)
+    }
+    editor.dispose()
+  }
 })
 
 test("overlapping context refreshes keep the newer reply", async () => {
