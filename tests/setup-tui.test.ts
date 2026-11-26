@@ -552,3 +552,26 @@ test("a staged change stays explained in Details when the status becomes unavail
   assert.equal(saves(on), 0)
   assert.equal(saves(off), 0)
 })
+
+test("an unsafe context file refusal stays in Details, and Check again then Save retries it", async t => {
+  const h = await harness(t)
+  const refusal = "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again."
+  h.f.hooks.saveIssue = { field: "contextFile", severity: "error", code: "unsafe_context_file", message: refusal }
+  await h.run(
+    pick("Advanced"), pick("Context file"), pick("Use a context file"),
+    call => { assert.ok(pick("Details")(call)); return "details" },
+    call => { assert.match(call.options.message, /^Save will use predictions-context\.md\. If it already exists, its current text will be sent with predictions\.$/m); return undefined },
+    cancel, cancel,
+    pick("Save changes"),
+    // The file is fixed on the server after the refusal is read.
+    call => { assert.equal(call.kind, "alert"); assert.equal(call.options.message, refusal); h.f.hooks.saveIssue = undefined; return undefined },
+    pick("Advanced"), pick("Context file"), pick("Check again"), pick("Details"),
+    call => { assert.ok(call.options.message.includes(refusal), "checking again does not hide the refusal"); return undefined },
+    cancel, cancel,
+    call => { assert.equal(option(call, "Save changes").disabled, false, "Save is the retry the message asks for"); assert.equal(option(call, "Save changes").description, "Can overwrite other edits."); return pick("Save changes")(call) },
+    ok, cancel,
+  )
+  assert.equal(saves(h), 2)
+  assert.equal(h.f.hooks.saveInputs.at(-1)?.contextFile, "managed")
+  assert.equal(await readFile(h.f.contextFile, "utf8"), "")
+})

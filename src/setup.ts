@@ -71,6 +71,9 @@ export function validateSettings(fields: SettingsInput, contextFile?: unknown): 
   return [{ field: contextIssue ? "contextFile" : settingKeys.find(key => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason + (contextIssue ? ". Correct it in predictions.json on the server." : "") }]
 }
 
+// A refused context file is fixed on the server's disk and retried with Save, so the error stays visible but must not disable Save.
+export const blocksSave = (issues: readonly SetupIssue[]) => issues.some(issue => issue.severity === "error" && issue.code !== "unsafe_context_file")
+
 export function createSetupEditor(api: SetupAPI, changed: () => void) {
   const state: SetupState = { fields: {}, reset: [], origins: resolvePreferences({}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false, contextLoading: false }
   const lifetime = new AbortController()
@@ -113,6 +116,7 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     }
   }
   // One status read decides whether the stored path shows the requested action. A failed or unclear read does not confirm it.
+  // The managed path alone does not prove a save: "Create it again" starts from that path, so the file must also exist.
   const contextConfirmed = async (change: "managed" | "none" | undefined): Promise<boolean> => {
     if (change === undefined) return true
     const read = api.contextStatus?.bind(api)
@@ -120,7 +124,7 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
     try {
       const status = await read(lifetime.signal)
       if (typeof status !== "object") return false
-      return change === "managed" ? status.set && status.managed : !status.set
+      return change === "managed" ? status.set && status.managed && status.state !== "missing" : !status.set
     } catch { return false }
   }
   // Only the newest request may write its reply, so a slow older status cannot replace a newer one.
@@ -139,7 +143,14 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
         if (status === "unsupported" && state.contextChange !== undefined && !state.saving && !state.blocked) { state.contextChange = undefined; update() }
       }
     } catch { if (request === contextRequest && !lifetime.signal.aborted) state.context = "unavailable" }
-    finally { if (request === contextRequest) { state.contextLoading = false; notify() } }
+    finally {
+      if (request === contextRequest) {
+        state.contextLoading = false
+        // The check that made Save wait has ended, so its message goes.
+        if (state.lastSave?.kind === "invalid" && state.lastSave.issues[0]?.code === "context_status_pending") state.lastSave = undefined
+        notify()
+      }
+    }
   }
   return {
     state: (): Readonly<SetupState> => state,
@@ -207,8 +218,11 @@ export function createSetupEditor(api: SetupAPI, changed: () => void) {
       if (!state.dirty) return failed("No changes to save.")
       if (!state.snapshot.writable) return { kind: "read_only", message: state.snapshot.reason ?? "This configuration is read-only." }
       // Without a known status the server cannot be trusted to apply a file action: refuse locally and keep the change for Undo.
-      if (state.contextChange !== undefined && typeof state.context !== "object") {
-        const refused: SaveResult = { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] }
+      // A check in progress may be about to report an old server, so the status it replaces is not known either.
+      if (state.contextChange !== undefined && (state.contextLoading || typeof state.context !== "object")) {
+        const refused: SaveResult = { kind: "invalid", issues: [state.contextLoading
+          ? { field: "contextFile", severity: "error", code: "context_status_pending", message: "Checking the context file…" }
+          : { field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] }
         state.lastSave = refused; notify()
         return refused
       }

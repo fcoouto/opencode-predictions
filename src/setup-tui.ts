@@ -1,7 +1,7 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
 import { setupText, setupTUIText, originLabels, contextFileIssue, contextFileText } from "./setup-copy.ts"
-import { createSetupEditor, parseSelector, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot, type SetupState } from "./setup.ts"
+import { blocksSave, createSetupEditor, parseSelector, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot, type SetupState } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
 type TUIContext = TUIPlugin.Context
@@ -103,7 +103,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   async function root(editor: SetupEditor) {
     for (;;) {
       const state = editor.state()
-      const invalid = state.issues.some(issue => issue.severity === "error")
+      const invalid = blocksSave(state.issues)
       const choice = await dialog.select<string>({
         title: state.dirty ? `${title} — unsaved changes` : title,
         placeholder: "Choose a section",

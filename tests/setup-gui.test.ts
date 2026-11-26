@@ -44,6 +44,8 @@ async function mount(options: Options = {}): Promise<Page> {
         log.saves.push({ serverID: id, input: JSON.parse(JSON.stringify(input)) })
         if (opts.saveKind === "conflict") return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
         if (opts.saveKind === "failed") return { kind: "failed", message: "Settings were not saved. Reopen settings and try again." }
+        // The first Save meets an unsafe file; later Saves find it fixed.
+        if (opts.saveKind === "unsafe_context_once" && log.saves.length === 1) return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again." }] }
         if (opts.saveKind === "invalid_context") return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "invalid_value", message: "Correct contextFile in predictions.json on the server." }] }
         // The fake server makes the file exist (empty, managed) or gone after a save, as the real one does.
         if (input.contextFile) w.contextReply = input.contextFile === "managed" ? { set: true, path: "~/predictions-context.md", absolute: "/project-home/predictions-context.md", managed: true, state: "empty", bytes: 0 } : { set: false }
@@ -888,6 +890,50 @@ test("a failed open or reveal explains that the file could not be opened on this
       await page.waitForFunction(() => /Could not open the file on this computer\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
     } finally { await page.close() }
   }
+})
+
+const footerText = (page: Page) => page.evaluate(() => [...document.querySelectorAll('[data-footer] [role="status"]')].map(node => node.textContent).join(" "))
+
+test("an unsafe context file refusal stays visible, and Check again then Save retries it", async () => {
+  const page = await mount({ saveKind: "unsafe_context_once" })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await save(page).click()
+    await page.waitForFunction(() => /is not safe to use: it is a link\. Fix or remove it, then save again\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""), undefined, { timeout: 1500 })
+    assert.match(await footerText(page), /is not safe to use: it is a link/, "the refusal is also beside Save")
+    // The file is fixed on the server, then the row is checked again.
+    await contextButton(page, "Check again").click()
+    await contextButton(page, "Check again").waitFor()
+    assert.match(await contextText(page), /is not safe to use: it is a link/, "checking again does not hide the refusal")
+    assert.equal(await save(page).isDisabled(), false, "Save is the retry the message asks for")
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 2, undefined, { timeout: 1500 })
+    assert.equal(await page.evaluate(() => (window as any).log.saves[1].input.contextFile), "managed")
+    await page.waitForFunction(() => /Empty — nothing is sent until you add text\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.doesNotMatch(await contextText(page), /is not safe to use/, "a successful retry clears the refusal")
+  } finally { await page.close() }
+})
+
+test("Save with a staged file sends nothing while Check again is still running, and says it is checking", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unsupported")
+    await page.evaluate(() => { (window as any).releaseContext = undefined; (window as any).holdContext = true })
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => (window as any).releaseContext)
+    await save(page).click()
+    await page.waitForTimeout(100)
+    // The fake server logs a save when the call arrives, before it answers.
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0, "nothing is dispatched against a pending check")
+    assert.match(await footerText(page), /Checking the context file…/)
+    await page.evaluate(() => (window as any).releaseContext())
+    await page.waitForFunction(() => /Update the Predictions plugin on the server to manage the context file here\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0, "the old server never receives the file action")
+    assert.doesNotMatch(await footerText(page), /Checking the context file…/, "the message goes when the check ends")
+  } finally { await page.close() }
 })
 
 test("with no connected server the page explains instead of editing", async () => {

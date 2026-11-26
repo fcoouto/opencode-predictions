@@ -4,7 +4,7 @@ import { Index, Show, createComponent, createRenderEffect, createSignal, untrack
 import { insert } from "solid-js/web"
 import { createGUISetupAPI } from "./setup-gui-api.ts"
 import { setupText, contextFileIssue, contextFileText } from "./setup-copy.ts"
-import { createSetupEditor, parseSelector, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { blocksSave, createSetupEditor, parseSelector, readGroups, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
 type GUIContext = Parameters<GUIPlugin.Setup>[0]
@@ -507,7 +507,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                       setTimeoutText(undefined); void pinned?.editor.load()
                     }, { disabled: () => !!state()?.saving })),
                     button(() => "Discard changes", () => { current()?.discard(); setTimeoutText(undefined) }, { disabled: () => !state()?.dirty || !!state()?.saving }),
-                    button(() => (state()?.saving ? "Saving…" : "Save changes"), () => void current()?.save(), { variant: "contrast", disabled: () => readOnly() || !state()?.dirty || !!state()?.saving || !!state()?.issues.some(issue => issue.severity === "error") }))
+                    button(() => (state()?.saving ? "Saving…" : "Save changes"), () => void current()?.save(), { variant: "contrast", disabled: () => readOnly() || !state()?.dirty || !!state()?.saving || blocksSave(state()?.issues ?? []) }))
                 },
               })
             },
