@@ -507,13 +507,48 @@ test("an older server shows only the update text and offers no file actions", as
   )
 })
 
-test("a read-only configuration explains why a context file cannot be staged", async t => {
+test("a read-only configuration omits every file-changing action; Details and Check again stay", async t => {
   const h = await harness(t)
   h.f.snapshot.writable = false
   await h.run(
-    pick("Advanced"), pick("Context file"), pick("Use a context file"),
-    call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, /^Read-only\./); return undefined },
-    cancel, cancel, cancel,
+    pick("Advanced"),
+    call => { assert.equal(option(call, "Context file").description, "Not set"); return pick("Context file")(call) },
+    call => { assert.deepEqual(titles(call), ["Check again", "Details"]); return undefined },
+    cancel, cancel,
   )
   assert.equal(saves(h), 0)
+})
+
+test("a read-only set file offers no Stop using, Create it again, or Undo, only Check again and Details", async t => {
+  const h = await harness(t)
+  h.f.snapshot.writable = false
+  h.f.hooks.context = missingFile as any
+  await h.run(
+    pick("Advanced"), pick("Context file"),
+    call => { assert.deepEqual(titles(call), ["Check again", "Details"]); return undefined },
+    cancel, cancel,
+  )
+  assert.equal(saves(h), 0)
+})
+
+test("a staged change stays explained in Details when the status becomes unavailable, for both on and off", async t => {
+  const on = await harness(t)
+  await on.run(
+    pick("Advanced"), pick("Context file"), pick("Use a context file"),
+    call => { on.f.hooks.contextFailure = "internal"; return pick("Check again")(call) },
+    call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return pick("Details")(call) },
+    call => { assert.equal(call.kind, "alert"); assert.match(call.options.message, /Context file status is unavailable right now\./); assert.match(call.options.message, /predictions-context\.md will be created when you save\./); return undefined },
+    cancel, cancel, cancel, yes(true),
+  )
+  const off = await harness(t)
+  off.f.hooks.context = okFile as any
+  await off.run(
+    pick("Advanced"), pick("Context file"), pick("Stop using"),
+    call => { off.f.hooks.contextFailure = "internal"; return pick("Check again")(call) },
+    call => { assert.deepEqual(titles(call), ["Undo", "Check again", "Details"]); return pick("Details")(call) },
+    call => { assert.match(call.options.message, /Context file status is unavailable right now\./); assert.match(call.options.message, /The context file will stop being used when you save\. The file stays on disk\./); return undefined },
+    cancel, cancel, cancel, yes(true),
+  )
+  assert.equal(saves(on), 0)
+  assert.equal(saves(off), 0)
 })

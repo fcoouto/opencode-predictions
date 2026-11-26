@@ -28,7 +28,7 @@ function contextDetails(state: Readonly<SetupState>): string {
   const lines: string[] = []
   if (state.contextLoading || state.context === undefined) lines.push(contextFileText.checking)
   else if (state.context === "unsupported") lines.push(setupText.contextFileManual, contextFileText.unsupported)
-  else if (state.context === "unavailable") lines.push(contextFileText.unavailable)
+  else if (state.context === "unavailable") { lines.push(contextFileText.unavailable); if (staged) lines.push(staged) }
   else if (!state.context.set) lines.push(staged ?? setupText.contextFile)
   else {
     const status = state.context
@@ -173,14 +173,16 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   }
 
   // Only the actions that apply to the current status are listed; Details always explains it.
+  // A read-only configuration lists no file-changing action (Desktop disables them), so Details and Check again remain.
   async function contextFile(editor: SetupEditor) {
     for (;;) {
       const state = editor.state()
       const status = contextSet(state)
+      const writable = !readOnly(editor)
       const actions: { title: string; value: ContextAction; description?: string }[] = []
       // A staged change is only undone; an old server (unsupported) and a failed read (unavailable) offer no file action.
-      if (state.contextChange) actions.push({ title: "Undo", value: "undo" })
-      else if (state.context === "unsupported" || state.context === "unavailable" || state.context === undefined) { /* nothing applies */ }
+      if (state.contextChange) { if (writable) actions.push({ title: "Undo", value: "undo" }) }
+      else if (!writable || state.context === "unsupported" || state.context === "unavailable" || state.context === undefined) { /* nothing applies */ }
       else if (!status) actions.push({ title: "Use a context file", value: "managed" })
       else {
         if (status.state === "missing") actions.push(status.managed ? { title: "Create it again", value: "managed" } : { title: "Use predictions-context.md instead", value: "managed" })
