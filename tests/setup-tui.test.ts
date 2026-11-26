@@ -334,3 +334,28 @@ test("the order explanation does not promise that no suggestion triggers the nex
   assert.match(setupText.order, /Escalation/)
   void t
 })
+
+test("Edit on a model entry reopens the pickers on the current model and reasoning and replaces it in place", async t => {
+  const h = await harness(t, { fields: { models: [["local/family/a#low", "local/b"]] } })
+  await h.run(
+    pick("Models"), pick("Group 1 — Try first"),
+    call => { assert.deepEqual(titles(call).slice(0, 2), ["Family A", "Model B"]); return pick("Family A")(call) },
+    call => { assert.deepEqual(titles(call), ["Edit", "Details", "Move up", "Move down", "Remove"]); return pick("Edit")(call) },
+    call => { assert.equal(call.options.title, "Change model"); assert.equal(call.options.current.id, "family/a"); return call.options.current },
+    call => { assert.equal(call.options.current, "low"); return pick("high")(call) },
+    cancel, cancel,
+    pick("Save changes"), ok, cancel,
+  )
+  assert.equal(await readFile(h.f.file, "utf8"), '{"models":[["local/family/a#high","local/b"]]}')
+})
+
+test("Edit on a pattern entry opens the pattern prompt filled in", async t => {
+  const h = await harness(t, { fields: { models: [["local/family-*"]] } })
+  await h.run(
+    pick("Models"), pick("Group 1 — Try first"), pick("local/family-*"), pick("Edit"),
+    call => { assert.equal(call.kind, "prompt"); assert.equal(call.options.title, "Edit model pattern"); assert.equal(call.options.value, "local/family-*"); return "local/b*" },
+    cancel, cancel,
+    pick("Save changes"), ok, cancel,
+  )
+  assert.equal(await readFile(h.f.file, "utf8"), '{"models":[["local/b*"]]}')
+})
