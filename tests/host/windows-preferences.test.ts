@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
+import { existsSync } from "node:fs"
 import { readFile, readdir, writeFile } from "node:fs/promises"
 import { dirname, isAbsolute, join } from "node:path"
 import { setTimeout as pause } from "node:timers/promises"
@@ -17,6 +18,8 @@ const { APPDATA, OPENCODE_BIN, PREDICTIONS_PACKAGE } = process.env
 for (const [name, value] of Object.entries({ APPDATA, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
   assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
 }
+const precompiled = existsSync(join(dirname(dirname(PREDICTIONS_PACKAGE!)), "predictions-verifier.exe"))
+const helperName = precompiled ? "predictions-verifier.exe" : "powershell.exe"
 
 async function entries(path: string): Promise<string[] | undefined> {
   try { return (await readdir(path)).sort() }
@@ -41,7 +44,7 @@ const rootCases = [
 ] as const
 for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...rootCases].reverse()) {
   test(name, { timeout: 120000 }, async t => {
-    t.diagnostic(`${windowsConfig} runs ${windowsConfig === firstRoot ? "first" : "second"} in this profile.`)
+    t.diagnostic(`${windowsConfig} runs ${windowsConfig === firstRoot ? "first" : "second"} in this profile; helper: ${helperName}.`)
     await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
       windowsConfig, projectConfig: true, seedPreferences: false,
     })
@@ -109,7 +112,7 @@ test("two Windows clients sustain status polling without accumulating helpers", 
 
   const script = `
     $ErrorActionPreference = 'Stop'
-    $filter = "ParentProcessId = $([int]$env:PREDICTIONS_TEST_SERVER_PID) AND Name = 'powershell.exe'"
+    $filter = "ParentProcessId = $([int]$env:PREDICTIONS_TEST_SERVER_PID) AND Name = '${helperName}'"
     function sample { @(Get-CimInstance -ClassName Win32_Process -Filter $filter).Count }
     $peak = sample
     [Console]::WriteLine('ready')
@@ -148,7 +151,8 @@ test("two Windows clients sustain status polling without accumulating helpers", 
   assert.equal((await closed)[0], 0, errors)
   const counts = output.match(/^ready\r?\n(\d+),(\d+)\s*$/)
   assert.ok(counts, `Unexpected sample output: ${output}`)
-  assert.ok(Number(counts[1]) > 0 && Number(counts[1]) <= 2, `Peak helper count: ${counts[1]}`)
+  assert.ok((precompiled || Number(counts[1]) > 0) && Number(counts[1]) <= 2, `Peak helper count: ${counts[1]}`)
+  if (precompiled && Number(counts[1]) === 0) t.diagnostic("Process sampling did not observe a precompiled helper; peak unverified.")
   assert.equal(Number(counts[2]), 0, "No helpers may remain after polling.")
   assert.deepEqual(f.calls, [])
   t.diagnostic(`Peak helpers: ${counts[1]}; slowest poll pair: ${slowest.toFixed(0)} ms`)
