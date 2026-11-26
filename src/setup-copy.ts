@@ -4,7 +4,9 @@ export const setupText = {
   warning: "Avoid saving prediction preferences from multiple places at once. Simultaneous saves can overwrite each other's changes, including different settings. The recovery copy may not contain those changes.",
   scope: "Settings apply to user prediction preferences on the selected server. They affect all projects using this configuration directory.",
   defaults: "Reset to defaults removes saved settings shown here after you save.",
-  contextFile: "Set contextFile in predictions.json on the OpenCode server. Its contents go to prediction providers.",
+  contextFile: "Standing notes about you and your work, sent to prediction providers with every request. Up to 8 KB of text.",
+  // The old-server row keeps this sentence until the server can manage the file.
+  contextFileManual: "Set contextFile in predictions.json on the OpenCode server. Its contents go to prediction providers.",
   github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
   order: "Groups run top to bottom. A later group is tried when every model above it fails. With Escalation set to Automatically, another model is also tried once after no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
   cost: "Match counts check model names only and send no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",

@@ -152,7 +152,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
         ],
       })
       if (choice === undefined) return
-      if (choice === "about") { await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n")); continue }
+      if (choice === "about") { await alert([setupText.github, setupText.contextFileManual, contextFileIssue(editor.state())].filter(Boolean).join("\n\n")); continue }
       if (!await editable(editor)) continue
       if (choice === "github" || choice === "debug") edit(editor, { [choice === "github" ? "includeGithubPRContext" : "debug"]: !flag(editor, choice === "github" ? "includeGithubPRContext" : "debug", false) })
       else if (choice === "context") {

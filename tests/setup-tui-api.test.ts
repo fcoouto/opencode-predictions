@@ -22,3 +22,17 @@ test("CLI setup retries a mounting RPC without repeating a Save", async t => {
   assert.equal((await api.save({ revision: "revision-one", fields: { debug: true } }, signal())).kind, "saved_not_active")
   assert.equal(f.counts().saves, 1)
 })
+test("CLI setup reads the context file status, retries a mounting RPC and maps failures", async t => {
+  const f = await nativeFixture(t)
+  const ctx = { client: f.client }
+  const api = createTUISetupAPI(ctx, f.location)
+  f.hooks.contextErrors.push("rpc.unavailable")
+  assert.deepEqual(await api.contextStatus!(signal()), { set: false })
+  assert.equal(f.counts().contextReads, 2)
+  f.hooks.contextErrors.push("rpc.method_not_found")
+  assert.equal(await api.contextStatus!(signal()), "unsupported")
+  f.hooks.contextErrors.push("rpc.internal")
+  assert.equal(await api.contextStatus!(signal()), "unavailable")
+  ctx.client = { ...f.client }
+  assert.equal(await api.contextStatus!(signal()), "unavailable")
+})

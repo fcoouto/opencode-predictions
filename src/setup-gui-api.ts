@@ -1,8 +1,8 @@
 import type { Plugin as GUIPlugin } from "@opencode/plugin/gui"
 import { Predictions } from "./rpc.ts"
-import type { SetupAPI, SetupLocation, SetupSnapshot, SetupPreview, SaveResult } from "./setup.ts"
+import type { ContextFileStatus, SetupAPI, SetupLocation, SetupSnapshot, SetupPreview, SaveResult } from "./setup.ts"
 import { abortable } from "./service.ts"
-import { waitForSetupSnapshot } from "./setup.ts"
+import { readContextStatus, waitForSetupSnapshot } from "./setup.ts"
 
 export function createGUISetupAPI(ctx: Pick<Parameters<GUIPlugin.Setup>[0], "servers">, target: { serverID: string; location: SetupLocation }): SetupAPI {
   const pinned = { serverID: target.serverID, location: { ...target.location } }
@@ -19,6 +19,7 @@ export function createGUISetupAPI(ctx: Pick<Parameters<GUIPlugin.Setup>[0], "ser
       return snapshot
     },
     preview: async (fields, signal) => await selected().previewSettings({ fields }, { location: pinned.location, signal }) as SetupPreview,
+    contextStatus: async signal => await readContextStatus(async signal => await selected().contextFileStatus({}, { location: pinned.location, signal }) as ContextFileStatus, signal),
     async save(input, signal) {
       const waiting = AbortSignal.any([signal, AbortSignal.timeout(12000)])
       const result = await abortable(() => selected().saveSettings(input, { location: pinned.location, signal: waiting }), waiting) as SaveResult

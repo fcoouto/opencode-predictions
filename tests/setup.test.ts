@@ -411,3 +411,121 @@ test("parseSelector tells catalog models from patterns and splits the reasoning 
   assert.deepEqual(parseSelector("local/family-*", catalog), { kind: "pattern" })
   assert.deepEqual(parseSelector("local/gone#low", catalog), { kind: "pattern" })
 })
+
+function contextEditorFixture(status: unknown = { set: false }) {
+  const f = editorFixture()
+  const inputs: SaveInput[] = []
+  const save = f.api.save
+  f.api.save = async (input, signal) => { inputs.push(structuredClone(input)); return save(input, signal) }
+  f.api.contextStatus = async () => structuredClone(status) as never
+  return { ...f, inputs }
+}
+
+test("staging the managed context file dirties the draft and sends it beside the field changes", async () => {
+  const f = contextEditorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  assert.equal(editor.state().dirty, false)
+  editor.setContextFile("managed")
+  assert.equal(editor.state().contextChange, "managed")
+  assert.equal(editor.state().dirty, true)
+  assert.equal((await editor.save()).kind, "saved")
+  assert.deepEqual(f.inputs[0], { revision: "r1", fields: {}, contextFile: "managed" })
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.dispose()
+})
+
+test("discard and load clear a staged context change while reset leaves it", async () => {
+  const f = contextEditorFixture({ set: false })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("none")
+  editor.discard()
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.setContextFile("managed")
+  await editor.load()
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.setContextFile("none")
+  editor.resetPreferences()
+  assert.equal(editor.state().contextChange, "none")
+  assert.equal(editor.state().dirty, true)
+  editor.dispose()
+})
+
+test("an unsafe context file refusal keeps the draft unblocked so the next Save can retry", async () => {
+  const f = contextEditorFixture()
+  const save = f.api.save
+  const refusal = { kind: "invalid" as const, issues: [{ field: "contextFile" as const, severity: "error" as const, code: "unsafe_context_file", message: "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again." }] }
+  f.api.save = async input => { f.inputs.push(structuredClone(input)); return refusal }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  assert.deepEqual(await editor.save(), refusal)
+  assert.equal(editor.state().blocked, false)
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().contextChange, "managed")
+  assert.equal(editor.state().issues.find(issue => issue.field === "contextFile")?.code, "unsafe_context_file")
+  f.api.save = save
+  assert.equal((await editor.save()).kind, "saved")
+  assert.equal(f.inputs.length, 2)
+  assert.deepEqual(f.inputs[1], { revision: "r1", fields: {}, contextFile: "managed" })
+  editor.dispose()
+})
+
+for (const status of ["unsupported", "unavailable"] as const) test(`context status "${status}" leaves the context change unstageable`, async () => {
+  const f = contextEditorFixture(status)
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  assert.equal(editor.state().context, status)
+  editor.setContextFile("managed")
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.dispose()
+})
+
+test("a read-only snapshot or an unknown context status cannot stage a context change", async () => {
+  const readOnly = contextEditorFixture({ set: false })
+  readOnly.snapshot.writable = false
+  readOnly.snapshot.reason = "This configuration source is not verified for setup writes."
+  const readOnlyEditor = createSetupEditor(readOnly.api, () => {})
+  await readOnlyEditor.load()
+  readOnlyEditor.setContextFile("managed")
+  assert.equal(readOnlyEditor.state().contextChange, undefined)
+  readOnlyEditor.dispose()
+
+  const absent = editorFixture()
+  const absentEditor = createSetupEditor(absent.api, () => {})
+  await absentEditor.load()
+  absentEditor.setContextFile("managed")
+  assert.equal(absentEditor.state().contextChange, undefined)
+  absentEditor.dispose()
+})
+
+test("a missing contextStatus method reports unsupported and stages nothing", async () => {
+  const f = editorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  assert.equal(editor.state().context, "unsupported")
+  editor.dispose()
+})
+
+test("overlapping context refreshes keep the newer reply", async () => {
+  const f = contextEditorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  const replies: ((value: unknown) => void)[] = []
+  f.api.contextStatus = () => new Promise(resolve => replies.push(resolve as (value: unknown) => void))
+  const older = editor.refreshContext(), newer = editor.refreshContext()
+  assert.equal(editor.state().contextLoading, true)
+  const fresh = { set: true, path: "~/notes.md", absolute: "/home/notes.md", managed: false, state: "ok", bytes: 3 }
+  replies[1]!(fresh)
+  await newer
+  replies[0]!({ set: false })
+  await older
+  assert.deepEqual(editor.state().context, fresh)
+  assert.equal(editor.state().contextLoading, false)
+  editor.dispose()
+})

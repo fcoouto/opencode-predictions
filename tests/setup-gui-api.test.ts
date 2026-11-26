@@ -40,3 +40,23 @@ test("GUI setup ignores a main provider that never starts", { timeout: 4000 }, a
   const result = await Promise.race([api.read(signal()), new Promise<undefined>(resolve => setTimeout(resolve, 2300))])
   assert.equal(result?.writable, true, "RPC must not wait for main IPC")
 })
+test("GUI setup reads the context file status and retries a mounting RPC", async t => {
+  const f = await nativeFixture(t)
+  const ctx = { servers: { get: () => ({ client: f.client }) } }
+  const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
+  f.hooks.contextErrors.push("rpc.unavailable")
+  f.hooks.context = { set: true, path: "~/notes.md", absolute: "/home/fixture/notes.md", managed: false, state: "ok", bytes: 12 }
+  assert.deepEqual(await api.contextStatus!(signal()), f.hooks.context)
+  assert.equal(f.counts().contextReads, 2)
+})
+test("GUI setup maps an old server to unsupported and other failures to unavailable", async t => {
+  const f = await nativeFixture(t)
+  const ctx = { servers: { get: () => ({ client: f.client }) } }
+  const api = createGUISetupAPI(ctx as any, { serverID: "sidecar", location: f.location })
+  f.hooks.contextErrors.push("rpc.method_not_found")
+  assert.equal(await api.contextStatus!(signal()), "unsupported")
+  f.hooks.contextErrors.push("rpc.internal")
+  assert.equal(await api.contextStatus!(signal()), "unavailable")
+  const gone = createGUISetupAPI({ servers: { get: () => undefined } } as any, { serverID: "sidecar", location: f.location })
+  assert.equal(await gone.contextStatus!(signal()), "unavailable")
+})

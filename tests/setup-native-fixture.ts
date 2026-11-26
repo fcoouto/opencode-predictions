@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { OpenCode } from "@opencode/client"
 import { parseOptions } from "../src/options.ts"
-import type { SaveInput, SetupIssue, SetupSnapshot } from "../src/setup.ts"
+import type { ContextFileStatus, SaveInput, SetupIssue, SetupSnapshot } from "../src/setup.ts"
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 const temporary = process.env.PREDICTIONS_TEST_TMP_ROOT ?? join(tmpdir(), "opencode")
@@ -19,8 +19,8 @@ export async function nativeFixture(t: TestContext) {
   assert.ok(parsed.ok)
   const location = { directory: "/fixture/project" }
   const snapshot: SetupSnapshot = { revision: "revision-one", activeRevision: "revision-one", overrides: {}, origins: resolvePreferences({}).origins, source: file, scope: "global", writable: true, fields: {}, effective: parsed.value, catalog: [], issues: [], serviceVersion: "service-one" }
-  let saves = 0, metadataReads = 0, unavailable = 0
-  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean; saveIssue?: SetupIssue } = {}
+  let saves = 0, metadataReads = 0, unavailable = 0, contextReads = 0
+  const hooks: { afterWrite?: () => void; settingsFails?: boolean; previewFails?: boolean; saveFails?: boolean; saveIssue?: SetupIssue; context: ContextFileStatus; contextErrors: string[] } = { context: { set: false }, contextErrors: [] }
   const save = async (input: SaveInput) => {
       saves++
       if (hooks.saveIssue) return { kind: "invalid" as const, issues: [hooks.saveIssue] }
@@ -49,6 +49,12 @@ export async function nativeFixture(t: TestContext) {
       if (hooks.saveFails) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "PRIVATE Save failure" })); return }
       response.end(JSON.stringify({ output: await save(JSON.parse(raw).input) }))
     }
+    else if (request.url?.includes("/contextFileStatus")) {
+      contextReads++
+      const type = hooks.contextErrors.shift()
+      if (type) { response.statusCode = type === "rpc.method_not_found" ? 404 : 500; response.end(JSON.stringify({ type, message: "PRIVATE context" })); return }
+      response.end(JSON.stringify({ output: hooks.context }))
+    }
     else if (hooks.previewFails) { response.statusCode = 500; response.end(JSON.stringify({ type: "rpc.unavailable", message: "PRIVATE preview" })) }
     else response.end(JSON.stringify({ output: { groups: [], issues: [] } }))
   })
@@ -56,5 +62,5 @@ export async function nativeFixture(t: TestContext) {
   t.after(() => new Promise<void>(resolve => { server.closeAllConnections(); server.close(() => resolve()) }))
   const url = `http://127.0.0.1:${(server.address() as { port: number }).port}`
   const client = OpenCode.make({ baseUrl: url })
-  return { hooks, root, file, snapshot, location, client, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, metadataReads }) }
+  return { hooks, root, file, snapshot, location, client, unavailableReads(count: number) { unavailable = count }, counts: () => ({ saves, metadataReads, contextReads }) }
 }

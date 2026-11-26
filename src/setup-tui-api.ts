@@ -1,6 +1,6 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { Predictions } from "./rpc.ts"
-import { waitForSetupSnapshot, type SetupAPI, type SetupLocation, type SetupSnapshot, type SetupPreview, type SaveResult } from "./setup.ts"
+import { readContextStatus, waitForSetupSnapshot, type ContextFileStatus, type SetupAPI, type SetupLocation, type SetupSnapshot, type SetupPreview, type SaveResult } from "./setup.ts"
 import { abortable } from "./service.ts"
 export function createTUISetupAPI(ctx: Pick<TUIPlugin.Context, "client">, location: SetupLocation): SetupAPI {
   const client = ctx.client, pinned = { ...location }
@@ -15,6 +15,7 @@ export function createTUISetupAPI(ctx: Pick<TUIPlugin.Context, "client">, locati
       return snapshot
     },
     preview: async (fields, signal) => await selected().previewSettings({ fields }, { location: pinned, signal }) as SetupPreview,
+    contextStatus: async signal => await readContextStatus(async signal => await selected().contextFileStatus({}, { location: pinned, signal }) as ContextFileStatus, signal),
     async save(input, signal) {
       const waiting = AbortSignal.any([signal, AbortSignal.timeout(12000)])
       const result = await abortable(() => selected().saveSettings(input, { location: pinned, signal: waiting }), waiting) as SaveResult
