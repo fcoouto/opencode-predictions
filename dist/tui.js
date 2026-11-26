@@ -851,6 +851,28 @@ var Predictions = Rpc.define({
         additionalProperties: false
       }
     },
+    // Clients choose only managed or none; the server owns the path and never accepts one from a client.
+    contextFileStatus: {
+      input: { type: "object", additionalProperties: false },
+      output: {
+        anyOf: [
+          { type: "object", properties: { set: { const: false, type: "boolean" } }, required: ["set"], additionalProperties: false },
+          {
+            type: "object",
+            properties: {
+              set: { const: true, type: "boolean" },
+              path: { type: "string" },
+              absolute: { type: "string" },
+              managed: { type: "boolean" },
+              state: { type: "string", enum: ["ok", "empty", "missing", "too_large", "invalid", "unreadable"] },
+              bytes: { type: "integer", minimum: 0 }
+            },
+            required: ["set", "path", "absolute", "managed", "state"],
+            additionalProperties: false
+          }
+        ]
+      }
+    },
     saveSettings: {
       // Preserve unknown keys at both levels for explicit rejection by the server.
       input: {
@@ -859,7 +881,8 @@ var Predictions = Rpc.define({
           revision: { type: "string", minLength: 1 },
           fields: { ...settingsFields, additionalProperties: true },
           reset: { type: "array", items: { type: "string" } },
-          removeModels: { type: "boolean" }
+          removeModels: { type: "boolean" },
+          contextFile: { enum: ["managed", "none"] }
         },
         required: ["revision", "fields"],
         additionalProperties: true
@@ -935,6 +958,22 @@ async function waitForSetupSnapshot(read, signal) {
     }
   }
 }
+async function readContextStatus(read, signal) {
+  const waiting = AbortSignal.any([signal, AbortSignal.timeout(2e3)]);
+  for (; ; ) {
+    try {
+      return await abortable(() => read(waiting), waiting);
+    } catch (error) {
+      signal.throwIfAborted();
+      if (waiting.aborted) return "unavailable";
+      const type = error && typeof error === "object" && "type" in error ? error.type : void 0;
+      if (type === "rpc.method_not_found") return "unsupported";
+      if (type !== "rpc.unavailable") return "unavailable";
+      await abortable(() => new Promise((resolve) => setTimeout(resolve, 100)), waiting).catch(() => {
+      });
+    }
+  }
+}
 function validateSettings(fields, contextFile) {
   if (!fields || typeof fields !== "object" || Array.isArray(fields)) throw new Error("Settings must be an object.");
   if (Object.keys(fields).some((key) => !settingKeys.includes(key))) throw new Error("Unknown setting.");
@@ -947,9 +986,9 @@ function validateSettings(fields, contextFile) {
   return [{ field: contextIssue ? "contextFile" : settingKeys.find((key) => parsed.reason.startsWith(key)) ?? "models", severity: "error", code: "invalid_value", message: parsed.reason + (contextIssue ? ". Correct it in predictions.json on the server." : "") }];
 }
 function createSetupEditor(api, changed) {
-  const state = { fields: {}, reset: [], origins: resolvePreferences({}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false };
+  const state = { fields: {}, reset: [], origins: resolvePreferences({}).origins, issues: [], dirty: false, loading: false, previewing: false, saving: false, blocked: false, contextLoading: false };
   const lifetime = new AbortController();
-  let generation = 0, previewAbort;
+  let generation = 0, contextRequest = 0, previewAbort;
   const notify = () => {
     if (!lifetime.signal.aborted) changed();
   };
@@ -971,7 +1010,7 @@ function createSetupEditor(api, changed) {
     state.issues = validateSettings(state.fields);
     const snapshot = state.snapshot;
     const edits = snapshot ? changedFields(snapshot.fields, state.fields) : {};
-    state.dirty = !!snapshot && (state.reset.length > 0 || Object.keys(edits).length > 0);
+    state.dirty = !!snapshot && (state.reset.length > 0 || Object.keys(edits).length > 0 || state.contextChange !== void 0);
     if (snapshot) state.origins = Object.fromEntries(settingKeys.map((key) => [key, state.reset.includes(key) ? "default" : Object.hasOwn(edits, key) ? "preferences" : snapshot.origins[key]]));
     groups();
     notify();
@@ -1003,15 +1042,66 @@ function createSetupEditor(api, changed) {
       }
     }
   };
+  const contextConfirmed = async (change) => {
+    if (change === void 0) return true;
+    const read = api.contextStatus?.bind(api);
+    if (!read) return false;
+    try {
+      const status = await read(lifetime.signal);
+      if (typeof status !== "object") return false;
+      return change === "managed" ? status.set && status.managed : !status.set;
+    } catch {
+      return false;
+    }
+  };
+  const refreshContext = async () => {
+    const request = ++contextRequest;
+    const read = api.contextStatus?.bind(api);
+    if (!read) {
+      state.context = "unavailable";
+      state.contextLoading = false;
+      notify();
+      return;
+    }
+    state.contextLoading = true;
+    notify();
+    try {
+      const status = await abortable(() => read(lifetime.signal), lifetime.signal);
+      if (request === contextRequest && !lifetime.signal.aborted) {
+        state.context = status;
+        if (status === "unsupported" && state.contextChange !== void 0 && !state.saving && !state.blocked) {
+          state.contextChange = void 0;
+          update();
+        }
+      }
+    } catch {
+      if (request === contextRequest && !lifetime.signal.aborted) state.context = "unavailable";
+    } finally {
+      if (request === contextRequest) {
+        state.contextLoading = false;
+        notify();
+      }
+    }
+  };
   return {
     state: () => state,
+    refreshContext,
+    setContextFile(change) {
+      if (lifetime.signal.aborted || state.loading || state.saving) return;
+      if (change !== void 0 && (!state.snapshot?.writable || typeof state.context !== "object")) return;
+      state.contextChange = change;
+      state.lastSave = void 0;
+      update();
+    },
     async load() {
       if (lifetime.signal.aborted || state.saving) return;
       resetPreview();
       const revision = generation;
       state.loading = true;
       state.error = void 0;
-      notify();
+      state.contextChange = void 0;
+      update();
+      const context = refreshContext();
       try {
         const snapshot = await abortable(() => api.read(lifetime.signal), lifetime.signal);
         if (revision !== generation || lifetime.signal.aborted) return;
@@ -1026,6 +1116,7 @@ function createSetupEditor(api, changed) {
           notify();
         }
       }
+      await context;
     },
     change(fields) {
       if (lifetime.signal.aborted || state.loading || state.saving || !state.snapshot) return;
@@ -1087,6 +1178,12 @@ function createSetupEditor(api, changed) {
       }
       if (!state.dirty) return failed("No changes to save.");
       if (!state.snapshot.writable) return { kind: "read_only", message: state.snapshot.reason ?? "This configuration is read-only." };
+      if (state.contextChange !== void 0 && typeof state.context !== "object") {
+        const refused = { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] };
+        state.lastSave = refused;
+        notify();
+        return refused;
+      }
       resetPreview();
       const before = state.snapshot;
       const expected = structuredClone(state.fields);
@@ -1094,8 +1191,9 @@ function createSetupEditor(api, changed) {
       for (const key of state.reset) delete patch[key];
       const removeModels = Object.hasOwn(patch, "models") && patch.models === void 0;
       if (removeModels) delete patch.models;
-      const input = { revision: before.revision, fields: patch, ...removeModels ? { removeModels: true } : {}, ...state.reset.length ? { reset: [...state.reset] } : {} };
-      const { revision: _revision, ...change } = input;
+      const contextFile = state.contextChange;
+      const input = { revision: before.revision, fields: patch, ...removeModels ? { removeModels: true } : {}, ...state.reset.length ? { reset: [...state.reset] } : {}, ...contextFile ? { contextFile } : {} };
+      const { revision: _revision, contextFile: _contextFile, ...change } = input;
       const overrides = applyPreferenceChange(before.overrides, change);
       state.saving = true;
       state.error = void 0;
@@ -1107,6 +1205,7 @@ function createSetupEditor(api, changed) {
         } catch {
         }
         if (result?.kind === "saved") result = { kind: "saved_not_active", revision: result.revision, message: "Saved on disk. Effective activation is not verified." };
+        const acknowledged = result?.kind === "saved_not_active";
         if (lifetime.signal.aborted) return failed("Settings editor closed.");
         if (!result || result.kind === "saved_not_active" || result.kind === "failed") {
           try {
@@ -1115,10 +1214,16 @@ function createSetupEditor(api, changed) {
             const fieldsMatch = settingKeys.every((key) => JSON.stringify(fresh.fields[key]) === JSON.stringify(expected[key]));
             const overridesMatch = settingKeys.every((key) => Object.hasOwn(fresh.overrides, key) === Object.hasOwn(overrides, key) && JSON.stringify(fresh.overrides[key]) === JSON.stringify(overrides[key]));
             if (fresh.writable && fresh.source === before.source && fresh.revision !== before.revision && fieldsMatch && overridesMatch) {
-              const parsed = parseOptions(expected);
-              const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every((key) => JSON.stringify(fresh.effective[key]) === JSON.stringify(parsed.value[key]));
-              result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion } : { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." };
-              adopt(fresh);
+              if (!await contextConfirmed(contextFile)) {
+                if (!acknowledged) result = void 0;
+              } else {
+                const parsed = parseOptions(expected);
+                const active = parsed.ok && !!fresh.effective && fresh.activeRevision === fresh.revision && settingKeys.every((key) => JSON.stringify(fresh.effective[key]) === JSON.stringify(parsed.value[key]));
+                result = active ? { kind: "saved", revision: fresh.revision, serviceVersion: fresh.serviceVersion } : { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." };
+                adopt(fresh);
+                state.contextChange = void 0;
+                void refreshContext();
+              }
             }
           } catch {
           }
@@ -1139,6 +1244,7 @@ function createSetupEditor(api, changed) {
     discard() {
       if (!lifetime.signal.aborted && !state.saving && state.snapshot) {
         resetPreview();
+        state.contextChange = void 0;
         adopt(state.snapshot);
         notify();
       }
@@ -1184,6 +1290,7 @@ function createTUISetupAPI(ctx, location) {
       return snapshot;
     },
     preview: async (fields, signal) => await selected().previewSettings({ fields }, { location: pinned, signal }),
+    contextStatus: async (signal) => await readContextStatus(async (signal2) => await selected().contextFileStatus({}, { location: pinned, signal: signal2 }), signal),
     async save(input, signal) {
       const waiting = AbortSignal.any([signal, AbortSignal.timeout(12e3)]);
       const result = await abortable(() => selected().saveSettings(input, { location: pinned, signal: waiting }), waiting);
@@ -1198,7 +1305,9 @@ var setupText = {
   warning: "Avoid saving prediction preferences from multiple places at once. Simultaneous saves can overwrite each other's changes, including different settings. The recovery copy may not contain those changes.",
   scope: "Settings apply to user prediction preferences on the selected server. They affect all projects using this configuration directory.",
   defaults: "Reset to defaults removes saved settings shown here after you save.",
-  contextFile: "Set contextFile in predictions.json on the OpenCode server. Its contents go to prediction providers.",
+  contextFile: "Standing notes about you and your work, sent to prediction providers with every request. Up to 8 KB of text.",
+  // The old-server row keeps this sentence until the server can manage the file.
+  contextFileManual: "Set contextFile in predictions.json on the OpenCode server. Its contents go to prediction providers.",
   github: "When enabled, descriptions and metadata from linked public and accessible private GitHub PRs may be sent to every attempted prediction provider, including fallback and paid models.",
   order: "Groups run top to bottom. A later group is tried when every model above it fails. With Escalation set to Automatically, another model is also tried once after no suggestion. Within a group, entry order sets the first preference and runtime ranking can reorder it.",
   cost: "Match counts check model names only and send no conversation. Predictions use provider quota and may incur charges; a model's name does not mean it is free.",
@@ -1210,11 +1319,63 @@ var setupTUIText = {
   fuller: setupText.defaults + "\n\n" + setupText.warning
 };
 var originLabels = { preferences: "Saved preference", default: "Default" };
+var grouped = (count) => String(count).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+var contextFileText = {
+  checking: "Checking the context file\u2026",
+  unavailable: "Context file status is unavailable right now.",
+  unsupported: "Update the Predictions plugin on the server to manage the context file here.",
+  staged: "predictions-context.md will be created when you save.",
+  stagedOff: "The context file will stop being used when you save. The file stays on disk.",
+  empty: "Empty \u2014 nothing is sent until you add text.",
+  openFailed: "Could not open the file on this computer.",
+  okLine: (path, bytes) => `${path} \xB7 ${grouped(bytes)} of 8,192 bytes`,
+  // The reason a set file cannot be used, or undefined when it can.
+  issue: (state, bytes) => {
+    if (state === "missing") return "Missing";
+    if (state === "invalid") return "Not UTF-8 text";
+    if (state === "unreadable") return "Cannot be read";
+    if (state === "too_large") return bytes === void 0 ? "Too large" : `Too large: ${grouped(bytes)} of 8,192 bytes`;
+    return void 0;
+  },
+  // Names the file manager of the OS this desktop runs on.
+  reveal: (os) => os === "macos" ? "Show in Finder" : os === "windows" ? "Show in File Explorer" : "Show in Folder"
+};
 var contextFileIssue = (state) => state?.issues.find((issue) => issue.field === "contextFile")?.message ?? state?.snapshot?.issues.find((issue) => issue.field === "contextFile")?.message;
 
 // src/setup-tui.ts
 var title = "Predictions Setup";
 var escalationNames = { off: "Off", manual: "Manually", automatic: "Automatically once after no suggestion" };
+var contextSet = (state) => typeof state.context === "object" && state.context.set ? state.context : void 0;
+function contextRow(state) {
+  if (state.contextChange) return state.contextChange === "managed" ? "On when you save" : "Off when you save";
+  if (state.contextLoading || state.context === void 0) return contextFileText.checking;
+  if (state.context === "unsupported") return "Update the server";
+  if (state.context === "unavailable") return "Status unavailable";
+  const status = contextSet(state);
+  if (!status) return "Not set";
+  return contextFileText.issue(status.state) ?? (status.state === "empty" ? "Empty" : "On");
+}
+function contextDetails(state) {
+  const staged = state.contextChange === "managed" ? contextFileText.staged : state.contextChange === "none" ? contextFileText.stagedOff : void 0;
+  const lines = [];
+  if (state.contextLoading || state.context === void 0) lines.push(contextFileText.checking);
+  else if (state.context === "unsupported") lines.push(setupText.contextFileManual, contextFileText.unsupported);
+  else if (state.context === "unavailable") {
+    lines.push(contextFileText.unavailable);
+    if (staged) lines.push(staged);
+  } else if (!state.context.set) lines.push(staged ?? setupText.contextFile);
+  else {
+    const status = state.context;
+    lines.push(status.state === "ok" && status.bytes !== void 0 && !staged ? contextFileText.okLine(status.path, status.bytes) : status.path);
+    if (!staged && status.state === "empty") lines.push(contextFileText.empty);
+    const issue2 = staged ? void 0 : contextFileText.issue(status.state, status.bytes);
+    if (issue2) lines.push(issue2);
+    if (staged) lines.push(staged);
+  }
+  const issue = contextFileIssue(state);
+  if (issue) lines.push(issue);
+  return lines.join("\n\n");
+}
 function registerSetupTUI(ctx, openStatus) {
   const dialog = ctx.ui.dialog;
   let running = false, disposed = false;
@@ -1362,6 +1523,30 @@ ${setupTUIText.fuller}`);
       }
     }
   }
+  async function contextFile(editor) {
+    for (; ; ) {
+      const state = editor.state();
+      const status = contextSet(state);
+      const writable = !readOnly(editor);
+      const actions = [];
+      if (state.contextChange) {
+        if (writable) actions.push({ title: "Undo", value: "undo" });
+      } else if (!writable || state.context === "unsupported" || state.context === "unavailable" || state.context === void 0) {
+      } else if (!status) actions.push({ title: "Use a context file", value: "managed" });
+      else {
+        if (status.state === "missing") actions.push(status.managed ? { title: "Create it again", value: "managed" } : { title: "Use predictions-context.md instead", value: "managed" });
+        actions.push({ title: "Stop using", value: "none", description: "The file stays on disk." });
+      }
+      if (state.context !== void 0 && state.context !== "unsupported") actions.push({ title: "Check again", value: "check" });
+      actions.push({ title: "Details", description: "Path, size and state.", value: "details" });
+      const choice = await dialog.select({ title: "Context file", options: actions });
+      if (choice === void 0) return;
+      if (choice === "details") await alert(contextDetails(editor.state()));
+      else if (choice === "check") await editor.refreshContext();
+      else if (choice === "undo") editor.setContextFile(void 0);
+      else if (await editable(editor)) editor.setContextFile(choice);
+    }
+  }
   const strictNumber = /^[0-9]+$/;
   async function advanced(editor) {
     for (; ; ) {
@@ -1370,6 +1555,7 @@ ${setupTUIText.fuller}`);
         options: [
           { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms`, value: "timeout" },
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
+          { title: "Context file", description: contextRow(editor.state()), value: "context-file" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} \xB7 private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
           { title: "About Advanced", description: "PR and context file data.", value: "about" }
@@ -1378,6 +1564,10 @@ ${setupTUIText.fuller}`);
       if (choice === void 0) return;
       if (choice === "about") {
         await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n"));
+        continue;
+      }
+      if (choice === "context-file") {
+        await contextFile(editor);
         continue;
       }
       if (!await editable(editor)) continue;
