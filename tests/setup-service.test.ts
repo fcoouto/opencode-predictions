@@ -2,9 +2,9 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { createSetupService } from "../src/setup-service.ts"
 import { createPreferencesRuntime } from "../src/preferences-runtime.ts"
-import { createPreferencesStore, type PreferenceRead, type PreferencesStore } from "../src/preferences-store.ts"
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises"
-import { join, resolve } from "node:path"
+import { createPreferencesStore, managedContextPath, type PreferenceRead, type PreferencesStore } from "../src/preferences-store.ts"
+import { mkdir, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises"
+import { dirname, join, resolve } from "node:path"
 import type { CatalogModel } from "../src/models.ts"
 import { changedFields, type SaveInput, type SettingsInput } from "../src/setup.ts"
 import { Predictions } from "../src/rpc.ts"
@@ -59,6 +59,8 @@ const catalog = [
   { providerID: "local", id: "other", name: "Other", enabled: true, variants: [], private: "PRIVATE_CATALOG" },
 ]
 const signal = () => new AbortController().signal
+// Context-file paths are not used by these fixtures; any call is a test mistake.
+const noPaths = { managed: (): never => { throw new Error("Unexpected managed path") }, home: "/server-home", platform: process.platform }
 function fixture(fields: SettingsInput = { models: "local/family/a#low", automatic: false }) {
   let metadataCalls = 0, writes = 0
   const snapshot: PreferenceRead = { revision: "r1", source: "/server/predictions.json", writable: true, documentValid: true, policy: "user", overrides: fields }
@@ -69,7 +71,7 @@ function fixture(fields: SettingsInput = { models: "local/family/a#low", automat
     models: async () => catalog,
     generate: async () => { throw new Error("Unexpected generation") },
   }, options, "/server"))
-  const service = createSetupService(store, async () => { metadataCalls++; return catalog }, runtime)
+  const service = createSetupService(store, async () => { metadataCalls++; return catalog }, runtime, noPaths)
   return { service, store, snapshot, runtime, counts: () => ({ metadataCalls, writes }) }
 }
 
@@ -151,9 +153,9 @@ test("unknown transport fields are rejected before metadata access", async () =>
 
 test("metadata failures return fixed safe errors and cancellation does not wait for ignored signals", async () => {
   const f = fixture()
-  const failed = createSetupService(f.store, async () => { throw new Error("PRIVATE provider error") }, f.runtime)
+  const failed = createSetupService(f.store, async () => { throw new Error("PRIVATE provider error") }, f.runtime, noPaths)
   await assert.rejects(failed.preview({}, signal()), error => error instanceof Error && error.message === "Model metadata is unavailable.")
-  const pending = createSetupService(f.store, async () => new Promise<readonly CatalogModel[]>(() => {}), f.runtime)
+  const pending = createSetupService(f.store, async () => new Promise<readonly CatalogModel[]>(() => {}), f.runtime, noPaths)
   const controller = new AbortController()
   const work = pending.preview({}, controller.signal)
   controller.abort()
@@ -172,7 +174,7 @@ test("setup metadata leaves runtime queue, session context and provider generati
   const owner = createPreferencesRuntime(f.store, options => createService(api, options, "/server"))
   await owner.refresh(signal())
   const runtime = owner.state().service, before = runtime.status()
-  const setup = createSetupService(f.store, api.models, owner)
+  const setup = createSetupService(f.store, api.models, owner, noPaths)
   await setup.read(signal())
   await setup.preview({ models: ["local/other", "local/family/*"] }, signal())
   assert.deepEqual(runtime.status(), before)
@@ -236,7 +238,8 @@ test("GitHub PR context participates in changed-field detection and saved-not-ac
 async function preferencesServiceFixture() {
   await mkdir(".test-artifacts", { recursive: true })
   const home = await mkdtemp(resolve(".test-artifacts/preferences-service-"))
-  const store = createPreferencesStore({ home, platform: process.platform, env: {}, systemPaths: [] })
+  const host = { home, platform: process.platform, env: {}, systemPaths: [] }
+  const store = createPreferencesStore(host)
   const calls = { session: 0, context: 0, generate: 0, pr: 0 }
   const runtime = createPreferencesRuntime(store, options => createService({
     session: async () => { calls.session++; throw new Error("Unexpected session") },
@@ -245,8 +248,10 @@ async function preferencesServiceFixture() {
     includeGithubPRContext: async () => { calls.pr++; return [] },
     models: async () => catalog,
   }, options, "/server"))
-  const setup = createSetupService(store, async () => catalog, runtime)
-  return { store, runtime, setup, calls, file: join(home, ".config/opencode/predictions.json") }
+  // Context-file status reads the temp home only; the real home is never inspected.
+  const paths = { managed: () => managedContextPath(host), home, platform: process.platform }
+  const setup = createSetupService(store, async () => catalog, runtime, paths)
+  return { store, runtime, setup, calls, home, file: join(home, ".config/opencode/predictions.json"), managed: join(home, ".config/opencode/predictions-context.md") }
 }
 
 test("normal server saves preferences without source qualification", async () => {
@@ -326,5 +331,80 @@ for (const field of ["timeoutMs", "contextTurns"] as const) test(`numeric-null $
   assert.equal(before.issues.some(issue => issue.field === field), true)
   assert.equal((await f.service.save({ revision: before.revision, fields: { debug: true } }, signal())).kind, "invalid")
   assert.equal(f.counts().writes, 0)
+  f.runtime.dispose()
+})
+
+test("Save creates the managed context file and status reports it empty without contents", async () => {
+  const f = await preferencesServiceFixture()
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: false })
+  const before = await f.setup.read(signal())
+  assert.equal((await f.setup.save({ revision: before.revision, fields: {}, contextFile: "managed" }, signal())).kind, "saved")
+  assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, { contextFile: "~/.config/opencode/predictions-context.md" })
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: "~/.config/opencode/predictions-context.md", absolute: f.managed, managed: true, state: "empty", bytes: 0 })
+  assert.ok(f.managed.startsWith(f.home))
+  f.runtime.dispose()
+})
+
+test("Save rejects any context file value other than managed or none before writing", async () => {
+  const f = await preferencesServiceFixture()
+  const { revision } = await f.setup.read(signal())
+  for (const contextFile of ["/tmp/x", "~/x.md", "", null, true]) {
+    await assert.rejects(f.setup.save({ revision, fields: {}, contextFile } as unknown as SaveInput, signal()), { name: "Error", message: "Invalid save input." })
+  }
+  await assert.rejects(readFile(f.file), { code: "ENOENT" })
+  f.runtime.dispose()
+})
+
+test("none clears an invalid stored context path", async () => {
+  const f = await preferencesServiceFixture()
+  await mkdir(dirname(f.file), { recursive: true })
+  await writeFile(f.file, '{"version":1,"settings":{"contextFile":"relative.md"}}\n')
+  const invalid = await f.setup.read(signal())
+  assert.equal(invalid.effective, null)
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: "relative.md", absolute: "", managed: false, state: "unreadable" })
+  assert.equal((await f.setup.save({ revision: invalid.revision, fields: {}, contextFile: "none" }, signal())).kind, "saved")
+  assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, {})
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: false })
+  f.runtime.dispose()
+})
+
+test("managed Save with a models edit is refused by a symlink and changes neither setting", async () => {
+  const f = await preferencesServiceFixture()
+  const original = '{"version":1,"settings":{"debug":true}}\n'
+  await mkdir(dirname(f.file), { recursive: true })
+  await writeFile(f.file, original)
+  await writeFile(join(f.home, "target.md"), "")
+  await symlink(join(f.home, "target.md"), f.managed)
+  const before = await f.setup.read(signal())
+  const result = await f.setup.save({ revision: before.revision, fields: { models: ["local/other"] }, contextFile: "managed" }, signal())
+  assert.deepEqual(result, { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again." }] })
+  assert.equal(await readFile(f.file, "utf8"), original)
+  assert.deepEqual((await f.setup.read(signal())).overrides, { debug: true })
+  f.runtime.dispose()
+})
+
+test("managed Save recreates a missing managed file and reports saved", async () => {
+  const f = await preferencesServiceFixture()
+  const first = await f.setup.read(signal())
+  assert.equal((await f.setup.save({ revision: first.revision, fields: {}, contextFile: "managed" }, signal())).kind, "saved")
+  await unlink(f.managed)
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: "~/.config/opencode/predictions-context.md", absolute: f.managed, managed: true, state: "missing" })
+  const second = await f.setup.read(signal())
+  assert.equal((await f.setup.save({ revision: second.revision, fields: {}, contextFile: "managed" }, signal())).kind, "saved")
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: "~/.config/opencode/predictions-context.md", absolute: f.managed, managed: true, state: "empty", bytes: 0 })
+  f.runtime.dispose()
+})
+
+test("status reports a hand-set path as not managed and a 9000-byte managed file as too large", async () => {
+  const f = await preferencesServiceFixture()
+  await mkdir(join(f.home, "notes"), { recursive: true })
+  await writeFile(join(f.home, "notes/context.md"), "hello")
+  await mkdir(dirname(f.file), { recursive: true })
+  await writeFile(f.file, '{"version":1,"settings":{"contextFile":"~/notes/context.md"}}\n')
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: "~/notes/context.md", absolute: join(f.home, "notes/context.md"), managed: false, state: "ok", bytes: 5 })
+  const before = await f.setup.read(signal())
+  assert.equal((await f.setup.save({ revision: before.revision, fields: {}, contextFile: "managed" }, signal())).kind, "saved")
+  await writeFile(f.managed, "a".repeat(9000))
+  assert.deepEqual(await f.setup.contextStatus(signal()), { set: true, path: "~/.config/opencode/predictions-context.md", absolute: f.managed, managed: true, state: "too_large", bytes: 9000 })
   f.runtime.dispose()
 })

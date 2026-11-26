@@ -1,11 +1,15 @@
-import type { PreferencesStore } from "./preferences-store.ts"
+import { expandContextPath, sameContextPath, type PreferencesStore } from "./preferences-store.ts"
 import type { PreferencesRuntime } from "./preferences-runtime.ts"
 import { applyPreferenceChange, resolvePreferences } from "./preferences.ts"
 import { isDeepStrictEqual } from "node:util"
 import { resolveModels, resolveModelGroups, type CatalogModel, type Candidate } from "./models.ts"
 import { parseOptions } from "./options.ts"
+import { inspectContextFile } from "./context-file.ts"
 import { abortable } from "./service.ts"
-import { readGroups, validateSettings as validation, type SaveInput, type SaveResult, type SettingsInput, type SetupSnapshot, type SetupPreview } from "./setup.ts"
+import { readGroups, validateSettings as validation, type ContextFileStatus, type SaveInput, type SaveResult, type SettingsInput, type SetupSnapshot, type SetupPreview } from "./setup.ts"
+
+// Server-fixed managed path and the host facts needed to resolve a stored context path. Clients never supply these.
+export type ContextPaths = { managed: () => { stored: string; absolute: string }; home: string; platform: NodeJS.Platform }
 
 function resolve(fields: SettingsInput, catalog: readonly CatalogModel[]): SetupPreview {
   const issues = validation(fields)
@@ -35,7 +39,7 @@ function resolve(fields: SettingsInput, catalog: readonly CatalogModel[]): Setup
   return { groups: selectors.map((entries, index) => ({ selectors: entries, candidates: candidates[index] })), issues }
 }
 
-export function createSetupService(store: PreferencesStore, models: (signal: AbortSignal) => Promise<readonly CatalogModel[]>, runtime: PreferencesRuntime) {
+export function createSetupService(store: PreferencesStore, models: (signal: AbortSignal) => Promise<readonly CatalogModel[]>, runtime: PreferencesRuntime, paths: ContextPaths) {
   async function catalog(signal: AbortSignal): Promise<CatalogModel[]> {
     try {
       return (await abortable(() => models(signal), signal)).map(model => ({
@@ -67,13 +71,24 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
       if (issues.length) return { groups: [], issues }
       return resolve(fields, await catalog(signal))
     },
+    async contextStatus(signal: AbortSignal): Promise<ContextFileStatus> {
+      await runtime.refresh(signal)
+      const value = runtime.state().stored.contextFile
+      if (value === undefined) return { set: false }
+      if (typeof value !== "string" || !parseOptions({ contextFile: value }).ok) return { set: true, path: String(value), absolute: "", managed: false, state: "unreadable" }
+      const absolute = expandContextPath(value, paths.home)
+      const info = await inspectContextFile(absolute, signal)
+      const managed = sameContextPath(absolute, paths.managed().absolute, paths.platform)
+      return { set: true, path: value, absolute, managed, state: info.state, ...(info.bytes === undefined ? {} : { bytes: info.bytes }) }
+    },
     async save(input: SaveInput, signal: AbortSignal): Promise<SaveResult> {
       signal.throwIfAborted()
-      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["revision", "fields", "removeModels", "reset"].includes(key))) throw new Error("Unknown save field.")
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some(key => !["revision", "fields", "removeModels", "reset", "contextFile"].includes(key))) throw new Error("Unknown save field.")
       if (typeof input.revision !== "string" || !input.revision || Buffer.byteLength(JSON.stringify(input)) > 65536) throw new Error("Invalid save input.")
+      if (input.contextFile !== undefined && input.contextFile !== "managed" && input.contextFile !== "none") throw new Error("Invalid save input.")
       const invalid = validation(input.fields)
       if (invalid.length) return { kind: "invalid", issues: invalid }
-      const { revision: _revision, ...change } = input
+      const { revision: _revision, contextFile, ...change } = input
       const edits = applyPreferenceChange({}, change)
       await runtime.refresh(signal)
       const fresh = runtime.state()
@@ -81,12 +96,14 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
       if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
       const prospective = { ...fresh.stored.overrides, ...edits }
       for (const key of input.reset ?? []) delete prospective[key]
-      const issues = resolvePreferences(prospective, fresh.stored.contextFile).issues
+      // The context path this save will leave stored: "none" clears it, "managed" sets the fixed path, otherwise it is unchanged.
+      const context = contextFile === "managed" ? paths.managed().stored : contextFile === "none" ? undefined : fresh.stored.contextFile
+      const issues = resolvePreferences(prospective, context).issues
       if (issues.length) return { kind: "invalid", issues }
       let written = fresh.stored.revision
-      if (!isDeepStrictEqual(prospective, fresh.stored.overrides)) {
+      if (contextFile !== undefined || !isDeepStrictEqual(prospective, fresh.stored.overrides)) {
         const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual(value, fresh.stored.overrides[key as keyof SettingsInput])))
-        const result = await store.write(fresh.stored.revision, { fields, ...(input.reset ? { reset: input.reset } : {}), ...(input.removeModels ? { removeModels: true } : {}) }, signal)
+        const result = await store.write(fresh.stored.revision, { fields, ...(input.reset ? { reset: input.reset } : {}), ...(input.removeModels ? { removeModels: true } : {}), ...(contextFile === undefined ? {} : { contextFile }) }, signal)
         if (result.kind === "refused_context") return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: result.message }] }
         if (result.kind !== "written") return result
         written = result.revision
@@ -96,7 +113,7 @@ export function createSetupService(store: PreferencesStore, models: (signal: Abo
         return { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." }
       }
       const state = runtime.state()
-      if (state.stored.revision === written && state.activeRevision === state.revision && isDeepStrictEqual(state.stored.overrides, prospective)) {
+      if (state.stored.revision === written && state.activeRevision === state.revision && isDeepStrictEqual(state.stored.overrides, prospective) && isDeepStrictEqual(state.stored.contextFile, context)) {
         return { kind: "saved", revision: state.revision, serviceVersion: state.service.status().version }
       }
       return { kind: "saved_not_active", revision: state.revision, message: "Saved on disk. Effective activation is not verified." }

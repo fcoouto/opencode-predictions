@@ -7,6 +7,23 @@ import { resolvePreferences } from "../src/preferences.ts"
 import fs from "node:fs/promises"
 import net from "node:net"
 import { syncBuiltinESMExports } from "node:module"
+import { Predictions } from "../src/rpc.ts"
+import { JsonSchema, Schema, SchemaRepresentation } from "effect"
+
+test("saveSettings input accepts only a top-level managed or none context file choice", () => {
+  assert.deepEqual(Predictions.methods.saveSettings.input.properties.contextFile, { enum: ["managed", "none"] })
+})
+
+test("contextFileStatus takes no input and its output rejects extra keys and unknown states", () => {
+  assert.deepEqual(Predictions.methods.contextFileStatus.input, { type: "object", additionalProperties: false })
+  const read = Schema.decodeUnknownSync(SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(Predictions.methods.contextFileStatus.output)) as Schema.Codec<unknown>, { onExcessProperty: "error" })
+  read({ set: false })
+  read({ set: true, path: "~/predictions-context.md", absolute: "/home/x/predictions-context.md", managed: true, state: "ok", bytes: 3 })
+  read({ set: true, path: "relative.md", absolute: "", managed: false, state: "unreadable" })
+  assert.throws(() => read({ set: false, path: "x" }))
+  assert.throws(() => read({ set: true, path: "x", absolute: "", managed: false, state: "unreadable", contents: "secret" }))
+  assert.throws(() => read({ set: true, path: "x", absolute: "", managed: false, state: "deleted" }))
+})
 
 const snapshot: SetupSnapshot = {
   revision: "r1", activeRevision: "r1", scope: "global", source: "/remote/predictions.json", writable: true,
