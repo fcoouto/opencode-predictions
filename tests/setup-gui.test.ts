@@ -80,7 +80,7 @@ async function mount(options: Options = {}): Promise<Page> {
         open: (render: any) => { log.dialogs++; const holder = document.createElement("div"); holder.setAttribute("data-dialog-host", ""); document.body.append(holder); const handle = { close: () => holder.remove() }; S.createRoot(() => holder.append(render(handle))); return handle },
         confirm: async (options: any) => { log.confirms.push(options); return !!w.confirmAnswer },
         // The host's searchable picker: each queued answer picks an option by title, or dismisses with null.
-        select: async (options: any) => { log.selects.push(JSON.parse(JSON.stringify(options))); const title = (w.selectAnswers ?? []).shift(); return title === null || title === undefined ? undefined : options.options.find((option: any) => option.title === title)?.value },
+        select: async (options: any) => { log.selects.push(JSON.parse(JSON.stringify(options))); if (w.holdSelect) { w.holdSelect = false; await new Promise(resolve => { w.releaseSelect = resolve }) } const title = (w.selectAnswers ?? []).shift(); return title === null || title === undefined ? undefined : options.options.find((option: any) => option.title === title)?.value },
         alert: async (options: any) => { log.alerts.push(options) },
       },
       add: (_token: unknown, value: any) => { if (value.render) w.page = value; else w.commands = { ...(w.commands ?? {}), [value.id]: value } },
@@ -427,7 +427,8 @@ test("an empty catalog explains itself instead of opening an empty picker", asyn
 })
 
 const description = (page: Page, id: string) => row(page, id).locator("[data-row-description]").textContent()
-const edit = (page: Page, id: string) => row(page, id).getByRole("button", { name: "Edit", exact: true }).click()
+const editButton = (page: Page, id: string) => row(page, id).getByRole("button", { name: /^Edit\b/ })
+const edit = (page: Page, id: string) => editButton(page, id).click()
 
 test("Edit on a model entry reopens the pickers on the current model and reasoning, and rows show the level in words", async () => {
   const page = await mount({ fields: { models: [["local/family/a#low"]] } })
@@ -442,7 +443,7 @@ test("Edit on a model entry reopens the pickers on the current model and reasoni
     assert.equal(model.title, "Change model")
     assert.equal(model.current.id, "family/a")
     assert.equal(reasoning.current, "low")
-    await page.waitForFunction(() => document.activeElement?.textContent?.trim() === "Edit" && !!document.activeElement.closest('[data-action="predictions-entry-0-0"]'))
+    await page.waitForFunction(() => document.activeElement?.textContent?.startsWith("Edit") && !!document.activeElement.closest('[data-action="predictions-entry-0-0"]'))
     await save(page).click()
     await page.waitForFunction(() => (window as any).log.saves.length === 1)
     assert.deepEqual(await page.evaluate(() => (window as any).log.saves[0].input.fields), { models: [["local/family/a#high"]] })
@@ -484,11 +485,38 @@ test("Edit replaces only the entry at its own position when a model is listed tw
   } finally { await page.close() }
 })
 
+test("each Edit button names the entry it edits, by model and position", async () => {
+  const page = await mount({ fields: { models: [["local/family/a#low", "local/family/a#high"], ["local/family-*"]] } })
+  try {
+    await idle(page)
+    for (const name of ["Edit Family A, group 1, entry 1", "Edit Family A, group 1, entry 2", "Edit local/family-*, group 2, entry 1"]) assert.equal(await page.getByRole("button", { name, exact: true }).count(), 1, name)
+    assert.equal(await editButton(page, "predictions-entry-0-0").evaluate(button => [...button.querySelectorAll("span")].every(span => span.getBoundingClientRect().width <= 1)), true, "only the word Edit is visible")
+  } finally { await page.close() }
+})
+
+test("a picker result is dropped when the page has switched to another server while it was open", async () => {
+  const page = await mount({ fields: { models: [["local/b"]] } })
+  try {
+    await idle(page)
+    await page.evaluate(() => { (window as any).holdSelect = true })
+    await answer(page, "Family A", "high")
+    await edit(page, "predictions-entry-0-0")
+    await page.waitForFunction(() => (window as any).log.selects.length === 1)
+    await page.evaluate(() => (window as any).switchServer("remote-host"))
+    await page.waitForFunction(() => /remote-host/.test(document.querySelector("[data-description]")?.textContent ?? ""))
+    await idle(page)
+    await page.evaluate(() => (window as any).releaseSelect())
+    await page.waitForTimeout(100)
+    assert.deepEqual(await entryTitles(page), ["1. Model B"], "the other server's draft is untouched")
+    assert.equal(await save(page).isDisabled(), true)
+  } finally { await page.close() }
+})
+
 test("Edit is disabled when the configuration is read-only", async () => {
   const page = await mount({ readOnly: true })
   try {
     await idle(page)
-    assert.equal(await row(page, "predictions-entry-0-0").getByRole("button", { name: "Edit", exact: true }).isDisabled(), true)
+    assert.equal(await editButton(page, "predictions-entry-0-0").isDisabled(), true)
   } finally { await page.close() }
 })
 

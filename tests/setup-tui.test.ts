@@ -359,3 +359,14 @@ test("Edit on a pattern entry opens the pattern prompt filled in", async t => {
   )
   assert.equal(await readFile(h.f.file, "utf8"), '{"models":[["local/b*"]]}')
 })
+
+test("Edit keeps the current model in the picker's first results even in a long catalog", async t => {
+  const h = await harness(t, { fields: { models: [["local/family/a#low"]] } })
+  const filler = Array.from({ length: 60 }, (_, index) => ({ providerID: "aaa", id: "m" + index, name: "Filler " + index, enabled: true, variants: [] }))
+  h.f.snapshot.catalog = [...filler, ...h.f.snapshot.catalog] as any
+  await h.run(
+    pick("Models"), pick("Group 1 — Try first"), pick("Family A"), pick("Edit"),
+    call => { assert.ok(call.options.search("", call.options.options).some((item: any) => item.value === call.options.current), "the highlighted model is listed"); return undefined },
+    cancel, cancel, cancel,
+  )
+})

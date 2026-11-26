@@ -1424,7 +1424,10 @@ ${setupTUIText.fuller}`);
       options: catalog.map((item) => ({ title: item.name ?? item.id, description: `${item.providerID}/${item.id}${item.enabled ? "" : " \u2014 disabled"}`, value: item, category: item.providerID })),
       search: (query, options) => {
         const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-        return options.filter((option) => words.every((word) => (option.title + " " + option.description).toLowerCase().includes(word))).slice(0, 50);
+        const found = options.filter((option) => words.every((word) => (option.title + " " + option.description).toLowerCase().includes(word)));
+        const top = found.slice(0, 50);
+        const highlighted = found.find((option) => option.value === was?.model);
+        return highlighted && !top.includes(highlighted) ? [...top.slice(0, 49), highlighted] : top;
       }
     });
     if (!model) return void 0;
