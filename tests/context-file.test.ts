@@ -5,7 +5,7 @@ import { renameSync, symlinkSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
-import { inspectContextFile, readContextFile } from "../src/context-file.ts"
+import { inspectContextFile, readContextFile, sameFileIdentity } from "../src/context-file.ts"
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), "prediction-context-"))
@@ -95,6 +95,15 @@ test("context inspection honors cancellation", async t => {
   const controller = new AbortController()
   controller.abort()
   await assert.rejects(inspectContextFile(f.path, controller.signal), { name: "AbortError" })
+})
+
+// Identity check that catches a swap where O_NOFOLLOW is undefined (Windows): the opened handle must be the
+// same device and inode that lstat reported. Exercised directly because the swap itself cannot be pinned.
+test("context inspection treats a different device or inode as a replaced file", () => {
+  const before = { dev: 1n, ino: 2n }
+  assert.equal(sameFileIdentity(before, { dev: 1n, ino: 2n }), true)
+  assert.equal(sameFileIdentity(before, { dev: 1n, ino: 3n }), false)
+  assert.equal(sameFileIdentity(before, { dev: 9n, ino: 2n }), false)
 })
 
 // Aborting synchronously right after the call means the abort lands while the open is still pending,

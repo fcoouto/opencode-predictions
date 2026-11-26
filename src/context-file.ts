@@ -1,5 +1,5 @@
-import { constants } from "node:fs"
-import { open, type FileHandle } from "node:fs/promises"
+import { constants, type BigIntStats } from "node:fs"
+import { lstat, open, type FileHandle } from "node:fs/promises"
 import { homedir } from "node:os"
 import { isAbsolute, join } from "node:path"
 
@@ -10,17 +10,27 @@ type ContextFileStatus = { state: ContextFileState; bytes?: number }
 // Reports state and size only; the text itself never leaves this function.
 export async function inspectContextFile(absolutePath: string, signal: AbortSignal): Promise<ContextFileStatus> {
   signal.throwIfAborted()
+  let before: BigIntStats
+  try {
+    before = await lstat(absolutePath, { bigint: true })
+  } catch (error) {
+    signal.throwIfAborted()
+    return errorField(error, "code") === "ENOENT" ? { state: "missing" } : { state: "unreadable" }
+  }
+  signal.throwIfAborted()
+  // A symlink or other non-regular file is reported without opening it.
+  if (!before.isFile()) return { state: "unreadable" }
   let file: FileHandle
   try {
-    // O_NOFOLLOW makes the open itself refuse a symlink at the final path component, so the handle
-    // that is classified is the handle that is read. There is no check-then-open window to swap in.
+    // O_NOFOLLOW makes the open refuse a symlink where it is defined. Where it is not (Windows), the
+    // identity check in classifyOpenFile catches a swapped-in link or file.
     file = await open(absolutePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0))
   } catch (error) {
     signal.throwIfAborted()
     return errorField(error, "code") === "ENOENT" ? { state: "missing" } : { state: "unreadable" }
   }
   try {
-    return await classifyOpenFile(file, signal)
+    return await classifyOpenFile(file, before, signal)
   } catch {
     signal.throwIfAborted()
     return { state: "unreadable" }
@@ -29,11 +39,17 @@ export async function inspectContextFile(absolutePath: string, signal: AbortSign
   }
 }
 
-async function classifyOpenFile(file: FileHandle, signal: AbortSignal): Promise<ContextFileStatus> {
-  const info = await file.stat()
+// Exported for tests. True only when two stat results name the same device and inode.
+export function sameFileIdentity(a: { dev: bigint; ino: bigint }, b: { dev: bigint; ino: bigint }): boolean {
+  return a.dev === b.dev && a.ino === b.ino
+}
+
+async function classifyOpenFile(file: FileHandle, before: BigIntStats, signal: AbortSignal): Promise<ContextFileStatus> {
+  const info = await file.stat({ bigint: true })
   signal.throwIfAborted()
-  if (!info.isFile()) return { state: "unreadable" }
-  const bytes = info.size
+  // The handle must be the file lstat reported; a replaced path is unreadable and is never read.
+  if (!info.isFile() || !sameFileIdentity(before, info)) return { state: "unreadable" }
+  const bytes = Number(info.size)
   try {
     const text = await readValidatedText(file, signal)
     return { state: text ? "ok" : "empty", bytes }
