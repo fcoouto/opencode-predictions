@@ -198,12 +198,28 @@ async function assertPrivateAcl(path: string, directory = false) {
   assert.deepEqual(aces, [sid, "SY", "BA"].map(trustee => `A;${directory ? "OICI" : ""};FA;;;${trustee}`).sort(), sddl)
 }
 
-// Every case gets its own configuration root, so a context file left by one case cannot reach another.
 // These seven extra server starts met a slow period on one CI runner, where three starts in a row needed
-// more than the default 10 s to activate the plugin. They wait longer; the other cases keep the default.
-const contextFixture = () => createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
-  windowsConfig: "override", projectConfig: true, seedPreferences: false, readyMs: 45000,
-})
+// more than the fixture's default 10 s to activate the plugin. They share 30 s of extra waiting.
+// The runner script stops both test files after 300 s (WaitForExit(300000)). Waiting for the plugin at worst:
+//   12 starts at the default 10 s: 5 outside these cases (2 root cases with a restart, 1 polling) + 7 here   120 s
+//   the extra wait shared by these 7 starts                                                                   30 s
+//   a normal run of both test files, measured on the slower CI job (85 s + 22 s)                             110 s
+//   total                                                                                                    260 s
+// That leaves 40 s. One slow start can wait up to 40 s; later starts get only what is left of the extra.
+let contextSpareMs = 30000
+
+// Every case gets its own configuration root, so a context file left by one case cannot reach another.
+async function contextFixture() {
+  const began = performance.now()
+  try {
+    return await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
+      windowsConfig: "override", projectConfig: true, seedPreferences: false, readyMs: 10000 + contextSpareMs,
+    })
+  } finally {
+    // The whole start is charged, not only the wait for the plugin, so the shared extra is never undercounted.
+    contextSpareMs = Math.max(0, contextSpareMs - Math.max(0, Math.ceil(performance.now() - began) - 10000))
+  }
+}
 // RPC results are compared as plain JSON, whatever objects the client decodes them into.
 const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value))
 
