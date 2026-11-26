@@ -463,10 +463,11 @@ for (const mode of [0o200, 0o000]) test(`an owned context file with mode ${mode.
   assert.equal(JSON.parse(await readFile(f.file, "utf8")).settings.contextFile, "~/config/opencode/predictions-context.md")
 })
 
-async function refusedBeforeCommit(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, change: (context: string) => Promise<void>, reason: string) {
+async function refusedBeforeCommit(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, change: (context: string) => Promise<void>, reason: string, mode = 0o600) {
   await f.put({ debug: false })
   const context = contextOf(f)
   await writeFile(context, "", { mode: 0o600 })
+  if (mode !== 0o600) await chmod(context, mode)
   const before = await f.store.read(signal()), bytes = await readFile(f.file)
   let changed = false, committed = false
   interceptRename(t, async (_from, to, original) => {
@@ -516,6 +517,54 @@ test("a context file that keeps its identity but gains an access rule before com
   await refusedBeforeCommit(t, f, async context => { await promisify(execFile)("/bin/chmod", ["+a", "everyone allow read", context]) }, "it has extra access rules")
 })
 
+// Records every read-only handle the store opens on the fixed path, so a test can see whether it is still open.
+function recordContextHandles(t: TestContext, context: string): Awaited<ReturnType<typeof fs.open>>[] {
+  const original = fs.open, handles: Awaited<ReturnType<typeof fs.open>>[] = []
+  const mock = t.mock.method(fs, "open", (async (...args: any[]) => {
+    const handle = await (original as any)(...args)
+    if (String(args[0]) === context && typeof args[1] === "number" && (args[1] & constants.O_WRONLY) === 0) handles.push(handle)
+    return handle
+  }) as any)
+  syncBuiltinESMExports()
+  t.after(() => { mock.mock.restore(); syncBuiltinESMExports() })
+  return handles
+}
+
+test("the adopted context file stays open until the commit ends, and a replacement there cannot reuse its number", async t => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "", { mode: 0o600 })
+  const handles = recordContextHandles(t, context)
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  let checked = false, committed = false, reused = true
+  interceptRename(t, async (_from, to, original) => {
+    if (to.endsWith(".backup") && !checked) {
+      checked = true
+      const [held] = handles
+      assert.ok(held, "the store opened the context file")
+      // Still open at the hook: stat() on a closed handle rejects.
+      const pinned = (await held.stat()).ino
+      await unlink(context)
+      await writeFile(context, "", { mode: 0o600 })
+      reused = (await stat(context)).ino === pinned
+    }
+    if (to === f.file) committed = true
+    await original()
+  })
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(changedContext) })
+  assert.equal(checked, true)
+  assert.equal(reused, false, "a held handle keeps the old inode number from being reused")
+  assert.equal(committed, false)
+  assert.deepEqual(await readFile(f.file), bytes)
+  await assert.rejects(handles[0].stat(), "the store releases its handle when the save ends")
+})
+
+test("an unreadable context file gaining a second link before commit is refused by its rules", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await link(context, join(f.home, "copy.md")) }, "it has more than one link", 0o200)
+})
+
 test("a reused inode is judged by its own rules, not by the identity match alone", () => {
   const uid = process.getuid?.() ?? 0
   const clean = { dev: 1, ino: 7, isFile: () => true, isSymbolicLink: () => false, nlink: 1, uid, mode: 0o100600 }
@@ -527,7 +576,7 @@ test("a reused inode is judged by its own rules, not by the identity match alone
   assert.equal(contextFileProblem({ ...clean, isFile: () => false, isSymbolicLink: () => true }, identity), "it is a link")
   assert.equal(contextFileProblem({ ...clean, isFile: () => false }, identity), "it is not a regular file")
   assert.equal(contextFileProblem({ ...clean, ino: 8 }, identity), changedContext)
-  assert.equal(contextFileProblem({ ...clean, ino: 8, nlink: 2 }, identity), changedContext, "an identity mismatch is reported before the rules")
+  assert.equal(contextFileProblem({ ...clean, ino: 8, nlink: 2 }, identity), "it has more than one link", "the rules are reported before the identity mismatch")
 })
 
 test("an access-rule check cannot be fooled by swapping the file out and back during the inspection", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async t => {
@@ -539,18 +588,24 @@ test("an access-rule check cannot be fooled by swapping the file out and back du
   const before = await f.store.read(signal()), bytes = await readFile(f.file)
   // Between the open and the access-rule inspection a clean file takes the path; the original returns before the final lstat.
   const realOpen = fs.open, realLstat = fs.lstat
-  let swapped = false, lstats = 0
+  let opened = false, swapped = false, lstats = 0
   const openMock = t.mock.method(fs, "open", (async (...args: any[]) => {
     const handle = await (realOpen as any)(...args)
-    if (String(args[0]) === context && typeof args[1] === "number" && (args[1] & constants.O_WRONLY) === 0 && !swapped) {
+    if (String(args[0]) === context && typeof args[1] === "number" && (args[1] & constants.O_WRONLY) === 0) opened = true
+    return handle
+  }) as any)
+  // The first check after the open passes; the file is then swapped for a clean one while the access-rule
+  // inspection runs; the original is restored before the second check. Only the directory stamp can see that.
+  const lstatMock = t.mock.method(fs, "lstat", (async (...args: any[]) => {
+    if (!opened || String(args[0]) !== context) return (realLstat as any)(...args)
+    if (++lstats === 1) {
+      const stat = await (realLstat as any)(...args)
       swapped = true
       await rename(context, aside)
       await writeFile(context, "", { mode: 0o600 })
+      return stat
     }
-    return handle
-  }) as any)
-  const lstatMock = t.mock.method(fs, "lstat", (async (...args: any[]) => {
-    if (String(args[0]) === context && ++lstats === 2) await rename(aside, context)
+    if (lstats === 2) await rename(aside, context)
     return (realLstat as any)(...args)
   }) as any)
   syncBuiltinESMExports()
