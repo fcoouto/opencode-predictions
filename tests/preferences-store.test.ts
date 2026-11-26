@@ -8,7 +8,7 @@ import { fork, type ChildProcess } from "node:child_process"
 import { once } from "node:events"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { administrativePaths, createPreferencesStore, decodePreferences, expandContextPath, managedContextPath, preferencesPath, sameContextPath, type PreferencesHost } from "../src/preferences-store.ts"
+import { administrativePaths, createPreferencesStore, decodePreferences, expandContextPath, managedContextPath, preferencesPath, sameContextPath, contextFileProblem, type PreferencesHost } from "../src/preferences-store.ts"
 
 const signal = () => new AbortController().signal
 async function fixture() {
@@ -463,33 +463,71 @@ for (const mode of [0o200, 0o000]) test(`an owned context file with mode ${mode.
   assert.equal(JSON.parse(await readFile(f.file, "utf8")).settings.contextFile, "~/config/opencode/predictions-context.md")
 })
 
-for (const [name, replace] of [
-  ["a symbolic link", async (f: Awaited<ReturnType<typeof fixture>>, context: string) => {
-    await writeFile(join(f.home, "elsewhere.md"), "unchecked", { mode: 0o600 })
-    await unlink(context)
-    await symlink(join(f.home, "elsewhere.md"), context)
-  }],
-  ["a replacement file", async (_f: Awaited<ReturnType<typeof fixture>>, context: string) => {
-    await unlink(context)
-    await writeFile(context, "", { mode: 0o600 })
-  }],
-] as const) test(`a context file replaced by ${name} before commit is refused and never renamed over predictions.json`, async t => {
-  const f = await fixture()
+async function refusedBeforeCommit(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, change: (context: string) => Promise<void>, reason: string) {
   await f.put({ debug: false })
   const context = contextOf(f)
   await writeFile(context, "", { mode: 0o600 })
   const before = await f.store.read(signal()), bytes = await readFile(f.file)
-  let swapped = false, committed = false
+  let changed = false, committed = false
   interceptRename(t, async (_from, to, original) => {
-    // The backup rename runs after adoption and before the final identity check.
-    if (to.endsWith(".backup") && !swapped) { swapped = true; await replace(f, context) }
+    // The backup rename runs after adoption and before the commit-time check.
+    if (to.endsWith(".backup") && !changed) { changed = true; await change(context) }
     if (to === f.file) committed = true
     await original()
   })
-  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(changedContext) })
-  assert.equal(swapped, true)
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(reason) })
+  assert.equal(changed, true)
   assert.equal(committed, false)
   assert.deepEqual(await readFile(f.file), bytes)
+}
+
+test("a context file replaced by a symbolic link before commit is refused and never renamed over predictions.json", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => {
+    await writeFile(join(f.home, "elsewhere.md"), "unchecked", { mode: 0o600 })
+    await unlink(context)
+    await symlink(join(f.home, "elsewhere.md"), context)
+  }, "it is a link")
+})
+
+test("a context file replaced by another inode before commit is refused and never renamed over predictions.json", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => {
+    // Holding a second link keeps the old inode allocated, so the replacement cannot reuse its number.
+    await link(context, join(f.home, "held.md"))
+    await unlink(context)
+    await writeFile(context, "", { mode: 0o600 })
+  }, changedContext)
+})
+
+// The same inode, changed in place: identity matches, so the commit-time rules must judge it.
+test("a context file that keeps its identity but gains a second link before commit is refused", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await link(context, join(f.home, "copy.md")) }, "it has more than one link")
+})
+
+test("a context file that keeps its identity but becomes world-writable before commit is refused", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await chmod(context, 0o666) }, "other users can write to it")
+})
+
+test("a context file that keeps its identity but gains an access rule before commit is refused", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await promisify(execFile)("/bin/chmod", ["+a", "everyone allow read", context]) }, "it has extra access rules")
+})
+
+test("a reused inode is judged by its own rules, not by the identity match alone", () => {
+  const uid = process.getuid?.() ?? 0
+  const clean = { dev: 1, ino: 7, isFile: () => true, isSymbolicLink: () => false, nlink: 1, uid, mode: 0o100600 }
+  const identity = { dev: 1, ino: 7 }
+  assert.equal(contextFileProblem(clean, identity), undefined)
+  assert.equal(contextFileProblem({ ...clean, nlink: 2 }, identity), "it has more than one link")
+  assert.equal(contextFileProblem({ ...clean, mode: 0o100666 }, identity), "other users can write to it")
+  assert.equal(contextFileProblem({ ...clean, uid: uid + 1 }, identity), "it is owned by another user")
+  assert.equal(contextFileProblem({ ...clean, isFile: () => false, isSymbolicLink: () => true }, identity), "it is a link")
+  assert.equal(contextFileProblem({ ...clean, isFile: () => false }, identity), "it is not a regular file")
+  assert.equal(contextFileProblem({ ...clean, ino: 8 }, identity), changedContext)
+  assert.equal(contextFileProblem({ ...clean, ino: 8, nlink: 2 }, identity), changedContext, "an identity mismatch is reported before the rules")
 })
 
 test("an access-rule check cannot be fooled by swapping the file out and back during the inspection", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async t => {

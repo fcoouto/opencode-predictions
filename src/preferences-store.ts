@@ -98,7 +98,14 @@ export function sameContextPath(a: string, b: string, platform: NodeJS.Platform)
   return fold(a) === fold(b)
 }
 
-function contextShape(info: Stats): string | undefined {
+// The fields of a stat result that the adoption rules read. Stats satisfies it; tests pass plain objects.
+type ContextStat = { dev: number; ino: number; uid: number; mode: number; nlink: number; isFile(): boolean; isSymbolicLink(): boolean }
+type ContextIdentity = { dev: number; ino: number }
+const identityOf = (info: ContextStat): ContextIdentity => ({ dev: info.dev, ino: info.ino })
+
+// The lstat-based adoption rules. With an expected identity, a different object is reported as changed first.
+export function contextFileProblem(info: ContextStat, expected?: ContextIdentity): string | undefined {
+  if (expected && (info.dev !== expected.dev || info.ino !== expected.ino)) return changedContext
   if (info.isSymbolicLink()) return "it is a link"
   if (!info.isFile()) return "it is not a regular file"
   if (info.nlink !== 1) return "it has more than one link"
@@ -106,9 +113,7 @@ function contextShape(info: Stats): string | undefined {
   if (info.mode & 0o002) return "other users can write to it"
   return undefined
 }
-
-type ContextIdentity = { dev: number; ino: number }
-const sameFile = (a: Stats, b: Stats) => a.dev === b.dev && a.ino === b.ino
+const refuseIf = (reason: string | undefined) => { if (reason) refuseContext(reason) }
 
 // A directory's mtime and ctime change on every create, unlink or rename inside it. An unchanged stamp
 // across a window proves no entry was swapped in that window.
@@ -123,8 +128,7 @@ async function directoryStamp(directory: string): Promise<string> {
 async function adoptContextFile(directory: string): Promise<ContextIdentity> {
   const path = join(directory, contextFileName)
   const before = await lstat(path)
-  const first = contextShape(before)
-  if (first) refuseContext(first)
+  refuseIf(contextFileProblem(before))
   const stamp = await directoryStamp(directory)
   let handle: FileHandle | undefined
   try { handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)) }
@@ -133,19 +137,12 @@ async function adoptContextFile(directory: string): Promise<ContextIdentity> {
     if (codeOf(error) !== "EACCES") throw error
   }
   try {
-    if (handle) {
-      const opened = await handle.stat()
-      if (!sameFile(before, opened)) refuseContext(changedContext)
-      const shape = contextShape(opened)
-      if (shape) refuseContext(shape)
-    }
+    if (handle) refuseIf(contextFileProblem(await handle.stat(), identityOf(before)))
     if (process.platform === "darwin" && await hasAccessRules(path)) refuseContext("it has extra access rules")
     const after = await lstat(path)
-    if (!sameFile(before, after)) refuseContext(changedContext)
-    const shape = contextShape(after)
-    if (shape) refuseContext(shape)
+    refuseIf(contextFileProblem(after, identityOf(before)))
     if (await directoryStamp(directory) !== stamp) refuseContext(changedContext)
-    return { dev: after.dev, ino: after.ino }
+    return identityOf(after)
   } finally { await handle?.close() }
 }
 
@@ -159,10 +156,14 @@ async function ensureContextFile(directory: string): Promise<ContextIdentity> {
   return adoptContextFile(directory)
 }
 
-// Run immediately before the commit rename: the fixed path must still be the file that was adopted.
+// Run immediately before the commit rename. It re-runs the full adoption rules on whatever is now at the fixed
+// path and then requires the same object that was adopted. A reused inode passes only if it is itself safe.
+// Any other failure to inspect the fixed path (missing, unreadable) is reported as a change.
 async function confirmContextFile(directory: string, identity: ContextIdentity) {
-  const current = await lstat(join(directory, contextFileName)).catch(() => undefined)
-  if (!current?.isFile() || current.dev !== identity.dev || current.ino !== identity.ino) refuseContext(changedContext)
+  let found: ContextIdentity | undefined
+  try { found = await adoptContextFile(directory) }
+  catch (error) { if (error instanceof ContextRefusal) throw error }
+  if (!found || found.dev !== identity.dev || found.ino !== identity.ino) refuseContext(changedContext)
 }
 
 function createWindowsStore(host: PreferencesHost) {
