@@ -123,10 +123,11 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
   const ui = ctx.ui
   const button = (label: () => string, onClick: () => void, options: { variant?: "neutral" | "contrast" | "ghost" | "danger"; disabled?: () => boolean; size?: "small" | "normal" } = {}) =>
     createComponent(ui.Button, { get children() { return text(label) }, onClick, get variant() { return options.variant ?? "neutral" }, get size() { return options.size ?? "small" }, get disabled() { return options.disabled?.() ?? false } })
-  const box = (...children: any[]) => { const element = document.createElement("div"); element.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end"; for (const child of children) if (child) insert(element, child); return element }
+  // Each child gets its own insertion point (marker null): without one, Solid treats every dynamic child as the element's only child and a swapped child leaves its old node behind.
+  const box = (...children: any[]) => { const element = document.createElement("div"); element.style.cssText = "display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end"; for (const child of children) if (child) insert(element, child, null); return element }
   const actions = (...children: any[]) => { const element = box(...children); element.style.justifyContent = "flex-start"; return element }
-  const column = (...children: any[]) => { const element = document.createElement("div"); element.style.cssText = "display:flex;flex-direction:column;gap:8px"; for (const child of children) if (child) insert(element, child); return element }
-  const stack = (...children: any[]) => { const element = document.createElement("div"); element.style.cssText = "display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow:auto"; for (const child of children) if (child) insert(element, child); return element }
+  const column = (...children: any[]) => { const element = document.createElement("div"); element.style.cssText = "display:flex;flex-direction:column;gap:8px"; for (const child of children) if (child) insert(element, child, null); return element }
+  const stack = (...children: any[]) => { const element = document.createElement("div"); element.style.cssText = "display:flex;flex-direction:column;gap:8px;max-height:60vh;overflow:auto"; for (const child of children) if (child) insert(element, child, null); return element }
   const note = (read: () => string | undefined, role?: string) => {
     const element = document.createElement("div")
     if (role) element.setAttribute("role", role)
@@ -163,21 +164,42 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
     setGroups(next)
   }
   const addModel = async (destination: number | "new") => { const selector = await pickModel(); if (selector) addTo(destination, selector) }
-  const patternDialog = (destination: number | "new") => ctx.dialogs.open(dialog => {
-    const [value, setValue] = createSignal("")
+  // Adds a pattern, or edits one when `initial` is given. The pattern is checked as it is typed.
+  const patternDialog = (options: { initial?: string; onDone: (selector: string) => void }) => ctx.dialogs.open(dialog => {
+    const editing = options.initial !== undefined
+    const [value, setValue] = createSignal(options.initial ?? "")
     const problem = () => { const text = value().trim(); if (!text) return undefined; return validateSettings({ models: [[text]] })[0]?.message }
-    const add = () => {
+    const done = () => {
       if (!value().trim() || problem()) return
-      const next = groups().map(group => [...group])
-      if (destination === "new" || !next[destination]) next.push([value().trim()]); else next[destination].push(value().trim())
-      setGroups(next); dialog.close()
+      options.onDone(value().trim()); dialog.close()
     }
     return createComponent(ui.Dialog, {
-      title: "Add a model pattern", description: "Use provider/model-pattern, such as provider/family-*, with an optional #variant. Patterns stay patterns and are matched against current models.",
-      get children() { return stack(createComponent(ui.TextInput, { get value() { return value() }, onInput: setValue, onSubmit: add, label: "Model pattern", placeholder: "provider/model-*", autofocus: true, get invalid() { return !!problem() } }), note(problem, "alert")) },
-      get footer() { return box(button(() => "Cancel", () => dialog.close()), button(() => "Add pattern", add, { variant: "contrast", disabled: () => !value().trim() || !!problem() })) },
+      title: editing ? "Edit model pattern" : "Add a model pattern", description: "Use provider/model-pattern, such as provider/family-*, with an optional #variant. Patterns stay patterns and are matched against current models.",
+      get children() { return stack(createComponent(ui.TextInput, { get value() { return value() }, onInput: setValue, onSubmit: done, label: "Model pattern", placeholder: "provider/model-*", autofocus: true, get invalid() { return !!problem() } }), note(problem, "alert")) },
+      get footer() { return box(button(() => "Cancel", () => dialog.close()), button(() => editing ? "Save pattern" : "Add pattern", done, { variant: "contrast", disabled: () => !value().trim() || !!problem() })) },
     })
   })
+  // The draft can change while a picker is open; only replace the entry that was edited, where it still is.
+  const replaceAt = (group: number, entry: number, was: string, selector: string) => {
+    if (locked() || groups()[group]?.[entry] !== was) return
+    const next = groups().map(items => [...items]); next[group][entry] = selector
+    setGroups(next)
+    focusControl(`predictions-entry-${group}-${entry}`, "Edit")
+  }
+  // A catalog model reopens the pickers on its current choice; anything else, including a model that left the catalog, is edited as text.
+  const editEntry = async (group: number, entry: number) => {
+    const was = groups()[group]?.[entry]
+    if (was === undefined || locked()) return
+    if (parseSelector(was, state()?.snapshot?.catalog ?? []).kind === "pattern") { patternDialog({ initial: was, onDone: selector => replaceAt(group, entry, was, selector) }); return }
+    const selector = await pickModel(was)
+    if (selector) replaceAt(group, entry, was, selector)
+  }
+  // The second line under an entry: its provider/id and reasoning level in words, or that it is a pattern.
+  const entryDetail = (selector: string) => {
+    const parsed = parseSelector(selector, state()?.snapshot?.catalog ?? [])
+    if (parsed.kind === "model") return parsed.model.providerID + "/" + parsed.model.id + (parsed.variant ? ` · Reasoning: ${parsed.variant}` : "")
+    return selector.includes("*") ? "Pattern" : undefined
+  }
 
   const swap = <T,>(items: T[], from: number, to: number) => { const copy = [...items]; [copy[from], copy[to]] = [copy[to], copy[from]]; return copy }
   const display = (selector: string) => modelName(selector) ?? selector
@@ -204,7 +226,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
       label, icon, trigger, placement: "bottom-end", disabled: locked(),
       items: [
         { label: "Model…", icon: "models", onSelect: () => void addModel(destination()) },
-        { label: "Pattern… (for example provider/family-*)", icon: "code", onSelect: () => patternDialog(destination()) },
+        { label: "Pattern… (for example provider/family-*)", icon: "code", onSelect: () => patternDialog({ onDone: selector => addTo(destination(), selector) }) },
       ],
     }))
   const afterRemoval = (index: number, remaining: string[][]) => {
@@ -257,7 +279,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
               id: `predictions-entry-${index}-${entry}`,
               get title() { return text(() => `${entry + 1}. ${display(selector())}`) },
               get description() {
-                return column(note(() => modelName(selector()) ? selector() : undefined), warnings(() => issuesFor(index, entry).map(issue => issue.message)))
+                return column(note(() => entryDetail(selector())), warnings(() => issuesFor(index, entry).map(issue => issue.message)))
               },
               get children() {
                 const name = (position: number, selectorText: string) => `Actions for ${display(selectorText)}, group ${index + 1}, entry ${position + 1}`
@@ -265,7 +287,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                   const next = groups().map(items => [...items]); next[index] = swap(next[index], entry, to); setGroups(next)
                   focusControl(`predictions-entry-${index}-${to}`, name(to, next[index][to]))
                 }
-                return keyed(() => `${index}:${entry}:${selector()}:${group().length}:${locked()}`, () => createComponent(ui.Menu, {
+                return box(button(() => "Edit", () => void editEntry(index, entry), { disabled: locked }), keyed(() => `${index}:${entry}:${selector()}:${group().length}:${locked()}`, () => createComponent(ui.Menu, {
                   label: name(entry, selector()), trigger: "icon", icon: "outline-dots", placement: "bottom-end", disabled: locked(),
                   items: [
                     { label: "Move up", disabled: entry === 0, onSelect: moveTo(entry - 1) },
@@ -279,7 +301,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                       else afterRemoval(index, kept)
                     } },
                   ] as UiMenuEntry[],
-                }))
+                })))
               },
             }),
           }),
@@ -351,7 +373,7 @@ export function registerSetupGUI(ctx: GUIContext, openStatus: () => Promise<void
                 () => createComponent(ui.SettingsRow, {
                   id: "predictions-models", title: "No models configured",
                   get description() { return column(note(() => "Add a model or a model pattern to start predicting."), explanation()) },
-                  get children() { return box(button(() => "Add a model", () => void addModel("new"), { variant: "contrast", disabled: locked }), button(() => "Add model pattern", () => patternDialog("new"), { disabled: locked })) },
+                  get children() { return box(button(() => "Add a model", () => void addModel("new"), { variant: "contrast", disabled: locked }), button(() => "Add model pattern", () => patternDialog({ onDone: selector => addTo("new", selector) }), { disabled: locked })) },
                 }),
                 () => createComponent(ui.SettingsRow, {
                   id: "predictions-models", title: "Fallback order",
