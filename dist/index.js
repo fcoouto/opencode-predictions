@@ -251,17 +251,17 @@ Conversation:
   const user = Array.from(current.user);
   const assistant = Array.from(current.assistant);
   const retainedUser = Array.from(current.user.trim() ? "" : latestUser);
-  const excerpt2 = (text, limit2) => text.length <= limit2 ? text.join("") : text.slice(0, Math.ceil(limit2 / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit2 / 2)).join("");
+  const excerpt2 = (text, limit3) => text.length <= limit3 ? text.join("") : text.slice(0, Math.ceil(limit3 / 2)).join("") + "\n[excerpt: middle omitted]\n" + text.slice(-Math.floor(limit3 / 2)).join("");
   let low = 1;
   let high = Math.max(user.length, assistant.length, retainedUser.length);
   let result = "";
   while (low <= high) {
-    const limit2 = Math.floor((low + high) / 2);
-    const prompt = format([{ user: excerpt2(user, limit2), assistant: excerpt2(assistant, limit2) }], excerpt2(retainedUser, limit2));
+    const limit3 = Math.floor((low + high) / 2);
+    const prompt = format([{ user: excerpt2(user, limit3), assistant: excerpt2(assistant, limit3) }], excerpt2(retainedUser, limit3));
     if (encoder.encode(prompt).length <= 32768) {
       result = prompt;
-      low = limit2 + 1;
-    } else high = limit2 - 1;
+      low = limit3 + 1;
+    } else high = limit3 - 1;
   }
   return result || void 0;
 }
@@ -437,12 +437,12 @@ function links(prompt) {
     return [];
   }
 }
-function excerpt(text, limit2) {
+function excerpt(text, limit3) {
   const points = Array.from(text);
-  if (points.length <= limit2) return text;
+  if (points.length <= limit3) return text;
   const marker = excerptMarker;
-  if (limit2 < marker.length) return "";
-  const size = limit2 - marker.length;
+  if (limit3 < marker.length) return "";
+  const size = limit3 - marker.length;
   return points.slice(0, Math.ceil(size / 2)).join("") + marker + points.slice(points.length - Math.floor(size / 2)).join("");
 }
 function appendGitHubContext(prompt, sources) {
@@ -455,13 +455,13 @@ function appendGitHubContext(prompt, sources) {
     let high = Math.min(4096, Array.from(source.body).length);
     let best;
     while (low <= high) {
-      const limit2 = Math.floor((low + high) / 2);
-      const body = excerpt(source.body, limit2);
+      const limit3 = Math.floor((low + high) / 2);
+      const body = excerpt(source.body, limit3);
       const candidate2 = { url: source.url, title: excerpt(source.title, 256), body, state: source.state, draft: source.draft, updatedAt: source.updatedAt, fetchedAt: source.fetchedAt, bodyExcerpted: source.bodyExcerpted || body !== source.body };
       if (encoder2.encode(label + JSON.stringify([...selected, candidate2])).length <= budget) {
         best = candidate2;
-        low = limit2 + 1;
-      } else high = limit2 - 1;
+        low = limit3 + 1;
+      } else high = limit3 - 1;
     }
     if (best) selected.push(best);
   }
@@ -796,9 +796,9 @@ Queue: ${queue}`, request)), parent);
         const recovery = cause.length && cause.every((detail) => /authentication failed/.test(detail)) ? "Reconnect the provider, then reload the server plugin." : cause.length && cause.every((detail) => /quota|usage limit/.test(detail)) ? "Wait for quota to reset; check Prediction status and preview." : "Open Prediction status and preview for causes and recovery.";
         return { reason: failure, ...cause.length ? { notice: { code: failure, severity: "error", title: cause.length === 1 ? cause[0] : "All prediction models failed.", message: recovery } } : {} };
       };
-      const reply = await abortable(async () => {
-        const reply2 = await work();
-        if (reply2.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply2.reason)) {
+      const reply2 = await abortable(async () => {
+        const reply3 = await work();
+        if (reply3.reason && ["model_unavailable", "no_models_eligible", "generation_failed", "timeout"].includes(reply3.reason)) {
           parent.throwIfAborted();
           const changed = check(await abortable(() => api.session(request.sessionID, parent), parent));
           if (changed) return { reason: changed };
@@ -806,18 +806,18 @@ Queue: ${queue}`, request)), parent);
           const selectors = new Set(options.models.flatMap((group) => group.split(",").map((value) => value.trim())));
           const single = configured[0];
           const message = Math.max(configured.length, selectors.size) > 1 ? "No model worked at this time." + (options.debug ? "" : " Activate `debug` mode for details.") : `Model [${single?.name ?? [...selectors][0]}] failed with message: ${single && skip(single)?.reason || "No configured model is available."}`;
-          reply2.notice ??= statusNotice(status()) ?? reasonNotice(reply2.reason);
-          await abortable(() => Promise.resolve(api.notice?.(message, request, reply2.notice)), parent);
+          reply3.notice ??= statusNotice(status()) ?? reasonNotice(reply3.reason);
+          await abortable(() => Promise.resolve(api.notice?.(message, request, reply3.notice)), parent);
         }
-        return reply2;
+        return reply3;
       }, caller);
       caller.throwIfAborted();
-      lastOutcome = reply.text ? "suggestion" : reply.reason;
-      if (reply.text || ["no_suggestion", "escalation_refreshed"].includes(reply.reason ?? "")) {
+      lastOutcome = reply2.text ? "suggestion" : reply2.reason;
+      if (reply2.text || ["no_suggestion", "escalation_refreshed"].includes(reply2.reason ?? "")) {
         const escalation2 = nextOffer(request, progress);
-        if (escalation2) reply.escalation = escalation2;
+        if (escalation2) reply2.escalation = escalation2;
       }
-      return reply;
+      return reply2;
     } catch {
       lastOutcome = caller.aborted ? "cancelled" : deadline?.aborted ? "timeout" : "generation_failed";
       return { reason: lastOutcome, ...lastOutcome !== "cancelled" ? { notice: reasonNotice(lastOutcome === "timeout" ? "timeout" : "service_unavailable") } : {} };
@@ -846,7 +846,7 @@ import { homedir as homedir2, userInfo } from "node:os";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
-import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path";
+import { dirname, basename, isAbsolute, join, posix, win32 as win322 } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -916,8 +916,139 @@ function resolvePreferences(overrides, contextFile) {
   return { rawOptions, fields, origins, issues: validateSettings(fields, contextFile) };
 }
 
-// src/preferences-store.ts
+// src/preferences-windows.ts
+import { spawn } from "node:child_process";
+import { win32 } from "node:path";
+import { fileURLToPath } from "node:url";
 var limit = 65536;
+var wireLimit = 192 * 1024;
+var unavailable = "Windows prediction preferences cannot be read or verified. Check the server's configuration directory.";
+var helperUnavailable = "Windows prediction preferences verifier could not run. Check that the npm release is installed on the server.";
+var helperTimeout = "Windows prediction preferences verifier timed out.";
+var uncertain = "Changes may have been saved. Reopen settings before trying again.";
+var readOnly = "Windows prediction preferences are not writable.";
+var refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings.";
+var conflict = "Prediction preferences changed. Reload settings before saving.";
+var inputPrefix = "OPENCODE_PREDICTIONS_IO_";
+var inputChunk = 16 * 1024;
+var verifier = fileURLToPath(new URL("../dist/predictions-verifier.exe", import.meta.url));
+var HelperRefusal = class extends Error {
+};
+function windowsLocalRoot(value) {
+  if (!/^[A-Za-z]:[\\/]/.test(value)) return false;
+  const components = value.slice(3).replace(/[\\/]$/, "").split(/[\\/]/);
+  return components.length === 1 && components[0] === "" || components.every((part) => part.length > 0 && !/[\x00-\x1f<>:"|?*]|[. ]$/.test(part) && !/^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|(?:COM|LPT)[0-9¹²³]) *(?:\.|$)/i.test(part));
+}
+async function invokeWindows(request, signal, executable = verifier) {
+  signal.throwIfAborted();
+  if (process.arch !== "x64") throw new HelperRefusal("Windows prediction preferences are supported on x64 servers only.");
+  const root = process.env.SystemRoot;
+  if (process.platform !== "win32" || !root || !windowsLocalRoot(root)) throw new HelperRefusal(helperUnavailable);
+  const system = win32.join(root, "System32");
+  const packet = Buffer.from(JSON.stringify(request)).toString("base64");
+  if (packet.length > wireLimit) throw new HelperRefusal(helperUnavailable);
+  const env = { SystemRoot: root, PATH: system, TMP: process.env.TMP, TEMP: process.env.TEMP, USERPROFILE: process.env.USERPROFILE };
+  for (let i = 0; i * inputChunk < packet.length; i++) env[inputPrefix + i] = packet.slice(i * inputChunk, (i + 1) * inputChunk);
+  const deadline = AbortSignal.timeout(1800);
+  try {
+    const child = spawn(executable, [], {
+      cwd: system,
+      env,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"],
+      signal: AbortSignal.any([signal, deadline])
+    });
+    const bytes = await new Promise((resolve2, reject) => {
+      const output = [];
+      let length = 0, failed = false;
+      child.on("error", () => {
+        failed = true;
+      });
+      child.stdout.on("data", (chunk) => {
+        length += chunk.length;
+        if (length > wireLimit) {
+          failed = true;
+          child.kill();
+        } else output.push(chunk);
+      });
+      child.once("close", (code) => {
+        if (failed || code !== 0) reject(new Error(helperUnavailable));
+        else resolve2(Buffer.concat(output));
+      });
+    });
+    if (deadline.aborted) throw new HelperRefusal(helperTimeout);
+    signal.throwIfAborted();
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    signal.throwIfAborted();
+    throw new HelperRefusal(deadline.aborted ? helperTimeout : helperUnavailable);
+  }
+}
+var denied = (source, reason = unavailable) => ({
+  source,
+  state: "unavailable",
+  expected: "",
+  writable: false,
+  present: false,
+  bytes: Buffer.alloc(0),
+  reason
+});
+function object(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(unavailable);
+  return value;
+}
+function reply(text) {
+  if (Buffer.byteLength(text) > wireLimit) throw new Error(unavailable);
+  return object(JSON.parse(text));
+}
+function snapshot(data, source) {
+  const { source: path, state, expected, writable, bytes } = object(data);
+  if (path !== source || typeof writable !== "boolean" || typeof expected !== "string") throw new Error(unavailable);
+  if (state === "unavailable" && !writable && !expected && bytes === null) return denied(source);
+  if (state === "managed" && !writable && !expected && bytes === null) return { ...denied(source), state, reason: void 0 };
+  if (state !== "user" || !/^[a-f0-9]{64}$/.test(expected) || bytes !== null && typeof bytes !== "string") throw new Error(unavailable);
+  const decoded = Buffer.from(bytes ?? "", "base64");
+  if (decoded.length > limit || bytes !== null && decoded.toString("base64") !== bytes) throw new Error(unavailable);
+  return { source, state, expected, writable, present: bytes !== null, bytes: decoded, ...!writable ? { reason: readOnly } : {} };
+}
+function createWindowsIO(invoke = invokeWindows) {
+  return {
+    async readWindowsPreferences(source, systemPaths, signal) {
+      signal.throwIfAborted();
+      try {
+        const result = reply(await invoke({ op: "read", source, systemPaths }, signal));
+        signal.throwIfAborted();
+        if (result.kind === "snapshot") return snapshot(result.snapshot, source);
+      } catch (error) {
+        signal.throwIfAborted();
+        if (error instanceof HelperRefusal) return denied(source, error.message);
+      }
+      return denied(source);
+    },
+    async commitWindowsPreferences(before, systemPaths, next, signal) {
+      signal.throwIfAborted();
+      if (!before.writable || before.state !== "user") return { kind: "read_only", message: readOnly };
+      if (next.byteLength > limit) return { kind: "failed", message: refused };
+      const bytes = Buffer.from(next);
+      try {
+        const result = reply(await invoke({ op: "commit", source: before.source, systemPaths, expected: before.expected, bytes: bytes.toString("base64") }, signal));
+        if (result.kind === "conflict") return { kind: "conflict", message: conflict };
+        if (result.kind === "read_only") return { kind: "read_only", message: readOnly };
+        if (result.kind === "failed") return { kind: "failed", message: refused };
+        if (result.kind === "written") {
+          const persisted = snapshot(result.snapshot, before.source);
+          if (persisted.state === "user" && persisted.present && persisted.bytes.equals(bytes)) return { kind: "written", snapshot: persisted };
+        }
+      } catch {
+      }
+      return { kind: "failed", message: uncertain };
+    }
+  };
+}
+var { readWindowsPreferences, commitWindowsPreferences } = createWindowsIO();
+
+// src/preferences-store.ts
+var limit2 = 65536;
 var run = promisify(execFile);
 var missing = (error) => error?.code === "ENOENT";
 var Refusal = class extends Error {
@@ -925,19 +1056,20 @@ var Refusal = class extends Error {
 var fail = (message) => {
   throw new Refusal(message);
 };
-var uncertain = "Changes may have been saved. Reopen settings before trying again.";
+var uncertain2 = "Changes may have been saved. Reopen settings before trying again.";
 var identity = (value) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...value.isDirectory() ? [] : [value.nlink]];
 var hash = (value) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 function preferencesPath(host) {
-  const path = host.platform === "win32" ? win32 : posix;
+  const path = host.platform === "win32" ? win322 : posix;
+  const absolute = host.platform === "win32" ? windowsLocalRoot : path.isAbsolute;
   let root = host.env.XDG_CONFIG_HOME;
-  if (root !== void 0 && (!root || !path.isAbsolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.");
+  if (root !== void 0 && (!root || !absolute(root))) fail("XDG_CONFIG_HOME must be an absolute path.");
   if (root === void 0) root = host.platform === "win32" ? host.env.APPDATA : path.join(host.home, ".config");
-  if (!root || !path.isAbsolute(root)) return fail("The server's user configuration directory is unavailable.");
+  if (!root || !absolute(root)) return fail("The server's user configuration directory is unavailable.");
   return path.join(root, "opencode", "predictions.json");
 }
 function administrativePaths(platform, env, username) {
-  if (platform === "win32") return [env.ProgramData && win32.isAbsolute(env.ProgramData) ? win32.join(env.ProgramData, "opencode") : ""];
+  if (platform === "win32") return [env.ProgramData && windowsLocalRoot(env.ProgramData) ? win322.join(env.ProgramData, "opencode") : ""];
   if (platform === "darwin") return [
     "/Library/Application Support/opencode",
     "/Library/Managed Preferences/ai.opencode.managed.plist",
@@ -946,7 +1078,7 @@ function administrativePaths(platform, env, username) {
   return ["/etc/opencode"];
 }
 function decodePreferences(bytes) {
-  if (bytes.byteLength > limit) fail("Prediction preferences exceed 65536 bytes.");
+  if (bytes.byteLength > limit2) fail("Prediction preferences exceed 65536 bytes.");
   let text;
   try {
     text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
@@ -990,7 +1122,78 @@ async function safe(info, path, directory = false) {
     if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) fail("Prediction preferences have unsupported access control entries.");
   }
 }
+function createWindowsStore(host) {
+  const revision = (state) => hash([state.source, state.state, state.expected]);
+  const systemPaths = () => host.systemPaths.map((path) => windowsLocalRoot(path) ? path : "");
+  const inspect = (signal) => readWindowsPreferences(preferencesPath(host), systemPaths(), signal);
+  const invalid = (source, reason) => ({
+    revision: hash([source, "unavailable"]),
+    source,
+    writable: false,
+    documentValid: false,
+    policy: "user",
+    overrides: {},
+    reason: reason ?? "Windows prediction preferences cannot be read or verified. Check the server's configuration directory."
+  });
+  return {
+    async read(signal) {
+      let source = "";
+      try {
+        source = preferencesPath(host);
+        const state = await inspect(signal);
+        if (state.state === "unavailable") return invalid(source, state.reason);
+        if (state.state === "managed") return {
+          revision: revision(state),
+          source,
+          writable: false,
+          documentValid: true,
+          policy: "managed",
+          overrides: {},
+          reason: "Administrative configuration prevents user prediction preferences."
+        };
+        const settings = state.present ? decodePreferences(state.bytes).settings : {};
+        return {
+          revision: revision(state),
+          source,
+          writable: state.writable,
+          documentValid: true,
+          policy: "user",
+          overrides: preferenceFields(settings),
+          contextFile: settings.contextFile,
+          ...state.reason ? { reason: state.reason } : {}
+        };
+      } catch (error) {
+        signal.throwIfAborted();
+        return invalid(source, error instanceof Refusal ? error.message : void 0);
+      }
+    },
+    async write(current, input, signal) {
+      signal.throwIfAborted();
+      let before, document;
+      try {
+        before = await inspect(signal);
+        if (!before.writable) return { kind: "read_only", message: before.reason ?? "Prediction preferences are read-only." };
+        document = before.present ? decodePreferences(before.bytes) : { version: 1, settings: {} };
+      } catch (error) {
+        signal.throwIfAborted();
+        return { kind: "read_only", message: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified." };
+      }
+      if (revision(before) !== current) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
+      let bytes;
+      try {
+        const settings = applyPreferenceChange(document.settings, input);
+        bytes = Buffer.from(JSON.stringify({ ...document, settings }, null, 2) + "\n");
+        decodePreferences(bytes);
+      } catch (error) {
+        return { kind: "failed", message: error instanceof Refusal ? error.message : "Prediction preference changes are invalid." };
+      }
+      const result = await commitWindowsPreferences(before, systemPaths(), bytes, signal);
+      return result.kind === "written" ? { kind: "written", revision: revision(result.snapshot) } : result;
+    }
+  };
+}
 function createPreferencesStore(host) {
+  if (process.platform === "win32" && host.platform === "win32") return createWindowsStore(host);
   async function inspect(signal) {
     signal.throwIfAborted();
     const logical = preferencesPath(host);
@@ -1025,7 +1228,7 @@ function createPreferencesStore(host) {
       try {
         const pinned = await handle.stat();
         if (JSON.stringify(identity(pinned)) !== JSON.stringify(identity(info))) fail("Prediction preferences changed while reading. Reload settings.");
-        const buffer = Buffer.alloc(limit + 1);
+        const buffer = Buffer.alloc(limit2 + 1);
         const read = await handle.read(buffer, 0, buffer.length, 0);
         bytes = buffer.subarray(0, read.bytesRead);
         document = decodePreferences(bytes);
@@ -1038,7 +1241,7 @@ function createPreferencesStore(host) {
     signal.throwIfAborted();
     return { source, directory, policy: "user", bytes, document, info, parent: target.ancestor === directory ? parent : void 0, revision, writable, reason };
   }
-  function snapshot(value) {
+  function snapshot2(value) {
     return {
       revision: value.revision,
       source: value.source,
@@ -1053,7 +1256,7 @@ function createPreferencesStore(host) {
   return {
     async read(signal) {
       try {
-        return snapshot(await inspect(signal));
+        return snapshot2(await inspect(signal));
       } catch (error) {
         signal.throwIfAborted();
         let source = "";
@@ -1083,7 +1286,7 @@ function createPreferencesStore(host) {
         } catch (error) {
           return { kind: "read_only", message: error instanceof Refusal ? error.message : "Prediction preferences cannot be read or verified." };
         }
-        if (!before.writable) return { kind: "read_only", message: snapshot(before).reason };
+        if (!before.writable) return { kind: "read_only", message: snapshot2(before).reason };
         if (before.revision !== revision) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
         const settings = applyPreferenceChange(before.document.settings, input);
         const text = JSON.stringify({ ...before.document, settings }, null, 2) + "\n";
@@ -1126,19 +1329,19 @@ function createPreferencesStore(host) {
         await rename(next, before.source);
         committed = true;
         const persisted = await inspect(new AbortController().signal);
-        if (!persisted.bytes.equals(Buffer.from(text))) return { kind: "failed", message: uncertain };
+        if (!persisted.bytes.equals(Buffer.from(text))) return { kind: "failed", message: uncertain2 };
         return { kind: "written", revision: persisted.revision };
       }
       try {
         result = await transaction();
       } catch (error) {
-        result = { kind: "failed", message: committed ? uncertain : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
+        result = { kind: "failed", message: committed ? uncertain2 : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
       } finally {
         for (const path of temporary) await unlink(path).catch((error) => {
           if (!missing(error)) cleanupFailed = true;
         });
       }
-      return cleanupFailed ? { kind: "failed", message: committed ? uncertain : "Save cleanup failed. Reopen settings before trying again." } : result;
+      return cleanupFailed ? { kind: "failed", message: committed ? uncertain2 : "Save cleanup failed. Reopen settings before trying again." } : result;
     }
   };
 }
@@ -1179,9 +1382,9 @@ function createPreferencesRuntime(store, make) {
     async predict(input, signal) {
       await refresh(signal);
       const engine = state().service;
-      const reply = await engine.predict(input, signal);
+      const reply2 = await engine.predict(input, signal);
       await refresh(signal);
-      return engine === state().service ? reply : { reason: "stale" };
+      return engine === state().service ? reply2 : { reason: "stale" };
     },
     dispose() {
       if (!lifetime.signal.aborted) {

@@ -1,0 +1,99 @@
+name: Native Windows preferences
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  windows-package:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run bundle
+      - name: Pack the release candidate
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'predictions-npm'
+          [void][IO.Directory]::CreateDirectory($directory)
+          $json = npm.cmd pack --ignore-scripts --json --pack-destination $directory | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'Could not pack the predictions plugin.' }
+          $pack = ($json | ConvertFrom-Json)[0]
+          if ($pack.files.path -notcontains 'dist/predictions-verifier.exe') { throw 'Packed Windows verifier is missing.' }
+          $archive = Join-Path $directory 'predictions.tgz'
+          Move-Item -LiteralPath (Join-Path $directory $pack.filename) -Destination $archive
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $directory 'sha256') -Value $digest -Encoding Ascii
+          Write-Host "Release candidate SHA-256: $digest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: predictions-release-package
+          path: ${{ runner.temp }}/predictions-npm/
+          if-no-files-found: error
+  windows-preferences:
+    name: Windows preferences (${{ matrix.first_root }} first)
+    needs: windows-package
+    runs-on: windows-2025
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        first_root: [appdata, override]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 26
+      - uses: actions/download-artifact@v4
+        with:
+          name: predictions-release-package
+          path: ${{ runner.temp }}/predictions-npm/
+      - name: Stage the release tarball and pinned OpenCode server
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          $stage = Join-Path "$env:SystemDrive\" ('predictions-ci-' + [Guid]::NewGuid().ToString('N'))
+          [void][IO.Directory]::CreateDirectory($stage)
+          icacls.exe $stage /grant '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+          if ($LASTEXITCODE -ne 0) { throw 'Could not protect the Windows test stage.' }
+          icacls.exe $stage /inheritance:r
+          if ($LASTEXITCODE -ne 0) { throw 'Could not disable inherited access to the Windows test stage.' }
+          Set-Content -LiteralPath (Join-Path $stage 'package.json') -Value '{"private":true,"type":"module"}' -Encoding Ascii
+          $packageDir = Join-Path $env:RUNNER_TEMP 'predictions-npm'
+          $archive = Join-Path $packageDir 'predictions.tgz'
+          $digest = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive).Hash.ToLowerInvariant()
+          if ($digest -ne (Get-Content -Raw -LiteralPath (Join-Path $packageDir 'sha256')).Trim()) {
+              throw 'Release candidate checksum mismatch.'
+          }
+          Write-Host "Installing release candidate SHA-256: $digest"
+          npm.cmd install --prefix $stage --ignore-scripts --no-audit --no-fund $archive
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install the packed predictions plugin.' }
+          [void][IO.Directory]::CreateDirectory((Join-Path $stage 'dist'))
+          Copy-Item -LiteralPath (Join-Path $stage 'node_modules\opencode-predictions\dist\predictions-verifier.exe') -Destination (Join-Path $stage 'dist')
+
+          $zip = Join-Path $env:RUNNER_TEMP 'predictions-opencode-2.2.6.zip'
+          Invoke-WebRequest -UseBasicParsing 'https://github.com/anomalyco/opencode/releases/download/v2.2.6/opencode-windows-x64.zip' -OutFile $zip
+          if ((Get-FileHash -Algorithm SHA256 -LiteralPath $zip).Hash -ne 'f75c16b33b8523fe1ff41e7d97e3ae654a47d59a0e327def24db2d9291bb24be') {
+              throw 'Unexpected Windows OpenCode release checksum.'
+          }
+          Expand-Archive -LiteralPath $zip -DestinationPath $stage
+          Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $stage 'node.exe')
+          [void][IO.Directory]::CreateDirectory((Join-Path $stage 'tests\host'))
+          Copy-Item -LiteralPath src -Destination $stage -Recurse
+          Copy-Item -LiteralPath 'tests\preferences-windows.test.ts' -Destination (Join-Path $stage 'tests')
+          Copy-Item -LiteralPath 'tests\host\fixture.mjs', 'tests\host\windows-preferences.test.ts', 'tests\host\windows-preferences-runner.ps1' -Destination (Join-Path $stage 'tests\host')
+          Add-Content -LiteralPath $env:GITHUB_ENV -Value "PREDICTIONS_WINDOWS_STAGE=$stage" -Encoding UTF8
+      - name: Run native RPC tests under a standard Windows account
+        shell: powershell
+        env:
+          PREDICTIONS_WINDOWS_FIRST_ROOT: ${{ matrix.first_root }}
+        run: |
+          & (Join-Path $env:PREDICTIONS_WINDOWS_STAGE 'tests\host\windows-preferences-runner.ps1') -Stage $env:PREDICTIONS_WINDOWS_STAGE -FirstRoot $env:PREDICTIONS_WINDOWS_FIRST_ROOT

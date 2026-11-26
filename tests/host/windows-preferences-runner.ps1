@@ -1,0 +1,113 @@
+param(
+    [Parameter(Mandatory = $true)][string]$Stage,
+    [ValidateSet('appdata', 'override')][string]$FirstRoot = 'appdata',
+    [switch]$StandardUser
+)
+
+$ErrorActionPreference = 'Stop'
+$Stage = (Resolve-Path -LiteralPath $Stage).Path
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$administrators = 'S-1-5-32-544'
+
+if ($StandardUser) {
+    if ($identity.IsSystem -or ($identity.Groups.Value -contains $administrators)) {
+        throw 'Native qualification requires a standard account, not an administrator.'
+    }
+    $env:USERPROFILE = [Environment]::GetFolderPath('UserProfile')
+    $env:APPDATA = [Environment]::GetFolderPath('ApplicationData')
+    $env:LOCALAPPDATA = [Environment]::GetFolderPath('LocalApplicationData')
+    $env:ProgramData = [Environment]::GetFolderPath('CommonApplicationData')
+    if (!$env:USERPROFILE -or !$env:APPDATA -or !$env:LOCALAPPDATA) {
+        throw 'The standard account profile did not load.'
+    }
+    if (!$env:ProgramData) { throw 'Windows CommonApplicationData is unavailable.' }
+    $volume = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:APPDATA))
+    if ($volume.DriveType -ne [IO.DriveType]::Fixed -or $volume.DriveFormat -ne 'NTFS') {
+        throw 'Native qualification requires an APPDATA profile on a fixed NTFS volume.'
+    }
+    $env:TEMP = $env:TMP = Join-Path $env:LOCALAPPDATA 'Temp'
+    [void][IO.Directory]::CreateDirectory($env:TEMP)
+    Set-Location -LiteralPath $env:USERPROFILE
+    $env:OPENCODE_BIN = Join-Path $Stage 'opencode.exe'
+    $env:PREDICTIONS_PACKAGE = Join-Path $Stage 'node_modules\opencode-predictions'
+    $env:PREDICTIONS_WINDOWS_FIRST_ROOT = $FirstRoot
+    Write-Host "Native Windows $([Environment]::OSVersion.Version); account is non-admin; volume is $($volume.DriveFormat)."
+    Write-Host "CommonApplicationData: $env:ProgramData"
+    Write-Host "First packaged config root: $FirstRoot."
+    & $env:OPENCODE_BIN --version
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    $node = Join-Path $Stage 'node.exe'
+    # Run the packaged host before any direct verifier tests can warm this profile.
+    & $node --test (Join-Path $Stage 'tests\host\windows-preferences.test.ts')
+    $hostResult = $LASTEXITCODE
+    & $node --test (Join-Path $Stage 'tests\preferences-windows.test.ts')
+    if ($hostResult -ne 0) { exit $hostResult }
+    exit $LASTEXITCODE
+}
+
+$name = 'predtest-' + [Guid]::NewGuid().ToString('N').Substring(0, 10)
+$password = ConvertTo-SecureString ('Aa1!' + [Guid]::NewGuid().ToString('N')) -AsPlainText -Force
+$account = New-LocalUser -Name $name -Password $password
+$ownerRoot = Join-Path "$env:SystemDrive\" ('predictions-owner-' + [Guid]::NewGuid().ToString('N'))
+try {
+    $users = Get-LocalGroup -SID 'S-1-5-32-545'
+    if (!(Get-LocalGroupMember -Group $users | Where-Object { $_.SID -eq $account.SID })) {
+        Add-LocalGroupMember -Group $users -Member $account
+    }
+    $icacls = Join-Path ([Environment]::SystemDirectory) 'icacls.exe'
+    & $icacls $Stage /grant "*$($account.SID.Value):(OI)(CI)RX"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not grant the standard account access to the staged fixture.' }
+
+    [void][IO.Directory]::CreateDirectory($ownerRoot)
+    & $icacls $ownerRoot /grant "*$($account.SID.Value):(OI)(CI)F" '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F'
+    if ($LASTEXITCODE -ne 0) { throw 'Could not grant access to the isolated ownership fixture.' }
+    & $icacls $ownerRoot /inheritance:r
+    if ($LASTEXITCODE -ne 0) { throw 'Could not disable inherited access to the ownership fixture.' }
+    $ownerDirectory = Join-Path $ownerRoot 'opencode'
+    [void][IO.Directory]::CreateDirectory($ownerDirectory)
+    $foreignFile = Join-Path $ownerDirectory 'predictions.json'
+    [IO.File]::WriteAllText($foreignFile, '{"version":1,"settings":{"automatic":false}}')
+    foreach ($directory in @($ownerRoot, $ownerDirectory)) {
+        & $icacls $directory /setowner "*$($account.SID.Value)"
+        if ($LASTEXITCODE -ne 0) { throw 'Could not set the ownership fixture directory owner.' }
+    }
+    & $icacls $foreignFile /setowner "*$administrators"
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the foreign-owned fixture file.' }
+
+    $launch = [Diagnostics.ProcessStartInfo]::new()
+    $launch.FileName = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $launch.Arguments = '-NoLogo -NoProfile -NonInteractive -File "{0}" -Stage "{1}" -FirstRoot {2} -StandardUser' -f $PSCommandPath, $Stage, $FirstRoot
+    $launch.WorkingDirectory = $Stage
+    $launch.UserName = $name
+    $launch.Domain = $env:COMPUTERNAME
+    $launch.Password = $password
+    $launch.LoadUserProfile = $true
+    $launch.UseShellExecute = $false
+    $launch.RedirectStandardOutput = $true
+    $launch.RedirectStandardError = $true
+    # Do not give the alternate account the CI process environment.
+    $launch.EnvironmentVariables.Clear()
+    foreach ($key in @('SystemRoot', 'SystemDrive', 'ComSpec', 'PATHEXT', 'COMPUTERNAME')) {
+        $launch.EnvironmentVariables[$key] = [Environment]::GetEnvironmentVariable($key)
+    }
+    $launch.EnvironmentVariables['USERNAME'] = $name
+    $launch.EnvironmentVariables['PATH'] = "$Stage;$([Environment]::SystemDirectory);$env:SystemRoot"
+    $launch.EnvironmentVariables['PREDICTIONS_TEST_FOREIGN_ROOT'] = $ownerRoot
+
+    $child = [Diagnostics.Process]::Start($launch)
+    try {
+        $stdout = $child.StandardOutput.ReadToEndAsync()
+        $stderr = $child.StandardError.ReadToEndAsync()
+        if (!$child.WaitForExit(300000)) {
+            $child.Kill()
+            throw 'The native Windows tests did not finish within 300 seconds.'
+        }
+        Write-Host ($stdout.GetAwaiter().GetResult())
+        Write-Host ($stderr.GetAwaiter().GetResult())
+        if ($child.ExitCode -ne 0) { throw "Native Windows tests exited with code $($child.ExitCode)." }
+    } finally {
+        $child.Dispose()
+    }
+} finally {
+    Remove-LocalUser -SID $account.SID
+}

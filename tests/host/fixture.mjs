@@ -9,7 +9,7 @@ import { Service } from "@opencode/client/service"
 
 export const isPredictionCall = input => JSON.stringify(input).includes("Conversation:\\n[")
 
-export async function createFixture(packagePath = resolve("."), settings = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "", seedPreferences = true, legacyOptions = {} } = {}) {
+export async function createFixture(packagePath = resolve("."), settings = {}, behavior = {}, { configSource = "inline", projectConfig = false, pluginReference = "object", emptyPassword = false, configHome = "", seedPreferences = true, legacyOptions = {}, windowsConfig = "" } = {}) {
   if (!["inline", "global-json", "global-jsonc"].includes(configSource)) throw new Error("Unsupported fixture config source")
   await mkdir(".test-artifacts", { recursive: true })
   const root = await mkdtemp(resolve(".test-artifacts/host-"))
@@ -63,9 +63,17 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
   if (pluginReference === "string") config.plugins = [packagePath]
   for (const name of ["DATA", "CONFIG", "CACHE", "STATE"]) { env[`XDG_${name}_HOME`] = join(root, name.toLowerCase()); await mkdir(env[`XDG_${name}_HOME`], { recursive: true }) }
   if (configHome) env.XDG_CONFIG_HOME = configHome
-  const configDirectory = join(env.XDG_CONFIG_HOME, "opencode")
+  if (windowsConfig) {
+    for (const name of ["SystemRoot", "SystemDrive", "ComSpec", "PATHEXT", "APPDATA", "LOCALAPPDATA", "USERPROFILE", "USERNAME"]) env[name] = process.env[name]
+    env.TMP = env.TEMP = temporary
+    env.ProgramData = process.env.ProgramData
+    if (windowsConfig === "appdata") delete env.XDG_CONFIG_HOME
+    else env.XDG_CONFIG_HOME = join(root, "O'Brien [测试]")
+    await writeFile(join(directory, "opencode.jsonc"), '// Preserve this project configuration.\n{"$schema":"https://opencode.ai/config.json"}\n')
+  }
+  const configDirectory = join(env.XDG_CONFIG_HOME ?? env.APPDATA, "opencode")
   const preferencesFile = join(configDirectory, "predictions.json")
-  await mkdir(configDirectory, { recursive: true })
+  if (!windowsConfig) await mkdir(configDirectory, { recursive: true })
   if (seedPreferences && !configHome) await writeFile(preferencesFile, JSON.stringify({ version: 1, settings: { models: "fixture/model", ...settings } }), { mode: 0o600 })
   const configFile = configSource === "inline" ? undefined : join(configDirectory, configSource === "global-jsonc" ? "opencode.jsonc" : "opencode.json")
   const writeConfig = async value => {
@@ -76,14 +84,16 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
     config = value
   }
   await writeConfig(config)
-  // Desktop's managed service needs its own nonzero port, not the user's shared default.
-  const probe = createServer()
-  probe.listen(0, "127.0.0.1")
-  await once(probe, "listening")
-  const port = probe.address().port
-  // shortcut: releasing the probe can race with another bind; retry allocation if test collisions recur.
-  await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()))
-  await writeFile(join(configDirectory, "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
+  if (!windowsConfig) {
+    // Desktop's managed service needs its own nonzero port, not the user's shared default.
+    const probe = createServer()
+    probe.listen(0, "127.0.0.1")
+    await once(probe, "listening")
+    const port = probe.address().port
+    // shortcut: releasing the probe can race with another bind; retry allocation if test collisions recur.
+    await new Promise((resolve, reject) => probe.close(error => error ? reject(error) : resolve()))
+    await writeFile(join(configDirectory, "service.json"), JSON.stringify({ port, hostname: "127.0.0.1" }))
+  }
   let child
   let address = ""
   let headers = { authorization: "" }
@@ -120,10 +130,10 @@ export async function createFixture(packagePath = resolve("."), settings = {}, b
   }
   try { await start() } catch (error) { await stopChild(); provider.closeAllConnections(); provider.close(); throw error }
   const stop = async () => {
-    await Service.stop({ file: join(root, "state", "opencode", "service.json") })
+    if (!windowsConfig) await Service.stop({ file: join(root, "state", "opencode", "service.json") })
     await stopChild()
     provider.closeAllConnections(); provider.close()
   }
   const restart = async () => { await stopChild(); await start() }
-  return { root, directory, env, get api() { return api }, get address() { return address }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
+  return { root, directory, env, get api() { return api }, get address() { return address }, get pid() { return child.pid }, calls, get config() { return config }, configFile, preferencesFile, writeConfig, get headers() { return headers }, output: () => output.replace(/server password \S+/g, "server password [redacted]"), restart, stop, [Symbol.asyncDispose]: stop }
 }

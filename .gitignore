@@ -5,6 +5,7 @@ coverage/
 *.tgz
 .test-artifacts/
 tests/host/observer/gui-experimental.cjs
+/dist/predictions-verifier.exe
 
 # Local environment and credentials
 .env
