@@ -20,6 +20,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
           $stage = Join-Path "$env:SystemDrive\" ('predictions-ci-' + [Guid]::NewGuid().ToString('N'))
           [void][IO.Directory]::CreateDirectory($stage)
           Set-Content -LiteralPath (Join-Path $stage 'package.json') -Value '{"private":true,"type":"module"}' -Encoding Ascii
@@ -36,9 +37,9 @@ jobs:
           }
           Expand-Archive -LiteralPath $zip -DestinationPath $stage
           Copy-Item -LiteralPath (Get-Command node.exe).Source -Destination (Join-Path $stage 'node.exe')
-          [void][IO.Directory]::CreateDirectory((Join-Path $stage 'src'))
           [void][IO.Directory]::CreateDirectory((Join-Path $stage 'tests\host'))
-          Copy-Item -LiteralPath 'src\rpc.ts' -Destination (Join-Path $stage 'src')
+          Copy-Item -LiteralPath src -Destination $stage -Recurse
+          Copy-Item -LiteralPath 'tests\preferences-windows.test.ts' -Destination (Join-Path $stage 'tests')
           Copy-Item -LiteralPath 'tests\host\fixture.mjs', 'tests\host\windows-preferences.test.ts', 'tests\host\windows-preferences-runner.ps1' -Destination (Join-Path $stage 'tests\host')
           Add-Content -LiteralPath $env:GITHUB_ENV -Value "PREDICTIONS_WINDOWS_STAGE=$stage" -Encoding UTF8
       - name: Run native RPC tests under a standard Windows account
