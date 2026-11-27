@@ -1,10 +1,11 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises"
+import { renameSync, symlinkSync } from "node:fs"
 import { execFileSync } from "node:child_process"
 import { homedir, tmpdir } from "node:os"
 import { join, relative } from "node:path"
-import { readContextFile } from "../src/context-file.ts"
+import { inspectContextFile, readContextFile, verifyOpenedFile } from "../src/context-file.ts"
 
 async function fixture(t: { after(fn: () => Promise<void>): void }) {
   const directory = await mkdtemp(join(tmpdir(), "prediction-context-"))
@@ -57,4 +58,104 @@ test("context reader honors cancellation before opening a file", async t => {
   const controller = new AbortController()
   controller.abort()
   await assert.rejects(readContextFile(f.path, controller.signal), { name: "AbortError" })
+})
+
+test("context inspection reports state and byte size for each file shape", async t => {
+  const f = await fixture(t)
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "missing" })
+  await writeFile(f.path, "")
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "empty", bytes: 0 })
+  await writeFile(f.path, "hello")
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "ok", bytes: 5 })
+  await writeFile(f.path, "x".repeat(9000))
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "too_large", bytes: 9000 })
+  await writeFile(f.path, Buffer.from([0xff]))
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "invalid", bytes: 1 })
+})
+
+test("context inspection never returns file text", async t => {
+  const f = await fixture(t)
+  await writeFile(f.path, "secret preference text")
+  const result = await inspectContextFile(f.path, f.signal)
+  assert.deepEqual(Object.keys(result).sort(), ["bytes", "state"])
+  assert.equal(JSON.stringify(result).includes("secret"), false)
+})
+
+test("context inspection reports directories and symlinks as unreadable without following links", async t => {
+  const f = await fixture(t)
+  assert.deepEqual(await inspectContextFile(f.directory, f.signal), { state: "unreadable" })
+  const target = join(f.directory, "target.md")
+  await writeFile(target, "Use XLSX.")
+  await symlink(target, f.path)
+  assert.deepEqual(await inspectContextFile(f.path, f.signal), { state: "unreadable" })
+})
+
+test("context inspection honors cancellation", async t => {
+  const f = await fixture(t)
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(inspectContextFile(f.path, controller.signal), { name: "AbortError" })
+})
+
+// Post-open verification for platforms without O_NOFOLLOW (Windows). The swap cannot be pinned to an
+// instant, so each branch is exercised directly with stat-like objects.
+const regularStat = (dev: bigint, ino: bigint) => ({ dev, ino, isFile: () => true })
+const linkStat = (dev: bigint, ino: bigint) => ({ dev, ino, isFile: () => false })
+
+test("opened handle is accepted only when both lstat results are the same regular file", () => {
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 2n), regularStat(1n, 2n)), true)
+  // A symlink to the original file, kept under another name, shares dev/ino with it.
+  // The second lstat sees the link at the path, so the open must be refused.
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), linkStat(1n, 2n), regularStat(1n, 2n)), false)
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 3n), regularStat(1n, 2n)), false)
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 2n), regularStat(9n, 2n)), false)
+  assert.equal(verifyOpenedFile(regularStat(1n, 2n), regularStat(1n, 2n), linkStat(1n, 2n)), false)
+})
+
+// Aborting synchronously right after the call means the abort lands while the open is still pending,
+// because no I/O callback can run before this synchronous code finishes. This is deterministic.
+test("context inspection rejects when cancelled while a missing path is being opened", async t => {
+  const f = await fixture(t)
+  const controller = new AbortController()
+  const pending = inspectContextFile(f.path, controller.signal)
+  controller.abort()
+  await assert.rejects(pending, { name: "AbortError" })
+})
+
+test("context inspection rejects when cancelled while a directory is being opened", async t => {
+  const f = await fixture(t)
+  const controller = new AbortController()
+  const pending = inspectContextFile(f.directory, controller.signal)
+  controller.abort()
+  await assert.rejects(pending, { name: "AbortError" })
+})
+
+test("context inspection rethrows a custom abort reason instead of reporting unreadable", async t => {
+  const f = await fixture(t)
+  await writeFile(f.path, "hello")
+  const controller = new AbortController()
+  const reason = new Error("caller stopped")
+  const pending = inspectContextFile(f.path, controller.signal)
+  controller.abort(reason)
+  await assert.rejects(pending, error => error === reason)
+})
+
+// Race regression: a 5-byte regular file is atomically replaced by a symlink to a 9000-byte target
+// while inspection is pending. rename() keeps the path present at every instant, so the only possible
+// outcomes are the original file (ok, bytes 5) or the symlink (unreadable, refused by the no-follow open).
+// A too_large result would mean the target was read with the original file's size.
+test("context inspection never classifies a replacement symlink swapped in after inspection starts", async t => {
+  const f = await fixture(t)
+  const target = join(f.directory, "target.md")
+  const swap = join(f.directory, "swap-link")
+  await writeFile(target, "x".repeat(9000))
+  for (let i = 0; i < 50; i++) {
+    await rm(f.path, { force: true })
+    await writeFile(f.path, "hello")
+    const pending = inspectContextFile(f.path, f.signal)
+    symlinkSync(target, swap)
+    renameSync(swap, f.path)
+    const result = await pending
+    assert.ok(result.state === "unreadable" || (result.state === "ok" && result.bytes === 5), JSON.stringify(result))
+  }
 })

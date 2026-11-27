@@ -58,6 +58,7 @@ public static class PredictionsPreferences {
     public sealed class Reply {
         public string kind { get; set; }
         public Snapshot snapshot { get; set; }
+        public string reason { get; set; }
     }
     public sealed class Request {
         public string op { get; set; }
@@ -65,8 +66,10 @@ public static class PredictionsPreferences {
         public string[] systemPaths { get; set; }
         public string expected { get; set; }
         public string bytes { get; set; }
+        public string context { get; set; }
     }
     static Reply Result(string kind, Snapshot snapshot = null) { return new Reply { kind = kind, snapshot = snapshot }; }
+    static Reply Refused(string reason) { return new Reply { kind = "refused_context", reason = reason }; }
 
     sealed class Item : IDisposable {
         public string Path;
@@ -383,11 +386,137 @@ public static class PredictionsPreferences {
             } catch { Discard(file); file.Dispose(); throw; }
         }
 
+        const string ContextName = "predictions-context.md";
+        const string ChangedContext = "it changed while it was checked";
+        const string UnreadableContext = "its access rules cannot be read";
+        const int NotFoundError = 2, AccessDeniedError = 5, FileExistsError = 80, AlreadyExistsError = 183;
+        // A handle with read access takes part in sharing, and this share mode leaves out delete. While such
+        // a handle is open, no one can rename or delete the file, so the fixed path keeps naming it.
+        // A handle with only attribute and rule access takes no part in sharing, whatever its share mode.
+        // It keeps the file ID from being reused, but it cannot deny rename or delete.
+        const uint PinAccess = ReadControl | ReadAttr | ReadData, ViewAccess = ReadControl | ReadAttr;
+        const uint HoldShare = ShareRead | ShareWrite, AnyShare = ShareRead | ShareWrite | ShareDelete;
+
+        // Opens the entry at the fixed context path itself, never a link target. Null with the Win32
+        // error code means it could not be opened. Nothing is read from it here.
+        static Item OpenContext(string path, uint access, uint share, out int code) {
+            var handle = CreateFileW(path, access, share, IntPtr.Zero, OpenExisting, NoFollow | DirectoryHandle, IntPtr.Zero);
+            if (!handle.IsInvalid) {
+                code = 0;
+                return new Item { Path = path, Handle = handle };
+            }
+            code = Marshal.GetLastWin32Error();
+            handle.Dispose();
+            return null;
+        }
+
+        // The rules that need only the entry's attributes, in order.
+        static string ContextShape(FileInfoByHandle info) {
+            if ((info.Attributes & Reparse) != 0) return "it is a link";
+            if ((info.Attributes & DirectoryFlag) != 0) return "it is not a regular file";
+            if (info.Links != 1) return "it has more than one link";
+            return null;
+        }
+
+        // The adoption rules, in order. Null means the file may be used. The shape is judged from the
+        // attributes before the owner and access rules are read, so an entry whose rules cannot be read
+        // still reports that it is a link, a directory or a file with more links.
+        string ContextProblem(Item item) {
+            if (!GetFileInformationByHandle(item.Handle, out item.Info)) throw LastError();
+            var reason = ContextShape(item.Info);
+            if (reason != null) return reason;
+            try { Inspect(item); }
+            catch (Win32Exception) { return UnreadableContext; }
+            // Inspect read the attributes again.
+            reason = ContextShape(item.Info);
+            if (reason != null) return reason;
+            if (item.Descriptor.Owner != user) return "it is owned by another user";
+            try { Safe(item, false, false); }
+            catch (IOException) { return "other users can write to it"; }
+            return null;
+        }
+
+        // Finds the reason for an entry that could not be created or held. Attribute access shows its shape.
+        // Its owner and rules are not read here, so an entry with a sound shape is refused as well.
+        // Nothing opened here is adopted. reported tells that the create found an entry at the path.
+        static string UnheldContextProblem(string path, bool reported) {
+            int code;
+            FileInfoByHandle info;
+            using (var item = OpenContext(path, ReadAttr, AnyShare, out code)) {
+                if (item == null) {
+                    if (code != NotFoundError) return UnreadableContext;
+                    if (reported) return ChangedContext;
+                    // Nothing is there, so the create failed for a cause other than an entry at the path.
+                    throw new IOException();
+                }
+                if (!GetFileInformationByHandle(item.Handle, out info)) return UnreadableContext;
+            }
+            var reason = ContextShape(info);
+            return reason != null ? reason : UnreadableContext;
+        }
+
+        // Creates the fixed context file empty and private when it is absent. It adopts an entry only when
+        // the create reports that one exists. It never overwrites or truncates. The returned handle is the
+        // one from the create or from the adopting open. The caller keeps it open until the preferences are
+        // replaced. Null with a reason means refusal.
+        Item HoldContext(string directory, out string reason) {
+            var path = Path.Combine(directory, ContextName);
+            int createError = 0, openError;
+            // The error is read inside the callback, because freeing the descriptor afterwards can replace it.
+            var made = WithAttributes(Private(false), attrs => {
+                var created = CreateFileW(path, PinAccess, HoldShare, attrs, CreateNew, NoFollow, IntPtr.Zero);
+                if (created.IsInvalid) createError = Marshal.GetLastWin32Error();
+                return created;
+            });
+            Item item = null;
+            if (!made.IsInvalid) item = new Item { Path = path, Handle = made };
+            else {
+                made.Dispose();
+                bool reported = createError == FileExistsError || createError == AlreadyExistsError;
+                if (reported) {
+                    item = OpenContext(path, PinAccess, HoldShare, out openError);
+                    // Reading the data is not an adoption rule. A file that denies it, or that another program
+                    // has open without read sharing, is held by attribute and rule access instead.
+                    if (item == null) item = OpenContext(path, ViewAccess, HoldShare, out openError);
+                }
+                if (item == null) {
+                    reason = UnheldContextProblem(path, reported);
+                    return null;
+                }
+            }
+            try { reason = ContextProblem(item); }
+            catch {
+                item.Dispose();
+                throw;
+            }
+            if (reason == null) return item;
+            item.Dispose();
+            return null;
+        }
+
+        // Run immediately before the preferences are replaced. The fixed path must name the held file. Only
+        // then is that file judged by the rules again, so another entry at the path always reports a change,
+        // whatever its own state. A handle that denies rename and delete makes a change impossible. For a
+        // handle that cannot deny them, this check is the protection.
+        string ConfirmContext(Item held) {
+            int code;
+            FileInfoByHandle now;
+            using (var fresh = OpenContext(held.Path, ReadAttr, AnyShare, out code)) {
+                if (fresh == null) {
+                    if (code == NotFoundError || code == AccessDeniedError) return ChangedContext;
+                    throw new Win32Exception(code);
+                }
+                if (!GetFileInformationByHandle(fresh.Handle, out now)) throw LastError();
+            }
+            if (now.Volume != held.Info.Volume || now.IdHigh != held.Info.IdHigh || now.IdLow != held.Info.IdLow) return ChangedContext;
+            return ContextProblem(held);
+        }
+
         static Snapshot Masked(string source, string state) {
             return new Snapshot { source = source, state = state, writable = false, expected = "", bytes = null };
         }
 
-        public Reply Run(string op, string source, string[] administration, string expected, string content) {
+        public Reply Run(string op, string source, string[] administration, string expected, string content, string context) {
             bool committed = false;
             try {
                 if (Managed(administration)) return op == "read" ? Result("snapshot", Masked(source, "managed")) : Result("read_only");
@@ -408,27 +537,38 @@ public static class PredictionsPreferences {
                     var backup = path + ".backup";
                     var backupState = before.bytes == null ? BackupState.Absent : CheckBackup(backup);
                     if (backupState == BackupState.ReadOnly) return Result("read_only");
-                    using (var stage = Stage(chain.Physical, next)) {
-                        try {
-                            if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
-                            if (before.bytes != null) {
-                                using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes))) {
-                                    bool installed = false;
-                                    try {
-                                        var rechecked = CheckBackup(backup);
-                                        if (rechecked == BackupState.ReadOnly) return Result("read_only");
-                                        if (rechecked != backupState) return Result("conflict");
-                                        installed = Rename(copy, backup, backupState == BackupState.Replaceable);
-                                        if (!installed) return Result("conflict");
+                    // The context file is created or adopted in the pinned directory before any preference bytes are staged.
+                    // Its handle stays open until the preferences are replaced.
+                    string refusal = null;
+                    using (var held = context == "create" ? HoldContext(chain.Physical, out refusal) : null) {
+                        if (refusal != null) return Refused(refusal);
+                        using (var stage = Stage(chain.Physical, next)) {
+                            try {
+                                if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
+                                if (before.bytes != null) {
+                                    using (var copy = Stage(chain.Physical, Convert.FromBase64String(before.bytes))) {
+                                        bool installed = false;
+                                        try {
+                                            var rechecked = CheckBackup(backup);
+                                            if (rechecked == BackupState.ReadOnly) return Result("read_only");
+                                            if (rechecked != backupState) return Result("conflict");
+                                            installed = Rename(copy, backup, backupState == BackupState.Replaceable);
+                                            if (!installed) return Result("conflict");
+                                        }
+                                        finally { if (!installed) Discard(copy); }
                                     }
-                                    finally { if (!installed) Discard(copy); }
                                 }
-                            }
-                            if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
-                            /* BEFORE_ACTIVE_REPLACE */
-                            if (!Rename(stage, path, before.bytes != null)) return Result("conflict");
-                            committed = true;
-                        } finally { if (!committed) Discard(stage); }
+                                if (Managed(administration) || Read(chain, source).expected != before.expected) return Result("conflict");
+                                /* BEFORE_CONTEXT_CONFIRM */
+                                if (held != null) {
+                                    refusal = ConfirmContext(held);
+                                    if (refusal != null) return Refused(refusal);
+                                }
+                                /* BEFORE_ACTIVE_REPLACE */
+                                if (!Rename(stage, path, before.bytes != null)) return Result("conflict");
+                                committed = true;
+                            } finally { if (!committed) Discard(stage); }
+                        }
                     }
                     /* AFTER_ACTIVE_REPLACE */
                     var persisted = Read(chain, source);
@@ -446,8 +586,9 @@ public static class PredictionsPreferences {
         var json = new JavaScriptSerializer { MaxJsonLength = 3 * Limit, RecursionLimit = 16 };
         var request = json.Deserialize<Request>(new UTF8Encoding(false, true).GetString(Convert.FromBase64String(packet)));
         Require(request != null && (request.op == "read" || request.op == "commit") && !String.IsNullOrEmpty(request.source));
+        Require(request.context == null || (request.op == "commit" && request.context == "create"));
         using (var session = new Session()) {
-            return json.Serialize(session.Run(request.op, request.source, request.systemPaths, request.expected, request.bytes));
+            return json.Serialize(session.Run(request.op, request.source, request.systemPaths, request.expected, request.bytes, request.context));
         }
     }
 

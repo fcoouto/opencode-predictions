@@ -1,29 +1,32 @@
 import assert from "node:assert/strict"
-import { spawn } from "node:child_process"
+import { execFile, spawn } from "node:child_process"
 import { once } from "node:events"
 import { existsSync } from "node:fs"
-import { lstat, readFile, readdir, writeFile } from "node:fs/promises"
-import { dirname, isAbsolute, join } from "node:path"
+import { link, lstat, mkdir, readFile, readdir, rmdir, symlink, writeFile } from "node:fs/promises"
+import { dirname, isAbsolute, join, relative, sep } from "node:path"
 import { setTimeout as pause } from "node:timers/promises"
 import { after, before, test, type TestContext } from "node:test"
 import { pathToFileURL } from "node:url"
+import { promisify } from "node:util"
 import { OpenCode } from "@opencode/client"
 import { Predictions } from "../../src/rpc.ts"
 import type { Status } from "../../src/service.ts"
-import type { SaveResult, SetupSnapshot } from "../../src/setup.ts"
+import type { ContextFileStatus, SaveInput, SaveResult, SetupSnapshot } from "../../src/setup.ts"
 import { createFixture } from "./fixture.mjs"
 
-assert.equal(process.platform, "win32", "This qualification test requires native Windows.")
+// On another platform every case is registered as skipped, so loading this file does not fail there.
+const skip = process.platform === "win32" ? false : "This qualification test requires native Windows."
 const { APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE } = process.env
-for (const [name, value] of Object.entries({ APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
-  assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
-}
 const helperName = "predictions-verifier.exe"
-assert.ok(existsSync(join(PREDICTIONS_PACKAGE!, "dist", helperName)), "The installed npm tarball must contain the Windows verifier.")
-
 const assertNoAdminConfig = () => assert.rejects(lstat(join(ProgramData!, "opencode")), { code: "ENOENT" })
-before(assertNoAdminConfig)
-after(assertNoAdminConfig)
+if (!skip) {
+  for (const [name, value] of Object.entries({ APPDATA, ProgramData, OPENCODE_BIN, PREDICTIONS_PACKAGE })) {
+    assert.ok(value && isAbsolute(value), `${name} must be an absolute Windows path.`)
+  }
+  assert.ok(existsSync(join(PREDICTIONS_PACKAGE!, "dist", helperName)), "The installed npm tarball must contain the Windows verifier.")
+  before(assertNoAdminConfig)
+  after(assertNoAdminConfig)
+}
 
 async function entries(path: string): Promise<string[] | undefined> {
   try { return (await readdir(path)).sort() }
@@ -47,7 +50,7 @@ const rootCases = [
   ["override", "literal Windows config paths round-trip"],
 ] as const
 for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...rootCases].reverse()) {
-  test(name, { timeout: 120000 }, async t => {
+  test(name, { skip, timeout: 120000 }, async t => {
     t.diagnostic(`${windowsConfig} runs ${windowsConfig === firstRoot ? "first" : "second"} in this profile; helper: ${helperName}.`)
     await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
       windowsConfig, projectConfig: true, seedPreferences: false,
@@ -109,7 +112,7 @@ for (const [windowsConfig, name] of firstRoot === "appdata" ? rootCases : [...ro
   })
 }
 
-test("two Windows clients sustain status polling without accumulating helpers", { timeout: 90000 }, async t => {
+test("two Windows clients sustain status polling without accumulating helpers", { skip, timeout: 90000 }, async t => {
   await using f = await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
     windowsConfig: "override", projectConfig: true, seedPreferences: false,
   })
@@ -167,3 +170,220 @@ test("two Windows clients sustain status polling without accumulating helpers", 
   assert.deepEqual(f.calls, [])
   t.diagnostic(`Peak helpers: ${counts[1]}; slowest poll pair: ${slowest.toFixed(0)} ms`)
 })
+
+const contextName = "predictions-context.md"
+const notes = "Standing notes for Windows.\r\nSecond line: é\n"
+const refusal = (reason: string) => `predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`
+const run = promisify(execFile)
+
+function utility(name: string, args: string[], env = process.env) {
+  return run(join(process.env.SystemRoot!, "System32", name), args, { env, windowsHide: true, timeout: 10000 })
+}
+const icacls = (path: string, ...args: string[]) => utility("icacls.exe", [path, ...args])
+const getAcl = async (path: string) => (await utility("WindowsPowerShell\\v1.0\\powershell.exe", [
+  "-NoProfile", "-NonInteractive", "-Command", "(Get-Acl -LiteralPath $env:PREDICTIONS_TEST_ACL_PATH).Sddl",
+], { ...process.env, PREDICTIONS_TEST_ACL_PATH: path })).stdout.trim()
+
+// The verifier's private ACL: owned by the server's account, inheritance blocked, and full control for only
+// that account, SYSTEM and Administrators. A directory passes the same three grants on to what it contains.
+async function assertPrivateAcl(path: string, directory = false) {
+  const { stdout } = await utility("whoami.exe", ["/user", "/fo", "csv", "/nh"])
+  const sid = stdout.match(/S-1-[\d-]+/)?.[0]
+  assert.ok(sid, "The runner must identify its standard account.")
+  const sddl = await getAcl(path)
+  assert.match(sddl, new RegExp(`^O:${sid}(?=G:|D:)`), sddl)
+  // The kernel can record automatic inheritance even when the DACL remains protected.
+  assert.match(sddl, /D:P(?:AI)?\(/, sddl)
+  const aces = [...sddl.matchAll(/\(([^)]*)\)/g)].map(match => match[1]).sort()
+  assert.deepEqual(aces, [sid, "SY", "BA"].map(trustee => `A;${directory ? "OICI" : ""};FA;;;${trustee}`).sort(), sddl)
+}
+
+// These seven extra server starts met a slow period on one CI runner, where three starts in a row needed
+// more than the fixture's default 10 s to activate the plugin. They share 30 s of extra waiting.
+// The runner script stops both test files after 300 s (WaitForExit(300000)). Waiting for the plugin at worst:
+//   12 starts at the default 10 s: 5 outside these cases (2 root cases with a restart, 1 polling) + 7 here   120 s
+//   the extra wait shared by these 7 starts                                                                   30 s
+//   a normal run of both test files, measured on the slower CI job (85 s + 22 s)                             110 s
+//   total                                                                                                    260 s
+// That leaves 40 s. One slow start can wait up to 40 s; later starts get only what is left of the extra.
+let contextSpareMs = 30000
+
+// Every case gets its own configuration root, so a context file left by one case cannot reach another.
+async function contextFixture() {
+  const began = performance.now()
+  try {
+    return await createFixture(pathToFileURL(PREDICTIONS_PACKAGE!).href, {}, {}, {
+      windowsConfig: "override", projectConfig: true, seedPreferences: false, readyMs: 10000 + contextSpareMs,
+    })
+  } finally {
+    // The whole start is charged, not only the wait for the plugin, so the shared extra is never undercounted.
+    contextSpareMs = Math.max(0, contextSpareMs - Math.max(0, Math.ceil(performance.now() - began) - 10000))
+  }
+}
+// RPC results are compared as plain JSON, whatever objects the client decodes them into.
+const plain = <T>(value: T): T => JSON.parse(JSON.stringify(value))
+
+function contextClient(f: Awaited<ReturnType<typeof contextFixture>>) {
+  const source = join(f.root, "O'Brien [测试]", "opencode", "predictions.json")
+  const directory = dirname(source), context = join(directory, contextName)
+  const { USERPROFILE } = process.env
+  assert.ok(USERPROFILE && isAbsolute(USERPROFILE), "USERPROFILE must be an absolute Windows path.")
+  const under = relative(USERPROFILE, context)
+  assert.ok(!under.startsWith("..") && !isAbsolute(under), "The fixture root must be inside the account's profile.")
+  const location = { directory: f.directory }
+  return {
+    source, directory, context,
+    // The server stores a path under the home directory as "~/" plus forward slashes.
+    stored: "~/" + under.split(sep).join("/"),
+    read: async () => plain(await f.api.rpc(Predictions).settingsV2({}, { location, signal: AbortSignal.timeout(2000) }) as SetupSnapshot),
+    save: async (input: SaveInput) => plain(await f.api.rpc(Predictions).saveSettings(input, { location, signal: AbortSignal.timeout(12000) }) as SaveResult),
+    status: async () => plain(await f.api.rpc(Predictions).contextFileStatus({}, { location, signal: AbortSignal.timeout(2000) }) as ContextFileStatus),
+  }
+}
+type ContextClient = ReturnType<typeof contextClient>
+
+// Saves preferences without a context file, so a later refusal has bytes to leave unchanged.
+async function seedPreferences(c: ContextClient) {
+  const empty = await c.read()
+  assert.equal(empty.source, c.source)
+  assert.equal(empty.writable, true, empty.reason ?? "The Windows server must permit first Save.")
+  const first = await c.save({ revision: empty.revision, fields: { automatic: false } })
+  assert.equal(first.kind, "saved", JSON.stringify(first))
+  assert.deepEqual(JSON.parse(await readFile(c.source, "utf8")), { version: 1, settings: { automatic: false } })
+  assert.deepEqual(await c.status(), { set: false })
+}
+
+test("Windows first Save creates the missing directory and an empty private context file", { skip, timeout: 120000 }, async t => {
+  await using f = await contextFixture()
+  const c = contextClient(f)
+  // The server can create its configuration directory when it starts. Remove it while it is empty,
+  // so that this Save must create the directory and the context file together.
+  const startup = await entries(c.directory)
+  if (startup) {
+    assert.deepEqual(startup, [], "Only an empty configuration directory may be removed.")
+    await rmdir(c.directory)
+  }
+  t.diagnostic(`The opencode directory was ${startup ? "made by the server and removed" : "missing"} before the first read.`)
+  const before = await c.read()
+  assert.equal(before.source, c.source)
+  assert.equal(before.writable, true, before.reason ?? "The Windows server must permit first Save.")
+  assert.deepEqual(await c.status(), { set: false })
+  assert.equal(await entries(c.directory), undefined, "The opencode directory must be missing before the first Save.")
+
+  const save = await c.save({ revision: before.revision, fields: { automatic: false }, contextFile: "managed" })
+  assert.equal(save.kind, "saved", JSON.stringify(save))
+  assert.deepEqual(await entries(c.directory), [contextName, "predictions.json"])
+  assert.equal((await readFile(c.context)).length, 0)
+  assert.equal((await lstat(c.context)).nlink, 1)
+  await assertPrivateAcl(c.context)
+  await assertPrivateAcl(c.directory, true)
+  assert.deepEqual(JSON.parse(await readFile(c.source, "utf8")), { version: 1, settings: { automatic: false, contextFile: c.stored } })
+  assert.deepEqual(await c.status(), { set: true, path: c.stored, absolute: c.context, managed: true, state: "empty", bytes: 0 })
+  const saved = await c.read()
+  assert.equal(saved.activeRevision, saved.revision)
+  assert.equal(saved.revision, save.revision)
+  assert.equal(saved.effective?.contextFile, c.stored)
+  assert.deepEqual(f.calls, [])
+})
+
+test("Windows adopts an existing safe context file without changing it", { skip, timeout: 120000 }, async () => {
+  await using f = await contextFixture()
+  const c = contextClient(f)
+  await seedPreferences(c)
+  await writeFile(c.context, notes)
+  const acl = await getAcl(c.context), prior = await readFile(c.source), listing = await entries(c.directory) ?? []
+  assert.ok(listing.includes(contextName) && !listing.includes("predictions.json.backup"), JSON.stringify(listing))
+  const before = await c.read()
+  const save = await c.save({ revision: before.revision, fields: { debug: true }, contextFile: "managed" })
+  assert.equal(save.kind, "saved", JSON.stringify(save))
+  assert.equal(await readFile(c.context, "utf8"), notes)
+  assert.equal(await getAcl(c.context), acl)
+  assert.equal((await lstat(c.context)).nlink, 1)
+  assert.deepEqual(await readFile(c.source + ".backup"), prior)
+  assert.deepEqual(JSON.parse(await readFile(c.source, "utf8")), { version: 1, settings: { automatic: false, debug: true, contextFile: c.stored } })
+  // Save adds only the backup of the earlier preferences.
+  assert.deepEqual(await entries(c.directory), [...listing, "predictions.json.backup"].sort())
+  assert.deepEqual(await c.status(), { set: true, path: c.stored, absolute: c.context, managed: true, state: "ok", bytes: Buffer.byteLength(notes) })
+  assert.deepEqual(f.calls, [])
+})
+
+const unsafeEntries = [
+  ["a symbolic link", "it is a link"],
+  ["a junction", "it is a link"],
+  ["a directory", "it is not a regular file"],
+  ["a file with a second hard link", "it has more than one link"],
+  ["a file that other users can write", "other users can write to it"],
+] as const
+
+// Puts an unsafe entry at the fixed context path. Returns a check that the entry is still as it was made,
+// or nothing when this account cannot make the entry.
+async function occupy(kind: typeof unsafeEntries[number][0], path: string, outside: string): Promise<(() => Promise<void>) | undefined> {
+  if (kind === "a symbolic link") {
+    await writeFile(outside, notes)
+    try { await symlink(outside, path, "file") }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") throw error
+      return
+    }
+    return async () => {
+      assert.ok((await lstat(path)).isSymbolicLink())
+      assert.equal(await readFile(outside, "utf8"), notes)
+    }
+  }
+  if (kind === "a junction") {
+    await mkdir(outside)
+    await symlink(outside, path, "junction")
+    return async () => {
+      assert.ok((await lstat(path)).isSymbolicLink())
+      assert.deepEqual(await entries(outside), [])
+    }
+  }
+  if (kind === "a directory") {
+    await mkdir(path)
+    return async () => {
+      assert.ok((await lstat(path)).isDirectory())
+      assert.deepEqual(await entries(path), [])
+    }
+  }
+  await writeFile(path, notes)
+  if (kind === "a file with a second hard link") {
+    await link(path, outside)
+    return async () => {
+      assert.equal((await lstat(path)).nlink, 2)
+      assert.equal(await readFile(path, "utf8"), notes)
+      assert.equal(await readFile(outside, "utf8"), notes)
+    }
+  }
+  await icacls(path, "/grant", "*S-1-5-11:(WD)")
+  const acl = await getAcl(path)
+  return async () => {
+    assert.equal(await readFile(path, "utf8"), notes)
+    assert.equal(await getAcl(path), acl)
+  }
+}
+
+for (const [kind, reason] of unsafeEntries) {
+  test(`Windows refuses a context file path that holds ${kind}`, { skip, timeout: 120000 }, async t => {
+    await using f = await contextFixture()
+    const c = contextClient(f)
+    await seedPreferences(c)
+    const unchanged = await occupy(kind, c.context, join(f.root, "context-outside"))
+    if (!unchanged) {
+      // A junction covers the reparse point rule on every runner. A file symbolic link needs a privilege.
+      t.skip("This account cannot create a symbolic link. Windows needs Developer Mode or the symbolic link privilege.")
+      return
+    }
+    const bytes = await readFile(c.source), listing = await entries(c.directory)
+    const before = await c.read()
+    assert.equal(before.writable, true, before.reason ?? "Only the context file is unsafe.")
+    const save = await c.save({ revision: before.revision, fields: { debug: true }, contextFile: "managed" })
+    assert.deepEqual(save, { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: refusal(reason) }] })
+    assert.deepEqual(await readFile(c.source), bytes)
+    // A refusal leaves no backup and no staging file behind.
+    assert.deepEqual(await entries(c.directory), listing)
+    await unchanged()
+    assert.deepEqual(await c.status(), { set: false })
+    assert.deepEqual((await c.read()).overrides, { automatic: false })
+    assert.deepEqual(f.calls, [])
+  })
+}

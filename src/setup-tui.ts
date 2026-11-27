@@ -1,13 +1,47 @@
 import type { Plugin as TUIPlugin } from "@opencode/plugin/tui"
 import { createTUISetupAPI } from "./setup-tui-api.ts"
-import { setupText, setupTUIText, originLabels, contextFileIssue } from "./setup-copy.ts"
-import { createSetupEditor, parseSelector, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot } from "./setup.ts"
+import { setupText, setupTUIText, originLabels, contextFileIssue, contextFileText } from "./setup-copy.ts"
+import { blocksSave, createSetupEditor, parseSelector, readGroups, settingKeys, validateSettings, type SetupEditor, type SetupSnapshot, type SetupState } from "./setup.ts"
 import { defaultTimeoutMs } from "./options.ts"
 
 type TUIContext = TUIPlugin.Context
 type Catalog = SetupSnapshot["catalog"][number]
 const title = "Predictions Setup"
 const escalationNames: Record<string, string> = { off: "Off", manual: "Manually", automatic: "Automatically once after no suggestion" }
+
+// Context file wording for the CLI. Rows are short because the host truncates them; Details shows the full copy.
+type ContextAction = "managed" | "none" | "undo" | "check" | "details"
+const contextSet = (state: Readonly<SetupState>) => typeof state.context === "object" && state.context.set ? state.context : undefined
+// The Advanced row shows a pending change first, then the status, so a staged edit is never hidden.
+function contextRow(state: Readonly<SetupState>): string {
+  if (state.contextChange) return state.contextChange === "managed" ? "On when you save" : "Off when you save"
+  if (state.contextLoading || state.context === undefined) return contextFileText.checking
+  if (state.context === "unsupported") return "Update the server"
+  if (state.context === "unavailable") return "Status unavailable"
+  const status = contextSet(state)
+  if (!status) return "Not set"
+  return contextFileText.issue(status.state) ?? (status.state === "empty" ? "Empty" : "On")
+}
+// The full status, in the same order and wording as the Desktop row.
+function contextDetails(state: Readonly<SetupState>): string {
+  const staged = state.contextChange === "managed" ? contextFileText.staged : state.contextChange === "none" ? contextFileText.stagedOff : undefined
+  const lines: string[] = []
+  if (state.contextLoading || state.context === undefined) lines.push(contextFileText.checking)
+  else if (state.context === "unsupported") lines.push(setupText.contextFileManual, contextFileText.unsupported)
+  else if (state.context === "unavailable") { lines.push(contextFileText.unavailable); if (staged) lines.push(staged) }
+  else if (!state.context.set) lines.push(staged ?? setupText.contextFile)
+  else {
+    const status = state.context
+    lines.push(status.state === "ok" && status.bytes !== undefined && !staged ? contextFileText.okLine(status.path, status.bytes) : status.path)
+    if (!staged && status.state === "empty") lines.push(contextFileText.empty)
+    const issue = staged ? undefined : contextFileText.issue(status.state, status.bytes)
+    if (issue) lines.push(issue)
+    if (staged) lines.push(staged)
+  }
+  const issue = contextFileIssue(state)
+  if (issue) lines.push(issue)
+  return lines.join("\n\n")
+}
 
 export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void>): () => void {
   const dialog = ctx.ui.dialog
@@ -69,7 +103,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
   async function root(editor: SetupEditor) {
     for (;;) {
       const state = editor.state()
-      const invalid = state.issues.some(issue => issue.severity === "error")
+      const invalid = blocksSave(state.issues)
       const choice = await dialog.select<string>({
         title: state.dirty ? `${title} — unsaved changes` : title,
         placeholder: "Choose a section",
@@ -138,6 +172,33 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
     }
   }
 
+  // Only the actions that apply to the current status are listed; Details always explains it.
+  // A read-only configuration lists no file-changing action (Desktop disables them), so Details and Check again remain.
+  async function contextFile(editor: SetupEditor) {
+    for (;;) {
+      const state = editor.state()
+      const status = contextSet(state)
+      const writable = !readOnly(editor)
+      const actions: { title: string; value: ContextAction; description?: string }[] = []
+      // A staged change is only undone; an old server (unsupported) and a failed read (unavailable) offer no file action.
+      if (state.contextChange) { if (writable) actions.push({ title: "Undo", value: "undo" }) }
+      else if (!writable || state.context === "unsupported" || state.context === "unavailable" || state.context === undefined) { /* nothing applies */ }
+      else if (!status) actions.push({ title: "Use a context file", value: "managed" })
+      else {
+        if (status.state === "missing") actions.push(status.managed ? { title: "Create it again", value: "managed" } : { title: "Use predictions-context.md instead", value: "managed" })
+        actions.push({ title: "Stop using", value: "none", description: "The file stays on disk." })
+      }
+      if (state.context !== undefined && state.context !== "unsupported") actions.push({ title: "Check again", value: "check" })
+      actions.push({ title: "Details", description: "Path, size and state.", value: "details" })
+      const choice = await dialog.select<ContextAction>({ title: "Context file", options: actions })
+      if (choice === undefined) return
+      if (choice === "details") await alert(contextDetails(editor.state()))
+      else if (choice === "check") await editor.refreshContext()
+      else if (choice === "undo") editor.setContextFile(undefined)
+      else if (await editable(editor)) editor.setContextFile(choice)
+    }
+  }
+
   const strictNumber = /^[0-9]+$/
   async function advanced(editor: SetupEditor) {
     for (;;) {
@@ -146,6 +207,7 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
         options: [
           { title: "Timeout per model", description: `${fields(editor).timeoutMs ?? defaultTimeoutMs} ms`, value: "timeout" },
           { title: "Recent interactions", description: `${fields(editor).contextTurns ?? 3} (1 to 5)`, value: "context" },
+          { title: "Context file", description: contextRow(editor.state()), value: "context-file" },
           { title: "Include GitHub PR context", description: `${onOff(flag(editor, "includeGithubPRContext", false))} · private data`, value: "github" },
           { title: "Debug notices", description: onOff(flag(editor, "debug", false)), value: "debug" },
           { title: "About Advanced", description: "PR and context file data.", value: "about" },
@@ -153,6 +215,8 @@ export function registerSetupTUI(ctx: TUIContext, openStatus: () => Promise<void
       })
       if (choice === undefined) return
       if (choice === "about") { await alert([setupText.github, setupText.contextFile, contextFileIssue(editor.state())].filter(Boolean).join("\n\n")); continue }
+      // The context file menu checks editability itself, because Details and Check again work on a read-only configuration.
+      if (choice === "context-file") { await contextFile(editor); continue }
       if (!await editable(editor)) continue
       if (choice === "github" || choice === "debug") edit(editor, { [choice === "github" ? "includeGithubPRContext" : "debug"]: !flag(editor, choice === "github" ? "includeGithubPRContext" : "debug", false) })
       else if (choice === "context") {

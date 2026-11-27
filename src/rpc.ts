@@ -86,6 +86,23 @@ export const Predictions = Rpc.define({
         required: ["revision", "scope", "writable", "fields", "overrides", "origins", "activeRevision", "effective", "catalog", "issues", "serviceVersion"], additionalProperties: false,
       },
     },
+    // Clients choose only managed or none; the server owns the path and never accepts one from a client.
+    contextFileStatus: {
+      input: { type: "object", additionalProperties: false },
+      output: {
+        anyOf: [
+          { type: "object", properties: { set: { const: false, type: "boolean" } }, required: ["set"], additionalProperties: false },
+          {
+            type: "object",
+            properties: {
+              set: { const: true, type: "boolean" }, path: { type: "string" }, absolute: { type: "string" }, managed: { type: "boolean" },
+              state: { type: "string", enum: ["ok", "empty", "missing", "too_large", "invalid", "unreadable"] }, bytes: { type: "integer", minimum: 0 },
+            },
+            required: ["set", "path", "absolute", "managed", "state"], additionalProperties: false,
+          },
+        ],
+      },
+    },
     saveSettings: {
       // Preserve unknown keys at both levels for explicit rejection by the server.
       input: {
@@ -93,6 +110,7 @@ export const Predictions = Rpc.define({
           revision: { type: "string", minLength: 1 },
           fields: { ...settingsFields, additionalProperties: true },
           reset: { type: "array", items: { type: "string" } }, removeModels: { type: "boolean" },
+          contextFile: { enum: ["managed", "none"] },
         },
         required: ["revision", "fields"], additionalProperties: true,
       },

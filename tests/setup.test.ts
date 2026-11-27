@@ -2,7 +2,7 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import { changedFields, patchGroups, readGroups, waitForSetupSnapshot } from "../src/setup.ts"
 import { parseOptions } from "../src/options.ts"
-import { createSetupEditor, type SaveInput, type SettingsInput, type SetupAPI, type SetupSnapshot } from "../src/setup.ts"
+import { createSetupEditor, type SaveInput, type SaveResult, type SettingsInput, type SetupAPI, type SetupSnapshot } from "../src/setup.ts"
 import { applyPreferenceChange, resolvePreferences } from "../src/preferences.ts"
 
 function editorFixture() {
@@ -410,4 +410,413 @@ test("parseSelector tells catalog models from patterns and splits the reasoning 
   assert.deepEqual(parseSelector("local/b", catalog), { kind: "model", model: modelB, variant: undefined })
   assert.deepEqual(parseSelector("local/family-*", catalog), { kind: "pattern" })
   assert.deepEqual(parseSelector("local/gone#low", catalog), { kind: "pattern" })
+})
+
+function contextEditorFixture(status: unknown = { set: false }) {
+  const f = editorFixture()
+  const inputs: SaveInput[] = []
+  let stored = structuredClone(status) as unknown
+  const save = f.api.save
+  f.api.save = async (input, signal) => {
+    inputs.push(structuredClone(input))
+    const result = await save(input, signal)
+    // A successful save leaves the stored path that the server's status reports.
+    if (input.contextFile === "managed") stored = { set: true, path: "~/predictions-context.md", absolute: "/server/predictions-context.md", managed: true, state: "empty", bytes: 0 }
+    if (input.contextFile === "none") stored = { set: false }
+    return result
+  }
+  f.api.contextStatus = async () => structuredClone(stored) as never
+  return { ...f, inputs }
+}
+
+test("staging the managed context file dirties the draft and sends it beside the field changes", async () => {
+  const f = contextEditorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  assert.equal(editor.state().dirty, false)
+  editor.setContextFile("managed")
+  assert.equal(editor.state().contextChange, "managed")
+  assert.equal(editor.state().dirty, true)
+  assert.equal((await editor.save()).kind, "saved")
+  assert.deepEqual(f.inputs[0], { revision: "r1", fields: {}, contextFile: "managed" })
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.dispose()
+})
+
+test("discard and load clear a staged context change while reset leaves it", async () => {
+  const f = contextEditorFixture({ set: false })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("none")
+  editor.discard()
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.setContextFile("managed")
+  await editor.load()
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.setContextFile("none")
+  editor.resetPreferences()
+  assert.equal(editor.state().contextChange, "none")
+  assert.equal(editor.state().dirty, true)
+  editor.dispose()
+})
+
+test("an unsafe context file refusal keeps the draft unblocked so the next Save can retry", async () => {
+  const f = contextEditorFixture()
+  const save = f.api.save
+  const refusal = { kind: "invalid" as const, issues: [{ field: "contextFile" as const, severity: "error" as const, code: "unsafe_context_file", message: "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again." }] }
+  f.api.save = async input => { f.inputs.push(structuredClone(input)); return refusal }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  assert.deepEqual(await editor.save(), refusal)
+  assert.equal(editor.state().blocked, false)
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().contextChange, "managed")
+  assert.equal(editor.state().issues.find(issue => issue.field === "contextFile")?.code, "unsafe_context_file")
+  f.api.save = save
+  assert.equal((await editor.save()).kind, "saved")
+  assert.equal(f.inputs.length, 2)
+  assert.deepEqual(f.inputs[1], { revision: "r1", fields: {}, contextFile: "managed" })
+  editor.dispose()
+})
+
+for (const status of ["unsupported", "unavailable"] as const) test(`context status "${status}" leaves the context change unstageable`, async () => {
+  const f = contextEditorFixture(status)
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  assert.equal(editor.state().context, status)
+  editor.setContextFile("managed")
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.dispose()
+})
+
+test("Undo clears a staged context change even after the status turns unavailable, and Save sends nothing until status is known", async () => {
+  const f = contextEditorFixture({ set: false })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  f.api.contextStatus = async () => "unavailable" as never
+  await editor.refreshContext()
+  assert.equal(editor.state().context, "unavailable")
+  assert.equal(editor.state().contextChange, "managed", "the staged change stays visible to Undo")
+  assert.equal(editor.state().dirty, true)
+  const refused = await editor.save()
+  assert.deepEqual(refused, { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_unavailable", message: "Context file status is unavailable right now." }] })
+  assert.equal(editor.state().blocked, false, "a local refusal does not block the draft")
+  assert.equal(f.inputs.length, 0, "no server call while status is unknown")
+  editor.setContextFile(undefined)
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  editor.dispose()
+})
+
+test("a status that turns unsupported clears the staged context change, and Save sends no contextFile", async () => {
+  const f = contextEditorFixture({ set: false })
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.change({ enabled: false })
+  editor.setContextFile("managed")
+  f.api.contextStatus = async () => "unsupported" as never
+  await editor.refreshContext()
+  assert.equal(editor.state().context, "unsupported")
+  assert.equal(editor.state().contextChange, undefined, "the old server cannot apply it")
+  assert.equal(editor.state().dirty, true, "the field edit is still a change")
+  assert.equal((await editor.save()).kind, "saved")
+  assert.deepEqual(f.inputs[0], { revision: "r1", fields: { enabled: false } })
+  assert.equal(Object.hasOwn(f.inputs[0], "contextFile"), false)
+  editor.dispose()
+})
+
+// A request whose answer the test decides later, so two requests can be pending at once.
+type Hold<T> = { promise: Promise<T>; resolve: (value: T) => void }
+const hold = <T,>(): Hold<T> => { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done }); return { promise, resolve } }
+// Holds the next status read and the next save. A save resolved with undefined runs the real save.
+function holdingFixture() {
+  const f = contextEditorFixture({ set: false })
+  const statusBase = f.api.contextStatus!, saveBase = f.api.save
+  let statusGate: Hold<string> | undefined, saveGate: Hold<SaveResult | undefined> | undefined
+  f.api.contextStatus = async signal => { const gate = statusGate; statusGate = undefined; return gate ? await gate.promise as never : statusBase(signal) }
+  f.api.save = async (input, signal) => { const gate = saveGate; saveGate = undefined; const outcome = gate ? await gate.promise : undefined; return outcome ?? saveBase(input, signal) }
+  return {
+    f,
+    holdStatus: () => (statusGate = hold<string>()),
+    holdSave: () => (saveGate = hold<SaveResult | undefined>()),
+  }
+}
+
+test("an unsupported status that arrives during a save keeps the staged change when the save fails, and the draft stays blocked", async () => {
+  const { f, holdStatus, holdSave } = holdingFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  // The save is dispatched first; a check that starts afterwards cannot recall it.
+  const saveGate = holdSave()
+  const saving = editor.save()
+  assert.equal(editor.state().saving, true)
+  const statusGate = holdStatus()
+  const refreshing = editor.refreshContext()
+  statusGate.resolve("unsupported")
+  await refreshing
+  assert.equal(editor.state().context, "unsupported")
+  assert.equal(editor.state().contextChange, "managed", "the save in flight owns the staged change")
+  assert.equal(editor.state().dirty, true)
+  saveGate.resolve({ kind: "failed", message: "Settings were not saved. Reopen settings and try again." })
+  assert.equal((await saving).kind, "failed")
+  assert.equal(editor.state().contextChange, "managed", "a failed save keeps the change for Undo or Reload")
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().blocked, true, "the draft stays blocked, so nothing is sent until Reload")
+  assert.equal((await editor.save()).kind, "failed", "a blocked draft sends nothing")
+  assert.equal(f.inputs.length, 0)
+  editor.dispose()
+})
+
+test("an unsupported status that arrives during a save which then succeeds leaves the draft clean with nothing staged", async () => {
+  const { f, holdStatus, holdSave } = holdingFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  const saveGate = holdSave()
+  const saving = editor.save()
+  const statusGate = holdStatus()
+  const refreshing = editor.refreshContext()
+  statusGate.resolve("unsupported")
+  await refreshing
+  assert.equal(editor.state().contextChange, "managed")
+  saveGate.resolve(undefined)
+  assert.equal((await saving).kind, "saved")
+  assert.deepEqual(f.inputs, [{ revision: "r1", fields: {}, contextFile: "managed" }])
+  assert.equal(editor.state().contextChange, undefined)
+  assert.equal(editor.state().dirty, false)
+  assert.equal(editor.state().blocked, false)
+  editor.dispose()
+})
+
+test("a read-only snapshot or an unknown context status cannot stage a context change", async () => {
+  const readOnly = contextEditorFixture({ set: false })
+  readOnly.snapshot.writable = false
+  readOnly.snapshot.reason = "This configuration source is not verified for setup writes."
+  const readOnlyEditor = createSetupEditor(readOnly.api, () => {})
+  await readOnlyEditor.load()
+  readOnlyEditor.setContextFile("managed")
+  assert.equal(readOnlyEditor.state().contextChange, undefined)
+  readOnlyEditor.dispose()
+
+  const absent = editorFixture()
+  const absentEditor = createSetupEditor(absent.api, () => {})
+  await absentEditor.load()
+  absentEditor.setContextFile("managed")
+  assert.equal(absentEditor.state().contextChange, undefined)
+  absentEditor.dispose()
+})
+
+test("a missing contextStatus method reports unavailable and stages nothing", async () => {
+  const f = editorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  assert.equal(editor.state().context, "unavailable")
+  editor.setContextFile("managed")
+  assert.equal(editor.state().contextChange, undefined)
+  editor.dispose()
+})
+
+test("a lost managed save is confirmed only when the stored context status shows the managed file", async () => {
+  const managed = { set: true, path: "~/predictions-context.md", absolute: "/server/predictions-context.md", managed: true, state: "empty", bytes: 0 } as const
+  for (const [status, confirmed] of [[managed, true], [{ set: false }, false], [{ set: true, path: "~/other.md", absolute: "/server/other.md", managed: false, state: "ok", bytes: 3 }, false], ["unavailable", false], ["unsupported", false]] as const) {
+    const f = contextEditorFixture({ set: false })
+    f.api.save = async input => {
+      f.inputs.push(structuredClone(input))
+      // An unrelated writer changes the revision while fields and overrides still match.
+      Object.assign(f.snapshot, { revision: "external", activeRevision: "external" })
+      throw new Error("Lost reply")
+    }
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    // Stage from a readable status first, then let the save's own readback see the status under test.
+    f.api.contextStatus = async () => ({ set: false })
+    await editor.refreshContext()
+    editor.setContextFile("managed")
+    f.api.contextStatus = async () => structuredClone(status) as never
+    const result = await editor.save()
+    assert.equal(f.inputs[0]?.contextFile, "managed")
+    if (confirmed) {
+      assert.notEqual(result.kind, "failed")
+      assert.equal(editor.state().contextChange, undefined)
+      assert.equal(editor.state().dirty, false)
+    } else {
+      assert.deepEqual(result, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+      assert.equal(editor.state().contextChange, "managed")
+      assert.equal(editor.state().dirty, true)
+      assert.equal(editor.state().blocked, true)
+      assert.equal(editor.state().snapshot?.revision, "r1", "an unverified readback is not adopted")
+    }
+    editor.dispose()
+  }
+})
+
+test("a durable saved_not_active acknowledgment survives an unconfirmed context status and keeps the draft blocked", async () => {
+  for (const status of [{ set: false }, "unavailable", "unsupported"] as const) {
+    const f = contextEditorFixture({ set: false })
+    f.api.save = async input => {
+      f.inputs.push(structuredClone(input))
+      // The server acknowledges the write; the stored path does not show the requested managed file.
+      Object.assign(f.snapshot, { revision: "r2", activeRevision: "r2" })
+      return { kind: "saved_not_active", revision: "r2", message: "Saved on disk. Effective activation is not verified." }
+    }
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    f.api.contextStatus = async () => structuredClone(status) as never
+    editor.setContextFile("managed")
+    const result = await editor.save()
+    assert.deepEqual(result, { kind: "saved_not_active", revision: "r2", message: "Saved on disk. Effective activation is not verified." }, JSON.stringify(status))
+    assert.equal(editor.state().contextChange, "managed")
+    assert.equal(editor.state().dirty, true)
+    assert.equal(editor.state().blocked, true)
+    assert.equal(editor.state().snapshot?.revision, "r1", "an unconfirmed readback is not adopted")
+    editor.dispose()
+  }
+})
+
+test("a lost none save is confirmed only when the stored context status shows no context file", async () => {
+  for (const [status, confirmed] of [[{ set: false }, true], [{ set: true, path: "~/notes.md", absolute: "/server/notes.md", managed: false, state: "ok", bytes: 3 }, false]] as const) {
+    const f = contextEditorFixture({ set: false })
+    f.api.save = async () => {
+      Object.assign(f.snapshot, { revision: "external", activeRevision: "external" })
+      throw new Error("Lost reply")
+    }
+    f.api.contextStatus = async () => structuredClone(status) as never
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    editor.setContextFile("none")
+    const result = await editor.save()
+    if (confirmed) assert.notEqual(result.kind, "failed")
+    else {
+      assert.equal(result.kind, "failed")
+      assert.equal(editor.state().contextChange, "none")
+      assert.equal(editor.state().blocked, true)
+    }
+    editor.dispose()
+  }
+})
+
+test("overlapping context refreshes keep the newer reply", async () => {
+  const f = contextEditorFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  const replies: ((value: unknown) => void)[] = []
+  f.api.contextStatus = () => new Promise(resolve => replies.push(resolve as (value: unknown) => void))
+  const older = editor.refreshContext(), newer = editor.refreshContext()
+  assert.equal(editor.state().contextLoading, true)
+  const fresh = { set: true, path: "~/notes.md", absolute: "/home/notes.md", managed: false, state: "ok", bytes: 3 }
+  replies[1]!(fresh)
+  await newer
+  replies[0]!({ set: false })
+  await older
+  assert.deepEqual(editor.state().context, fresh)
+  assert.equal(editor.state().contextLoading, false)
+  editor.dispose()
+})
+
+test("a refused context file stays an error but does not gate Save, unlike other errors", async () => {
+  const { blocksSave } = await import("../src/setup.ts")
+  const refusal = { field: "contextFile" as const, severity: "error" as const, code: "unsafe_context_file", message: "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again." }
+  assert.equal(blocksSave([refusal]), false, "the file is fixed on disk and Save is the retry")
+  assert.equal(blocksSave([{ field: "contextFile", severity: "error", code: "invalid_value", message: "Correct it in predictions.json on the server." }]), true)
+  assert.equal(blocksSave([refusal, { field: "timeoutMs", severity: "error", code: "invalid_value", message: "Enter a whole number." }]), true)
+  assert.equal(blocksSave([{ field: "models", severity: "warning", code: "no_match", message: "No current models match this selector." }]), false)
+})
+
+test("Save with a staged context file dispatches nothing while a status check is pending", async () => {
+  const { f, holdStatus } = holdingFixture()
+  // Counted when the editor calls the API, before any reply.
+  let dispatched = 0
+  const save = f.api.save
+  f.api.save = (input, signal) => { dispatched++; return save(input, signal) }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  const statusGate = holdStatus()
+  const refreshing = editor.refreshContext()
+  assert.equal(editor.state().contextLoading, true)
+  const saving = editor.save()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(dispatched, 0, "no save is dispatched against a pending check")
+  const refused = await saving
+  assert.deepEqual(refused, { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "context_status_pending", message: "Checking the context file…" }] })
+  assert.deepEqual(editor.state().lastSave, refused, "the page can say why Save did nothing")
+  assert.equal(editor.state().blocked, false, "a local refusal does not block the draft")
+  assert.equal(editor.state().contextChange, "managed")
+  statusGate.resolve("unsupported")
+  await refreshing
+  assert.equal(dispatched, 0)
+  assert.equal(editor.state().contextChange, undefined, "the old server cannot apply it")
+  assert.equal(editor.state().lastSave, undefined, "the checking message goes when the check ends")
+  editor.dispose()
+})
+
+test("a pending check does not hold back a Save without a staged context file", async () => {
+  const { f, holdStatus } = holdingFixture()
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.change({ debug: true })
+  const statusGate = holdStatus()
+  const refreshing = editor.refreshContext()
+  assert.equal((await editor.save()).kind, "saved")
+  assert.deepEqual(f.inputs, [{ revision: "r1", fields: { debug: true } }])
+  statusGate.resolve("unavailable")
+  await refreshing
+  editor.dispose()
+})
+
+const missingManaged = { set: true, path: "~/predictions-context.md", absolute: "/server/predictions-context.md", managed: true, state: "missing" } as const
+
+test("a lost Create it again is confirmed only when the managed file is no longer missing", async () => {
+  for (const [after, confirmed] of [[missingManaged, false], [{ ...missingManaged, state: "empty", bytes: 0 }, true], [{ ...missingManaged, state: "unreadable" }, true]] as const) {
+    const f = contextEditorFixture(missingManaged)
+    f.api.save = async input => {
+      f.inputs.push(structuredClone(input))
+      // An unrelated writer changes the revision while fields and overrides still match.
+      Object.assign(f.snapshot, { revision: "external", activeRevision: "external" })
+      throw new Error("Lost reply")
+    }
+    const editor = createSetupEditor(f.api, () => {})
+    await editor.load()
+    editor.setContextFile("managed")
+    f.api.contextStatus = async () => structuredClone(after) as never
+    const result = await editor.save()
+    assert.equal(f.inputs[0]?.contextFile, "managed")
+    if (confirmed) {
+      assert.notEqual(result.kind, "failed", after.state)
+      assert.equal(editor.state().contextChange, undefined)
+      assert.equal(editor.state().dirty, false)
+    } else {
+      assert.deepEqual(result, { kind: "failed", message: "Changes may have been saved. Reopen settings before trying again." })
+      assert.equal(editor.state().contextChange, "managed", "the repair is not confirmed, so the draft is kept")
+      assert.equal(editor.state().dirty, true)
+      assert.equal(editor.state().blocked, true)
+      assert.equal(editor.state().snapshot?.revision, "r1", "an unverified readback is not adopted")
+    }
+    editor.dispose()
+  }
+})
+
+test("an acknowledged Create it again keeps its acknowledgment without claiming the file is back", async () => {
+  const f = contextEditorFixture(missingManaged)
+  f.api.save = async input => {
+    f.inputs.push(structuredClone(input))
+    Object.assign(f.snapshot, { revision: "r2", activeRevision: "r2" })
+    return { kind: "saved", revision: "r2", serviceVersion: "two" }
+  }
+  const editor = createSetupEditor(f.api, () => {})
+  await editor.load()
+  editor.setContextFile("managed")
+  const result = await editor.save()
+  assert.deepEqual(result, { kind: "saved_not_active", revision: "r2", message: "Saved on disk. Effective activation is not verified." })
+  assert.equal(editor.state().contextChange, "managed", "the file still reads as missing")
+  assert.equal(editor.state().dirty, true)
+  assert.equal(editor.state().blocked, true)
+  editor.dispose()
 })

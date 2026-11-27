@@ -112,6 +112,28 @@ var Predictions = Rpc.define({
         additionalProperties: false
       }
     },
+    // Clients choose only managed or none; the server owns the path and never accepts one from a client.
+    contextFileStatus: {
+      input: { type: "object", additionalProperties: false },
+      output: {
+        anyOf: [
+          { type: "object", properties: { set: { const: false, type: "boolean" } }, required: ["set"], additionalProperties: false },
+          {
+            type: "object",
+            properties: {
+              set: { const: true, type: "boolean" },
+              path: { type: "string" },
+              absolute: { type: "string" },
+              managed: { type: "boolean" },
+              state: { type: "string", enum: ["ok", "empty", "missing", "too_large", "invalid", "unreadable"] },
+              bytes: { type: "integer", minimum: 0 }
+            },
+            required: ["set", "path", "absolute", "managed", "state"],
+            additionalProperties: false
+          }
+        ]
+      }
+    },
     saveSettings: {
       // Preserve unknown keys at both levels for explicit rejection by the server.
       input: {
@@ -120,7 +142,8 @@ var Predictions = Rpc.define({
           revision: { type: "string", minLength: 1 },
           fields: { ...settingsFields, additionalProperties: true },
           reset: { type: "array", items: { type: "string" } },
-          removeModels: { type: "boolean" }
+          removeModels: { type: "boolean" },
+          contextFile: { enum: ["managed", "none"] }
         },
         required: ["revision", "fields"],
         additionalProperties: true
@@ -929,6 +952,8 @@ var uncertain = "Changes may have been saved. Reopen settings before trying agai
 var readOnly = "Windows prediction preferences are not writable.";
 var refused = "Windows prediction preferences were not saved. Check file and backup permissions, then reopen settings.";
 var conflict = "Prediction preferences changed. Reload settings before saving.";
+var contextReasons = /* @__PURE__ */ new Set(["it is a link", "it is not a regular file", "it has more than one link", "it is owned by another user", "other users can write to it", "it changed while it was checked", "its access rules cannot be read"]);
+var contextRefusal = (reason) => `predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`;
 var inputPrefix = "OPENCODE_PREDICTIONS_IO_";
 var inputChunk = 16 * 1024;
 var verifier = fileURLToPath(new URL("../dist/predictions-verifier.exe", import.meta.url));
@@ -1025,16 +1050,18 @@ function createWindowsIO(invoke = invokeWindows) {
       }
       return denied(source);
     },
-    async commitWindowsPreferences(before, systemPaths, next, signal) {
+    // context "create" makes the verifier create or adopt predictions-context.md before it replaces the preferences.
+    async commitWindowsPreferences(before, systemPaths, next, signal, context) {
       signal.throwIfAborted();
       if (!before.writable || before.state !== "user") return { kind: "read_only", message: readOnly };
       if (next.byteLength > limit) return { kind: "failed", message: refused };
       const bytes = Buffer.from(next);
       try {
-        const result = reply(await invoke({ op: "commit", source: before.source, systemPaths, expected: before.expected, bytes: bytes.toString("base64") }, signal));
+        const result = reply(await invoke({ op: "commit", source: before.source, systemPaths, expected: before.expected, bytes: bytes.toString("base64"), ...context ? { context } : {} }, signal));
         if (result.kind === "conflict") return { kind: "conflict", message: conflict };
         if (result.kind === "read_only") return { kind: "read_only", message: readOnly };
         if (result.kind === "failed") return { kind: "failed", message: refused };
+        if (result.kind === "refused_context" && context === "create" && typeof result.reason === "string" && contextReasons.has(result.reason)) return { kind: "refused_context", message: contextRefusal(result.reason) };
         if (result.kind === "written") {
           const persisted = snapshot(result.snapshot, before.source);
           if (persisted.state === "user" && persisted.present && persisted.bytes.equals(bytes)) return { kind: "written", snapshot: persisted };
@@ -1050,11 +1077,19 @@ var { readWindowsPreferences, commitWindowsPreferences } = createWindowsIO();
 // src/preferences-store.ts
 var limit2 = 65536;
 var run = promisify(execFile);
+var contextFileName = "predictions-context.md";
 var missing = (error) => error?.code === "ENOENT";
+var codeOf = (error) => error?.code;
 var Refusal = class extends Error {
+};
+var ContextRefusal = class extends Refusal {
 };
 var fail = (message) => {
   throw new Refusal(message);
+};
+var changedContext = "it changed while it was checked";
+var refuseContext = (reason) => {
+  throw new ContextRefusal(contextRefusal(reason));
 };
 var uncertain2 = "Changes may have been saved. Reopen settings before trying again.";
 var identity = (value) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...value.isDirectory() ? [] : [value.nlink]];
@@ -1115,17 +1150,105 @@ async function canonical(directory) {
     }
   }
 }
+async function hasAccessRules(path) {
+  const { stdout } = await run("/bin/ls", ["-lde", path], { timeout: 1e3, maxBuffer: 8192 });
+  return stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout);
+}
 async function safe(info, path, directory = false) {
   if (process.getuid === void 0 || info.uid !== process.getuid() || info.mode & 3602 || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) fail("Prediction preferences have unsafe ownership, links or write permissions.");
-  if (process.platform === "darwin") {
-    const { stdout } = await run("/bin/ls", ["-lde", path], { timeout: 1e3, maxBuffer: 8192 });
-    if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) fail("Prediction preferences have unsupported access control entries.");
+  if (process.platform === "darwin" && await hasAccessRules(path)) fail("Prediction preferences have unsupported access control entries.");
+}
+function managedContextPath(host) {
+  const path = host.platform === "win32" ? win322 : posix;
+  const absolute = path.join(path.dirname(preferencesPath(host)), contextFileName);
+  const relative = path.relative(host.home, absolute);
+  const under = relative !== "" && relative.split(path.sep)[0] !== ".." && !path.isAbsolute(relative);
+  return { stored: under ? "~/" + relative.split(path.sep).join("/") : absolute, absolute };
+}
+function expandContextPath(value, home) {
+  if (!value.startsWith("~/")) return value;
+  const path = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? win322 : posix;
+  return path.join(home, ...value.slice(2).split("/"));
+}
+function sameContextPath(a, b, platform) {
+  const fold = (value) => platform === "win32" || platform === "darwin" ? value.toLowerCase() : value;
+  return fold(a) === fold(b);
+}
+var identityOf = (info) => ({ dev: info.dev, ino: info.ino });
+function contextFileProblem(info, expected) {
+  if (info.isSymbolicLink()) return "it is a link";
+  if (!info.isFile()) return "it is not a regular file";
+  if (info.nlink !== 1) return "it has more than one link";
+  if (process.getuid === void 0 || info.uid !== process.getuid()) return "it is owned by another user";
+  if (info.mode & 2) return "other users can write to it";
+  if (expected && (info.dev !== expected.dev || info.ino !== expected.ino)) return changedContext;
+  return void 0;
+}
+var refuseIf = (reason) => {
+  if (reason) refuseContext(reason);
+};
+async function statOrChanged(path) {
+  try {
+    return await lstat(path);
+  } catch {
+    return refuseContext(changedContext);
   }
 }
-function createWindowsStore(host) {
+async function directoryStamp(directory) {
+  const stat = await lstat(directory, { bigint: true });
+  return `${stat.mtimeNs}:${stat.ctimeNs}`;
+}
+async function verifyContextFile(directory, expected) {
+  const path = join(directory, contextFileName);
+  const stamp = await directoryStamp(directory);
+  refuseIf(contextFileProblem(await statOrChanged(path), expected));
+  if (process.platform === "darwin" && await hasAccessRules(path)) refuseContext("it has extra access rules");
+  refuseIf(contextFileProblem(await statOrChanged(path), expected));
+  if (await directoryStamp(directory) !== stamp) refuseContext(changedContext);
+}
+async function adoptContextFile(directory) {
+  const path = join(directory, contextFileName);
+  const before = await statOrChanged(path);
+  refuseIf(contextFileProblem(before));
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if (codeOf(error) === "ELOOP") refuseContext("it is a link");
+    if (codeOf(error) !== "EACCES") throw error;
+  }
+  try {
+    if (handle) refuseIf(contextFileProblem(await handle.stat(), identityOf(before)));
+    await verifyContextFile(directory, identityOf(before));
+    return { identity: identityOf(before), handle };
+  } catch (error) {
+    await handle?.close();
+    throw error;
+  }
+}
+async function ensureContextFile(directory) {
+  const path = join(directory, contextFileName);
+  try {
+    const handle = await open(path, "wx", 384);
+    try {
+      await handle.chmod(384);
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    if (codeOf(error) !== "EEXIST") throw error;
+  }
+  return adoptContextFile(directory);
+}
+async function confirmContextFile(directory, hold) {
+  const expected = hold.handle ? identityOf(await hold.handle.stat()) : hold.identity;
+  if (expected.dev !== hold.identity.dev || expected.ino !== hold.identity.ino) refuseContext(changedContext);
+  await verifyContextFile(directory, expected);
+}
+function createWindowsStore(host, io = { readWindowsPreferences, commitWindowsPreferences }) {
   const revision = (state) => hash([state.source, state.state, state.expected]);
   const systemPaths = () => host.systemPaths.map((path) => windowsLocalRoot(path) ? path : "");
-  const inspect = (signal) => readWindowsPreferences(preferencesPath(host), systemPaths(), signal);
+  const inspect = (signal) => io.readWindowsPreferences(preferencesPath(host), systemPaths(), signal);
   const invalid = (source, reason) => ({
     revision: hash([source, "unavailable"]),
     source,
@@ -1169,6 +1292,8 @@ function createWindowsStore(host) {
     },
     async write(current, input, signal) {
       signal.throwIfAborted();
+      const { contextFile, ...change } = input;
+      if (contextFile !== void 0 && contextFile !== "managed" && contextFile !== "none") throw new Error("Invalid save input.");
       let before, document;
       try {
         before = await inspect(signal);
@@ -1181,13 +1306,15 @@ function createWindowsStore(host) {
       if (revision(before) !== current) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
       let bytes;
       try {
-        const settings = applyPreferenceChange(document.settings, input);
+        const settings = applyPreferenceChange(document.settings, change);
+        if (contextFile === "managed") settings.contextFile = managedContextPath(host).stored;
+        if (contextFile === "none") delete settings.contextFile;
         bytes = Buffer.from(JSON.stringify({ ...document, settings }, null, 2) + "\n");
         decodePreferences(bytes);
       } catch (error) {
         return { kind: "failed", message: error instanceof Refusal ? error.message : "Prediction preference changes are invalid." };
       }
-      const result = await commitWindowsPreferences(before, systemPaths(), bytes, signal);
+      const result = await io.commitWindowsPreferences(before, systemPaths(), bytes, signal, contextFile === "managed" ? "create" : void 0);
       return result.kind === "written" ? { kind: "written", revision: revision(result.snapshot) } : result;
     }
   };
@@ -1277,7 +1404,10 @@ function createPreferencesStore(host) {
     },
     async write(revision, input, signal) {
       signal.throwIfAborted();
+      const { contextFile, ...change } = input;
+      if (contextFile !== void 0 && contextFile !== "managed" && contextFile !== "none") throw new Error("Invalid save input.");
       const temporary = [];
+      let contextHold;
       let committed = false, cleanupFailed = false, result;
       async function transaction() {
         let before;
@@ -1288,12 +1418,15 @@ function createPreferencesStore(host) {
         }
         if (!before.writable) return { kind: "read_only", message: snapshot2(before).reason };
         if (before.revision !== revision) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." };
-        const settings = applyPreferenceChange(before.document.settings, input);
+        const settings = applyPreferenceChange(before.document.settings, change);
+        if (contextFile === "managed") settings.contextFile = managedContextPath(host).stored;
+        if (contextFile === "none") delete settings.contextFile;
         const text = JSON.stringify({ ...before.document, settings }, null, 2) + "\n";
         decodePreferences(Buffer.from(text));
         await mkdir(before.directory, { recursive: true, mode: 448 });
         const parent = await lstat(before.directory);
         await safe(parent, before.directory, true);
+        if (contextFile === "managed") contextHold = await ensureContextFile(before.directory);
         const recheck = async () => {
           const fresh = await inspect(signal), current = await lstat(before.directory);
           if (!fresh.writable || fresh.revision !== revision || fresh.source !== before.source || JSON.stringify(identity(current)) !== JSON.stringify(identity(parent))) fail("Prediction preferences changed. Reload settings before saving.");
@@ -1326,6 +1459,7 @@ function createPreferencesStore(host) {
         }
         await recheck();
         signal.throwIfAborted();
+        if (contextHold) await confirmContextFile(before.directory, contextHold);
         await rename(next, before.source);
         committed = true;
         const persisted = await inspect(new AbortController().signal);
@@ -1335,8 +1469,10 @@ function createPreferencesStore(host) {
       try {
         result = await transaction();
       } catch (error) {
-        result = { kind: "failed", message: committed ? uncertain2 : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
+        if (!committed && error instanceof ContextRefusal) result = { kind: "refused_context", message: error.message };
+        else result = { kind: "failed", message: committed ? uncertain2 : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." };
       } finally {
+        await contextHold?.handle?.close().catch(() => void 0);
         for (const path of temporary) await unlink(path).catch((error) => {
           if (!missing(error)) cleanupFailed = true;
         });
@@ -1397,6 +1533,98 @@ function createPreferencesRuntime(store, make) {
 
 // src/setup-service.ts
 import { isDeepStrictEqual as isDeepStrictEqual2 } from "node:util";
+
+// src/context-file.ts
+import { constants as constants2 } from "node:fs";
+import { lstat as lstat2, open as open2 } from "node:fs/promises";
+import { homedir } from "node:os";
+import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
+async function inspectContextFile(absolutePath, signal) {
+  signal.throwIfAborted();
+  let before;
+  try {
+    before = await lstat2(absolutePath, { bigint: true });
+  } catch (error) {
+    signal.throwIfAborted();
+    return errorField(error, "code") === "ENOENT" ? { state: "missing" } : { state: "unreadable" };
+  }
+  signal.throwIfAborted();
+  if (!before.isFile()) return { state: "unreadable" };
+  let file;
+  try {
+    file = await open2(absolutePath, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0) | (constants2.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    signal.throwIfAborted();
+    return errorField(error, "code") === "ENOENT" ? { state: "missing" } : { state: "unreadable" };
+  }
+  try {
+    return await classifyOpenFile(absolutePath, file, before, signal);
+  } catch {
+    signal.throwIfAborted();
+    return { state: "unreadable" };
+  } finally {
+    await file.close();
+  }
+}
+function verifyOpenedFile(before, after, opened) {
+  const same = (a, b) => a.dev === b.dev && a.ino === b.ino;
+  return before.isFile() && after.isFile() && opened.isFile() && same(before, opened) && same(after, opened);
+}
+async function classifyOpenFile(absolutePath, file, before, signal) {
+  const opened = await file.stat({ bigint: true });
+  const after = await lstat2(absolutePath, { bigint: true });
+  signal.throwIfAborted();
+  if (!verifyOpenedFile(before, after, opened)) return { state: "unreadable" };
+  const bytes = Number(opened.size);
+  try {
+    const text = await readValidatedText(file, signal);
+    return { state: text ? "ok" : "empty", bytes };
+  } catch (error) {
+    signal.throwIfAborted();
+    const code = errorField(error, "code");
+    if (code === "context_file_too_large") return { state: "too_large", bytes };
+    if (code === "context_file_invalid") return { state: "invalid", bytes };
+    return { state: "unreadable", bytes };
+  }
+}
+function errorField(error, field) {
+  return typeof error === "object" && error !== null ? error[field] : void 0;
+}
+async function readContextFile(path, signal) {
+  signal.throwIfAborted();
+  const resolved = path.startsWith("~/") ? join2(homedir(), path.slice(2)) : path;
+  if (!isAbsolute2(resolved)) throw new Error("Context file requires an absolute path");
+  const file = await open2(resolved, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0));
+  try {
+    signal.throwIfAborted();
+    if (!(await file.stat()).isFile()) throw new Error("Context file must be a regular file");
+    return await readValidatedText(file, signal);
+  } finally {
+    await file.close();
+  }
+}
+async function readValidatedText(file, signal) {
+  const buffer = Buffer.alloc(8193);
+  let bytes = 0;
+  while (bytes < buffer.length) {
+    signal.throwIfAborted();
+    const { bytesRead } = await file.read(buffer, bytes, buffer.length - bytes, null);
+    if (!bytesRead) break;
+    bytes += bytesRead;
+  }
+  signal.throwIfAborted();
+  if (bytes > 8192) throw Object.assign(new Error("Context file exceeds 8192 bytes"), { code: "context_file_too_large" });
+  let text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes));
+  } catch {
+    throw Object.assign(new Error("Context file must be UTF-8 text"), { code: "context_file_invalid" });
+  }
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/u.test(text)) throw Object.assign(new Error("Context file contains binary controls"), { code: "context_file_invalid" });
+  return text.trim() ? text : "";
+}
+
+// src/setup-service.ts
 function resolve(fields, catalog) {
   const issues = validateSettings(fields);
   if (issues.length) return { groups: [], issues };
@@ -1424,7 +1652,7 @@ function resolve(fields, catalog) {
   }
   return { groups: selectors.map((entries, index) => ({ selectors: entries, candidates: candidates[index] })), issues };
 }
-function createSetupService(store, models, runtime) {
+function createSetupService(store, models, runtime, paths) {
   async function catalog(signal) {
     try {
       return (await abortable(() => models(signal), signal)).map((model) => ({
@@ -1466,13 +1694,26 @@ function createSetupService(store, models, runtime) {
       if (issues.length) return { groups: [], issues };
       return resolve(fields, await catalog(signal));
     },
+    async contextStatus(signal) {
+      await runtime.refresh(signal);
+      const stored = runtime.state().stored;
+      if (!stored.documentValid) throw new Error("Context file status is unavailable.");
+      const value = stored.contextFile;
+      if (value === void 0) return { set: false };
+      if (typeof value !== "string" || !parseOptions({ contextFile: value }).ok) return { set: true, path: String(value), absolute: "", managed: false, state: "unreadable" };
+      const absolute = expandContextPath(value, paths.home);
+      const info = await inspectContextFile(absolute, signal);
+      const managed = sameContextPath(absolute, paths.managed().absolute, paths.platform);
+      return { set: true, path: value, absolute, managed, state: info.state, ...info.bytes === void 0 ? {} : { bytes: info.bytes } };
+    },
     async save(input, signal) {
       signal.throwIfAborted();
-      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["revision", "fields", "removeModels", "reset"].includes(key))) throw new Error("Unknown save field.");
+      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).some((key) => !["revision", "fields", "removeModels", "reset", "contextFile"].includes(key))) throw new Error("Unknown save field.");
       if (typeof input.revision !== "string" || !input.revision || Buffer.byteLength(JSON.stringify(input)) > 65536) throw new Error("Invalid save input.");
+      if (Object.hasOwn(input, "contextFile") && input.contextFile !== "managed" && input.contextFile !== "none") throw new Error("Invalid save input.");
       const invalid = validateSettings(input.fields);
       if (invalid.length) return { kind: "invalid", issues: invalid };
-      const { revision: _revision, ...change } = input;
+      const { revision: _revision, contextFile, ...change } = input;
       const edits = applyPreferenceChange({}, change);
       await runtime.refresh(signal);
       const fresh = runtime.state();
@@ -1480,12 +1721,14 @@ function createSetupService(store, models, runtime) {
       if (fresh.revision !== input.revision) return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." };
       const prospective = { ...fresh.stored.overrides, ...edits };
       for (const key of input.reset ?? []) delete prospective[key];
-      const issues = resolvePreferences(prospective, fresh.stored.contextFile).issues;
+      const context = contextFile === "managed" ? paths.managed().stored : contextFile === "none" ? void 0 : fresh.stored.contextFile;
+      const issues = resolvePreferences(prospective, context).issues;
       if (issues.length) return { kind: "invalid", issues };
       let written = fresh.stored.revision;
-      if (!isDeepStrictEqual2(prospective, fresh.stored.overrides)) {
+      if (contextFile !== void 0 || !isDeepStrictEqual2(prospective, fresh.stored.overrides)) {
         const fields = Object.fromEntries(Object.entries(input.fields).filter(([key, value]) => !Object.hasOwn(fresh.stored.overrides, key) || !isDeepStrictEqual2(value, fresh.stored.overrides[key])));
-        const result = await store.write(fresh.stored.revision, { fields, ...input.reset ? { reset: input.reset } : {}, ...input.removeModels ? { removeModels: true } : {} }, signal);
+        const result = await store.write(fresh.stored.revision, { fields, ...input.reset ? { reset: input.reset } : {}, ...input.removeModels ? { removeModels: true } : {}, ...contextFile === void 0 ? {} : { contextFile } }, signal);
+        if (result.kind === "refused_context") return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: result.message }] };
         if (result.kind !== "written") return result;
         written = result.revision;
       }
@@ -1496,48 +1739,12 @@ function createSetupService(store, models, runtime) {
         return { kind: "saved_not_active", revision: fresh.revision, message: "Saved on disk. Effective activation is not verified." };
       }
       const state = runtime.state();
-      if (state.stored.revision === written && state.activeRevision === state.revision && isDeepStrictEqual2(state.stored.overrides, prospective)) {
+      if (state.stored.revision === written && state.activeRevision === state.revision && isDeepStrictEqual2(state.stored.overrides, prospective) && isDeepStrictEqual2(state.stored.contextFile, context)) {
         return { kind: "saved", revision: state.revision, serviceVersion: state.service.status().version };
       }
       return { kind: "saved_not_active", revision: state.revision, message: "Saved on disk. Effective activation is not verified." };
     }
   };
-}
-
-// src/context-file.ts
-import { constants as constants2 } from "node:fs";
-import { open as open2 } from "node:fs/promises";
-import { homedir } from "node:os";
-import { isAbsolute as isAbsolute2, join as join2 } from "node:path";
-async function readContextFile(path, signal) {
-  signal.throwIfAborted();
-  const resolved = path.startsWith("~/") ? join2(homedir(), path.slice(2)) : path;
-  if (!isAbsolute2(resolved)) throw new Error("Context file requires an absolute path");
-  const file = await open2(resolved, constants2.O_RDONLY | (constants2.O_NONBLOCK ?? 0));
-  try {
-    signal.throwIfAborted();
-    if (!(await file.stat()).isFile()) throw new Error("Context file must be a regular file");
-    const buffer = Buffer.alloc(8193);
-    let bytes = 0;
-    while (bytes < buffer.length) {
-      signal.throwIfAborted();
-      const { bytesRead } = await file.read(buffer, bytes, buffer.length - bytes, null);
-      if (!bytesRead) break;
-      bytes += bytesRead;
-    }
-    signal.throwIfAborted();
-    if (bytes > 8192) throw Object.assign(new Error("Context file exceeds 8192 bytes"), { code: "context_file_too_large" });
-    let text;
-    try {
-      text = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytes));
-    } catch {
-      throw Object.assign(new Error("Context file must be UTF-8 text"), { code: "context_file_invalid" });
-    }
-    if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/u.test(text)) throw Object.assign(new Error("Context file contains binary controls"), { code: "context_file_invalid" });
-    return text.trim() ? text : "";
-  } finally {
-    await file.close();
-  }
 }
 
 // src/github.ts
@@ -1648,12 +1855,13 @@ var index_default = Plugin.define({
       username = userInfo().username;
     } catch {
     }
-    const store = createPreferencesStore({
+    const host = {
       home: homedir2(),
       platform: process.platform,
       env: { XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, APPDATA: process.env.APPDATA },
       systemPaths: administrativePaths(process.platform, process.env, username)
-    });
+    };
+    const store = createPreferencesStore(host);
     const runtime = createPreferencesRuntime(store, (options) => createService({
       session: (sessionID, signal2) => ctx.session.get({ sessionID }, { signal: signal2 }),
       context: (sessionID, signal2) => ctx.session.context({ sessionID }, { signal: signal2 }),
@@ -1669,7 +1877,8 @@ var index_default = Plugin.define({
       }
     }, options, ctx.location.directory));
     await runtime.refresh(lifetime.signal);
-    const setup = createSetupService(store, async (signal2) => (await ctx.model.list(void 0, { signal: signal2 })).data, runtime);
+    const paths = { managed: () => managedContextPath(host), home: host.home, platform: host.platform };
+    const setup = createSetupService(store, async (signal2) => (await ctx.model.list(void 0, { signal: signal2 })).data, runtime, paths);
     const signal = (parent) => AbortSignal.any([parent, lifetime.signal]);
     const registration = await ctx.rpc.register(Predictions, {
       predict: (input, context) => runtime.predict(input, signal(context.signal)),
@@ -1678,6 +1887,7 @@ var index_default = Plugin.define({
         return runtime.state().service.inspect(signal(context.signal));
       },
       settingsV2: (_input, context) => setup.read(signal(context.signal)),
+      contextFileStatus: (_input, context) => setup.contextStatus(signal(context.signal)),
       saveSettings: (input, context) => setup.save(input, signal(context.signal)),
       previewSettings: (input, context) => setup.preview(input.fields, signal(context.signal))
     });

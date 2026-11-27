@@ -1,13 +1,14 @@
 import { test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
-import fs, { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises"
+import fs, { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { constants } from "node:fs"
 import { syncBuiltinESMExports } from "node:module"
 import { join, resolve } from "node:path"
 import { fork, type ChildProcess } from "node:child_process"
 import { once } from "node:events"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
-import { administrativePaths, createPreferencesStore, decodePreferences, preferencesPath, type PreferencesHost } from "../src/preferences-store.ts"
+import { administrativePaths, createPreferencesStore, decodePreferences, expandContextPath, managedContextPath, preferencesPath, sameContextPath, contextFileProblem, type PreferencesHost } from "../src/preferences-store.ts"
 
 const signal = () => new AbortController().signal
 async function fixture() {
@@ -292,4 +293,325 @@ for (const phase of ["prepared", "committed"]) test(`killed writer ${phase} perm
   assert.equal(after.contextTurns, 4)
   assert.equal(after.automatic, false)
   for (const file of priorFiles.filter(file => file.startsWith(".predictions.tmp-"))) assert.ok((await readdir(join(f.home, "config", "opencode"))).includes(file))
+})
+
+const contextName = "predictions-context.md"
+const contextOf = (f: { home: string }) => join(f.home, "config", "opencode", contextName)
+const refusedContext = (reason: string) => `predictions-context.md exists but is not safe to use: ${reason}. Fix or remove it, then save again.`
+
+test("managed context path is home-relative under home and absolute elsewhere", () => {
+  const under = managedContextPath({ home: "/u", platform: "darwin", env: {}, systemPaths: [] })
+  assert.deepEqual(under, { stored: "~/.config/opencode/predictions-context.md", absolute: "/u/.config/opencode/predictions-context.md" })
+  assert.equal(expandContextPath(under.stored, "/u"), under.absolute)
+  assert.deepEqual(managedContextPath({ home: "/u", platform: "linux", env: { XDG_CONFIG_HOME: "/config" }, systemPaths: [] }),
+    { stored: "/config/opencode/predictions-context.md", absolute: "/config/opencode/predictions-context.md" })
+  const windows = managedContextPath({ home: "C:\\Users\\u", platform: "win32", env: { APPDATA: "C:\\Users\\u\\AppData\\Roaming" }, systemPaths: [] })
+  assert.deepEqual(windows, { stored: "~/AppData/Roaming/opencode/predictions-context.md", absolute: "C:\\Users\\u\\AppData\\Roaming\\opencode\\predictions-context.md" })
+  assert.equal(expandContextPath(windows.stored, "C:\\Users\\u"), windows.absolute)
+  assert.equal(expandContextPath("/abs/predictions-context.md", "/u"), "/abs/predictions-context.md")
+})
+
+test("context path equality folds case only on darwin and win32", () => {
+  const cases: [string, string, NodeJS.Platform, boolean][] = [
+    ["~/A/predictions-context.md", "~/a/predictions-context.md", "linux", false],
+    ["~/A/predictions-context.md", "~/a/predictions-context.md", "darwin", true],
+    ["~/A/predictions-context.md", "~/a/predictions-context.md", "win32", true],
+    ["~/x/predictions-context.md", "~/x/predictions-context.md", "linux", true],
+    ["/x/predictions-context.md", "/y/predictions-context.md", "darwin", false],
+  ]
+  for (const [a, b, platform, same] of cases) assert.equal(sameContextPath(a, b, platform), same, `${platform}: ${a} vs ${b}`)
+})
+
+test("first managed save creates an empty private context file and records a home-relative path", async () => {
+  const f = await fixture()
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal(await readFile(contextOf(f), "utf8"), "")
+  assert.equal((await stat(contextOf(f))).mode & 0o777, 0o600)
+  assert.equal(JSON.parse(await readFile(f.file, "utf8")).settings.contextFile, "~/config/opencode/predictions-context.md")
+})
+
+test("context file mode is 0600 even under a restrictive umask", async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const before = await f.store.read(signal())
+  const previous = process.umask(0o277)
+  try { assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written") }
+  finally { process.umask(previous) }
+  assert.equal((await stat(contextOf(f))).mode & 0o777, 0o600)
+})
+
+test("managed context path is absolute when the config root is outside home", async () => {
+  const f = await fixture()
+  const outside = await mkdtemp(resolve(".test-artifacts/outside-"))
+  f.host.env.XDG_CONFIG_HOME = outside
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal(await readFile(join(outside, "opencode", contextName), "utf8"), "")
+  assert.equal(JSON.parse(await readFile(join(outside, "opencode", "predictions.json"), "utf8")).settings.contextFile, join(outside, "opencode", contextName))
+})
+
+test("an existing context file is adopted without changing its text or mode", async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "Standing notes\n", { mode: 0o600 })
+  await chmod(context, 0o664)
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal(await readFile(context, "utf8"), "Standing notes\n")
+  assert.equal((await stat(context)).mode & 0o777, 0o664)
+})
+
+const refusals: [string, string, (f: Awaited<ReturnType<typeof fixture>>, context: string) => Promise<void>][] = [
+  ["a symbolic link", "it is a link", async (f, context) => {
+    await writeFile(join(f.home, "elsewhere.md"), "notes", { mode: 0o600 })
+    await symlink(join(f.home, "elsewhere.md"), context)
+  }],
+  ["a hard link", "it has more than one link", async (f, context) => {
+    await writeFile(context, "", { mode: 0o600 })
+    await link(context, join(f.home, "other.md"))
+  }],
+  ["a FIFO", "it is not a regular file", async (_f, context) => { await promisify(execFile)("mkfifo", [context]) }],
+  ["a directory", "it is not a regular file", async (_f, context) => { await mkdir(context) }],
+  ["world-writable", "other users can write to it", async (_f, context) => {
+    await writeFile(context, "", { mode: 0o600 })
+    await chmod(context, 0o666)
+  }],
+]
+for (const [name, reason, arrange] of refusals) test(`an existing context file that is ${name} is refused and predictions.json is unchanged`, async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  await arrange(f, contextOf(f))
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(reason) })
+  assert.deepEqual(await readFile(f.file), bytes)
+})
+
+test("a context file with extra access rules is refused", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  await writeFile(contextOf(f), "", { mode: 0o600 })
+  await promisify(execFile)("/bin/chmod", ["+a", "everyone allow read", contextOf(f)])
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext("it has extra access rules") })
+  assert.deepEqual(await readFile(f.file), bytes)
+})
+
+test("a context file owned by another user is refused", { skip: process.getuid?.() === 0 ? false : "needs root to give a file to another user; run the suite as root to exercise it" }, async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  await writeFile(contextOf(f), "", { mode: 0o600 })
+  await chown(contextOf(f), 1, (await stat(contextOf(f))).gid)
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext("it is owned by another user") })
+  assert.deepEqual(await readFile(f.file), bytes)
+})
+
+test("saving managed again recreates a missing context file", async () => {
+  const f = await fixture()
+  await f.put({ contextFile: "~/config/opencode/predictions-context.md" })
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal(await readFile(contextOf(f), "utf8"), "")
+})
+
+test("an empty context file left by a failed save is adopted by the next save", async t => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  let failCommit = true
+  interceptRename(t, async (_from, to, original) => { if (failCommit && to === f.file) throw new Error("PRIVATE failure"); await original() })
+  assert.equal((await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal())).kind, "failed")
+  assert.deepEqual(await readFile(f.file), bytes)
+  assert.equal(await readFile(contextOf(f), "utf8"), "")
+  failCommit = false
+  const after = await f.store.read(signal())
+  assert.equal((await f.store.write(after.revision, { fields: { debug: true }, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal(JSON.parse(await readFile(f.file, "utf8")).settings.contextFile, "~/config/opencode/predictions-context.md")
+})
+
+test("saving none removes the setting and leaves the context file on disk", async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  let before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written")
+  before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "none" }, signal())).kind, "written")
+  assert.deepEqual(JSON.parse(await readFile(f.file, "utf8")).settings, { debug: false })
+  assert.equal(await readFile(contextOf(f), "utf8"), "")
+})
+
+test("context file input accepts only managed and none", async () => {
+  const f = await fixture()
+  const before = await f.store.read(signal())
+  await assert.rejects(f.store.write(before.revision, { fields: {}, contextFile: "/etc/passwd" as any }, signal()), /Invalid save input\./)
+  assert.equal((await readdir(f.home)).includes("config"), false)
+})
+
+const changedContext = "it changed while it was checked"
+
+for (const mode of [0o200, 0o000]) test(`an owned context file with mode ${mode.toString(8)} that cannot be read is adopted`, async () => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "", { mode: 0o600 })
+  await chmod(context, mode)
+  const before = await f.store.read(signal())
+  assert.equal((await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal())).kind, "written")
+  assert.equal((await stat(context)).mode & 0o777, mode)
+  assert.equal(JSON.parse(await readFile(f.file, "utf8")).settings.contextFile, "~/config/opencode/predictions-context.md")
+})
+
+async function refusedBeforeCommit(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, change: (context: string) => Promise<void>, reason: string, mode = 0o600) {
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "", { mode: 0o600 })
+  if (mode !== 0o600) await chmod(context, mode)
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  let changed = false, committed = false
+  interceptRename(t, async (_from, to, original) => {
+    // The backup rename runs after adoption and before the commit-time check.
+    if (to.endsWith(".backup") && !changed) { changed = true; await change(context) }
+    if (to === f.file) committed = true
+    await original()
+  })
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(reason) })
+  assert.equal(changed, true)
+  assert.equal(committed, false)
+  assert.deepEqual(await readFile(f.file), bytes)
+}
+
+test("a context file replaced by a symbolic link before commit is refused and never renamed over predictions.json", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => {
+    await writeFile(join(f.home, "elsewhere.md"), "unchecked", { mode: 0o600 })
+    await unlink(context)
+    await symlink(join(f.home, "elsewhere.md"), context)
+  }, "it is a link")
+})
+
+test("a context file replaced by another inode before commit is refused and never renamed over predictions.json", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => {
+    // Holding a second link keeps the old inode allocated, so the replacement cannot reuse its number.
+    await link(context, join(f.home, "held.md"))
+    await unlink(context)
+    await writeFile(context, "", { mode: 0o600 })
+  }, changedContext)
+})
+
+// The same inode, changed in place: identity matches, so the commit-time rules must judge it.
+test("a context file that keeps its identity but gains a second link before commit is refused", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await link(context, join(f.home, "copy.md")) }, "it has more than one link")
+})
+
+test("a context file that keeps its identity but becomes world-writable before commit is refused", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await chmod(context, 0o666) }, "other users can write to it")
+})
+
+test("a context file that keeps its identity but gains an access rule before commit is refused", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await promisify(execFile)("/bin/chmod", ["+a", "everyone allow read", context]) }, "it has extra access rules")
+})
+
+// Records every read-only handle the store opens on the fixed path, so a test can see whether it is still open.
+function recordContextHandles(t: TestContext, context: string): Awaited<ReturnType<typeof fs.open>>[] {
+  const original = fs.open, handles: Awaited<ReturnType<typeof fs.open>>[] = []
+  const mock = t.mock.method(fs, "open", (async (...args: any[]) => {
+    const handle = await (original as any)(...args)
+    if (String(args[0]) === context && typeof args[1] === "number" && (args[1] & constants.O_WRONLY) === 0) handles.push(handle)
+    return handle
+  }) as any)
+  syncBuiltinESMExports()
+  t.after(() => { mock.mock.restore(); syncBuiltinESMExports() })
+  return handles
+}
+
+test("the adopted context file stays open until the commit ends, and a replacement there cannot reuse its number", async t => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f)
+  await writeFile(context, "", { mode: 0o600 })
+  const handles = recordContextHandles(t, context)
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  let checked = false, committed = false, reused = true
+  interceptRename(t, async (_from, to, original) => {
+    if (to.endsWith(".backup") && !checked) {
+      checked = true
+      const [held] = handles
+      assert.ok(held, "the store opened the context file")
+      // Still open at the hook: stat() on a closed handle rejects.
+      const pinned = (await held.stat()).ino
+      await unlink(context)
+      await writeFile(context, "", { mode: 0o600 })
+      reused = (await stat(context)).ino === pinned
+    }
+    if (to === f.file) committed = true
+    await original()
+  })
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(changedContext) })
+  assert.equal(checked, true)
+  assert.equal(reused, false, "a held handle keeps the old inode number from being reused")
+  assert.equal(committed, false)
+  assert.deepEqual(await readFile(f.file), bytes)
+  await assert.rejects(handles[0].stat(), "the store releases its handle when the save ends")
+})
+
+test("an unreadable context file gaining a second link before commit is refused by its rules", async t => {
+  const f = await fixture()
+  await refusedBeforeCommit(t, f, async context => { await link(context, join(f.home, "copy.md")) }, "it has more than one link", 0o200)
+})
+
+test("a reused inode is judged by its own rules, not by the identity match alone", () => {
+  const uid = process.getuid?.() ?? 0
+  const clean = { dev: 1, ino: 7, isFile: () => true, isSymbolicLink: () => false, nlink: 1, uid, mode: 0o100600 }
+  const identity = { dev: 1, ino: 7 }
+  assert.equal(contextFileProblem(clean, identity), undefined)
+  assert.equal(contextFileProblem({ ...clean, nlink: 2 }, identity), "it has more than one link")
+  assert.equal(contextFileProblem({ ...clean, mode: 0o100666 }, identity), "other users can write to it")
+  assert.equal(contextFileProblem({ ...clean, uid: uid + 1 }, identity), "it is owned by another user")
+  assert.equal(contextFileProblem({ ...clean, isFile: () => false, isSymbolicLink: () => true }, identity), "it is a link")
+  assert.equal(contextFileProblem({ ...clean, isFile: () => false }, identity), "it is not a regular file")
+  assert.equal(contextFileProblem({ ...clean, ino: 8 }, identity), changedContext)
+  assert.equal(contextFileProblem({ ...clean, ino: 8, nlink: 2 }, identity), "it has more than one link", "the rules are reported before the identity mismatch")
+})
+
+test("an access-rule check cannot be fooled by swapping the file out and back during the inspection", { skip: process.platform !== "darwin" && "macOS access control entries only" }, async t => {
+  const f = await fixture()
+  await f.put({ debug: false })
+  const context = contextOf(f), aside = join(f.home, "aside.md")
+  await writeFile(context, "", { mode: 0o600 })
+  await promisify(execFile)("/bin/chmod", ["+a", "everyone allow read", context])
+  const before = await f.store.read(signal()), bytes = await readFile(f.file)
+  // Between the open and the access-rule inspection a clean file takes the path; the original returns before the final lstat.
+  const realOpen = fs.open, realLstat = fs.lstat
+  let opened = false, swapped = false, lstats = 0
+  const openMock = t.mock.method(fs, "open", (async (...args: any[]) => {
+    const handle = await (realOpen as any)(...args)
+    if (String(args[0]) === context && typeof args[1] === "number" && (args[1] & constants.O_WRONLY) === 0) opened = true
+    return handle
+  }) as any)
+  // The first check after the open passes; the file is then swapped for a clean one while the access-rule
+  // inspection runs; the original is restored before the second check. Only the directory stamp can see that.
+  const lstatMock = t.mock.method(fs, "lstat", (async (...args: any[]) => {
+    if (!opened || String(args[0]) !== context) return (realLstat as any)(...args)
+    if (++lstats === 1) {
+      const stat = await (realLstat as any)(...args)
+      swapped = true
+      await rename(context, aside)
+      await writeFile(context, "", { mode: 0o600 })
+      return stat
+    }
+    if (lstats === 2) await rename(aside, context)
+    return (realLstat as any)(...args)
+  }) as any)
+  syncBuiltinESMExports()
+  t.after(() => { openMock.mock.restore(); lstatMock.mock.restore(); syncBuiltinESMExports() })
+  assert.deepEqual(await f.store.write(before.revision, { fields: { debug: true }, contextFile: "managed" }, signal()), { kind: "refused_context", message: refusedContext(changedContext) })
+  assert.equal(swapped, true)
+  assert.equal(lstats >= 2, true)
+  assert.deepEqual(await readFile(f.file), bytes)
 })

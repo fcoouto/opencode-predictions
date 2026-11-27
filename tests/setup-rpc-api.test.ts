@@ -7,6 +7,23 @@ import { resolvePreferences } from "../src/preferences.ts"
 import fs from "node:fs/promises"
 import net from "node:net"
 import { syncBuiltinESMExports } from "node:module"
+import { Predictions } from "../src/rpc.ts"
+import { JsonSchema, Schema, SchemaRepresentation } from "effect"
+
+test("saveSettings input accepts only a top-level managed or none context file choice", () => {
+  assert.deepEqual(Predictions.methods.saveSettings.input.properties.contextFile, { enum: ["managed", "none"] })
+})
+
+test("contextFileStatus takes no input and its output rejects extra keys and unknown states", () => {
+  assert.deepEqual(Predictions.methods.contextFileStatus.input, { type: "object", additionalProperties: false })
+  const read = Schema.decodeUnknownSync(SchemaRepresentation.fromJsonSchemaDocument(JsonSchema.fromSchemaDraft2020_12(Predictions.methods.contextFileStatus.output)) as Schema.Codec<unknown>, { onExcessProperty: "error" })
+  read({ set: false })
+  read({ set: true, path: "~/predictions-context.md", absolute: "/home/x/predictions-context.md", managed: true, state: "ok", bytes: 3 })
+  read({ set: true, path: "relative.md", absolute: "", managed: false, state: "unreadable" })
+  assert.throws(() => read({ set: false, path: "x" }))
+  assert.throws(() => read({ set: true, path: "x", absolute: "", managed: false, state: "unreadable", contents: "secret" }))
+  assert.throws(() => read({ set: true, path: "x", absolute: "", managed: false, state: "deleted" }))
+})
 
 const snapshot: SetupSnapshot = {
   revision: "r1", activeRevision: "r1", scope: "global", source: "/remote/predictions.json", writable: true,
@@ -68,6 +85,29 @@ for (const host of ["CLI", "Desktop"] as const) {
     await assert.rejects(pending, /target changed/)
     await assert.rejects(f.api.save({ revision: "r1", fields: { debug: true } }, signal()), /target changed/)
     assert.equal(f.calls.length, 0)
+  })
+  for (const outcome of ["a status", "method not found"] as const) test(`${host} does not accept ${outcome} from a client replaced while the context status was pending`, async () => {
+    const f = fixture()
+    let finish!: () => void
+    const reads: unknown[][] = []
+    const answered = new Promise<void>(resolve => { finish = resolve })
+    Object.assign(f.rpc, { contextFileStatus: async (...args: unknown[]) => {
+      reads.push(args)
+      await answered
+      if (outcome === "method not found") throw Object.assign(new Error("method not found"), { type: "rpc.method_not_found" })
+      return { set: false }
+    } })
+    const pending = f.api.contextStatus!(signal())
+    f.replace(); finish()
+    assert.equal(await pending, "unavailable", "the earlier client says nothing about this target")
+    assert.equal(reads.length, 1, "the read is not repeated against the new client")
+  })
+  test(`${host} still reports a context status and an old server from an unchanged client`, async () => {
+    const f = fixture()
+    Object.assign(f.rpc, { contextFileStatus: async () => ({ set: false }) })
+    assert.deepEqual(await f.api.contextStatus!(signal()), { set: false })
+    Object.assign(f.rpc, { contextFileStatus: async () => { throw Object.assign(new Error("method not found"), { type: "rpc.method_not_found" }) } })
+    assert.equal(await f.api.contextStatus!(signal()), "unsupported")
   })
   test(`${host} preserves the draft after target replacement and never repeats Save`, async () => {
     const f = fixture(), editor = createSetupEditor(f.api, () => {})

@@ -1,20 +1,25 @@
 import { createHash, randomUUID } from "node:crypto"
 import { constants, type Stats } from "node:fs"
-import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises"
+import { lstat, mkdir, open, realpath, rename, unlink, type FileHandle } from "node:fs/promises"
 import { dirname, basename, isAbsolute, join, posix, win32 } from "node:path"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { applyPreferenceChange, parsePreferences, preferenceFields, type PreferenceDocument } from "./preferences.ts"
-import { commitWindowsPreferences, readWindowsPreferences, windowsLocalRoot, type WindowsSnapshot } from "./preferences-windows.ts"
+import { commitWindowsPreferences, contextRefusal, readWindowsPreferences, windowsLocalRoot, type WindowsIO, type WindowsSnapshot } from "./preferences-windows.ts"
 import type { SaveInput, SettingsInput } from "./setup.ts"
 
 export type PreferencesHost = { home: string; platform: NodeJS.Platform; env: Record<string, string | undefined>; systemPaths: readonly string[] }
 export type PreferenceRead = { revision: string; source: string; writable: boolean; documentValid: boolean; policy: "user" | "managed"; overrides: SettingsInput; contextFile?: unknown; reason?: string }
-export type PreferencesWriteResult = { kind: "written"; revision: string } | { kind: "conflict" | "read_only" | "failed"; message: string }
+export type PreferencesWriteResult = { kind: "written"; revision: string } | { kind: "conflict" | "read_only" | "failed"; message: string } | { kind: "refused_context"; message: string }
 const limit = 65536, run = promisify(execFile)
+const contextFileName = "predictions-context.md"
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT"
+const codeOf = (error: unknown) => (error as NodeJS.ErrnoException)?.code
 class Refusal extends Error {}
+class ContextRefusal extends Refusal {}
 const fail = (message: string): never => { throw new Refusal(message) }
+const changedContext = "it changed while it was checked"
+const refuseContext = (reason: string): never => { throw new ContextRefusal(contextRefusal(reason)) }
 const uncertain = "Changes may have been saved. Reopen settings before trying again."
 const identity = (value: Stats) => [value.dev, value.ino, value.mode, value.uid, value.gid, ...(value.isDirectory() ? [] : [value.nlink])]
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex")
@@ -62,19 +67,125 @@ async function canonical(directory: string): Promise<{ directory: string; ancest
     }
   }
 }
+async function hasAccessRules(path: string) {
+  const { stdout } = await run("/bin/ls", ["-lde", path], { timeout: 1000, maxBuffer: 8192 })
+  return stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)
+}
 async function safe(info: Stats, path: string, directory = false) {
   if (process.getuid === undefined || info.uid !== process.getuid() || info.mode & 0o7022
     || (directory ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)) fail("Prediction preferences have unsafe ownership, links or write permissions.")
-  if (process.platform === "darwin") {
-    const { stdout } = await run("/bin/ls", ["-lde", path], { timeout: 1000, maxBuffer: 8192 })
-    if (stdout.split(/\s/, 1)[0].includes("+") || /^\s+\d+:/m.test(stdout)) fail("Prediction preferences have unsupported access control entries.")
+  if (process.platform === "darwin" && await hasAccessRules(path)) fail("Prediction preferences have unsupported access control entries.")
+}
+
+// Stored form: "~/" plus the forward-slash path under home, else the absolute path. Logical, never the realpath.
+export function managedContextPath(host: PreferencesHost): { stored: string; absolute: string } {
+  const path = host.platform === "win32" ? win32 : posix
+  const absolute = path.join(path.dirname(preferencesPath(host)), contextFileName)
+  const relative = path.relative(host.home, absolute)
+  const under = relative !== "" && relative.split(path.sep)[0] !== ".." && !path.isAbsolute(relative)
+  return { stored: under ? "~/" + relative.split(path.sep).join("/") : absolute, absolute }
+}
+
+export function expandContextPath(value: string, home: string): string {
+  if (!value.startsWith("~/")) return value
+  const path = /^[A-Za-z]:[\\/]|^\\\\/.test(home) ? win32 : posix
+  return path.join(home, ...value.slice(2).split("/"))
+}
+
+// Case folds only where the platform's file names are case-insensitive. Callers expand "~/" first.
+export function sameContextPath(a: string, b: string, platform: NodeJS.Platform): boolean {
+  const fold = (value: string) => platform === "win32" || platform === "darwin" ? value.toLowerCase() : value
+  return fold(a) === fold(b)
+}
+
+// The fields of a stat result that the adoption rules read. Stats satisfies it; tests pass plain objects.
+type ContextStat = { dev: number; ino: number; uid: number; mode: number; nlink: number; isFile(): boolean; isSymbolicLink(): boolean }
+type ContextIdentity = { dev: number; ino: number }
+// The verified file. handle is open until the save ends (see write), which pins its inode number.
+// Without a handle the file could not be opened (unreadable), so only lstat identity and rules stand in.
+type ContextHold = { identity: ContextIdentity; handle?: FileHandle }
+const identityOf = (info: ContextStat): ContextIdentity => ({ dev: info.dev, ino: info.ino })
+
+// The lstat-based adoption rules, in order. An expected identity is compared after the rules, so a symlink
+// or a second link reports its own reason, and only a clean object with another identity is reported as changed.
+export function contextFileProblem(info: ContextStat, expected?: ContextIdentity): string | undefined {
+  if (info.isSymbolicLink()) return "it is a link"
+  if (!info.isFile()) return "it is not a regular file"
+  if (info.nlink !== 1) return "it has more than one link"
+  if (process.getuid === undefined || info.uid !== process.getuid()) return "it is owned by another user"
+  if (info.mode & 0o002) return "other users can write to it"
+  if (expected && (info.dev !== expected.dev || info.ino !== expected.ino)) return changedContext
+  return undefined
+}
+const refuseIf = (reason: string | undefined) => { if (reason) refuseContext(reason) }
+async function statOrChanged(path: string): Promise<Stats> {
+  try { return await lstat(path) } catch { return refuseContext(changedContext) }
+}
+
+// A directory's mtime and ctime change on every create, unlink or rename inside it. An unchanged stamp
+// across a window proves no entry was swapped in that window.
+async function directoryStamp(directory: string): Promise<string> {
+  const stat = await lstat(directory, { bigint: true })
+  return `${stat.mtimeNs}:${stat.ctimeNs}`
+}
+
+// Checks the fixed path against an identity that is already pinned. The access-rule check sits between two
+// lstat checks and a directory stamp check, so a file swapped out and back during the inspection is refused.
+async function verifyContextFile(directory: string, expected: ContextIdentity) {
+  const path = join(directory, contextFileName)
+  const stamp = await directoryStamp(directory)
+  refuseIf(contextFileProblem(await statOrChanged(path), expected))
+  if (process.platform === "darwin" && await hasAccessRules(path)) refuseContext("it has extra access rules")
+  refuseIf(contextFileProblem(await statOrChanged(path), expected))
+  if (await directoryStamp(directory) !== stamp) refuseContext(changedContext)
+}
+
+// Adopts an existing context file and keeps it open. An unreadable file (no read permission) cannot leak its
+// contents, so it gets no handle and its lstat identity is pinned instead.
+async function adoptContextFile(directory: string): Promise<ContextHold> {
+  const path = join(directory, contextFileName)
+  const before = await statOrChanged(path)
+  refuseIf(contextFileProblem(before))
+  let handle: FileHandle | undefined
+  try { handle = await open(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0)) }
+  catch (error) {
+    if (codeOf(error) === "ELOOP") refuseContext("it is a link")
+    if (codeOf(error) !== "EACCES") throw error
+  }
+  try {
+    if (handle) refuseIf(contextFileProblem(await handle.stat(), identityOf(before)))
+    await verifyContextFile(directory, identityOf(before))
+    return { identity: identityOf(before), handle }
+  } catch (error) {
+    await handle?.close()
+    throw error
   }
 }
 
-function createWindowsStore(host: PreferencesHost) {
+// Creates the fixed file empty and private when absent, then adopts whatever is there. Never truncates.
+async function ensureContextFile(directory: string): Promise<ContextHold> {
+  const path = join(directory, contextFileName)
+  try {
+    const handle = await open(path, "wx", 0o600)
+    try { await handle.chmod(0o600) } finally { await handle.close() }
+  } catch (error) { if (codeOf(error) !== "EEXIST") throw error }
+  return adoptContextFile(directory)
+}
+
+// Run immediately before the commit rename. While the handle is held, its inode number cannot be reused, so the
+// fixed path must be that same object and must pass the rules again.
+// With no handle (the file is unreadable), nothing pins the inode, so the rules and the lstat identity stand in.
+async function confirmContextFile(directory: string, hold: ContextHold) {
+  const expected = hold.handle ? identityOf(await hold.handle.stat()) : hold.identity
+  if (expected.dev !== hold.identity.dev || expected.ino !== hold.identity.ino) refuseContext(changedContext)
+  await verifyContextFile(directory, expected)
+}
+
+// io is replaceable so the store's own logic runs in unit tests without the Windows verifier.
+export function createWindowsStore(host: PreferencesHost, io: WindowsIO = { readWindowsPreferences, commitWindowsPreferences }) {
   const revision = (state: WindowsSnapshot) => hash([state.source, state.state, state.expected])
   const systemPaths = () => host.systemPaths.map(path => windowsLocalRoot(path) ? path : "")
-  const inspect = (signal: AbortSignal) => readWindowsPreferences(preferencesPath(host), systemPaths(), signal)
+  const inspect = (signal: AbortSignal) => io.readWindowsPreferences(preferencesPath(host), systemPaths(), signal)
   const invalid = (source: string, reason?: string): PreferenceRead => ({
     revision: hash([source, "unavailable"]), source, writable: false, documentValid: false, policy: "user", overrides: {},
     reason: reason ?? "Windows prediction preferences cannot be read or verified. Check the server's configuration directory.",
@@ -100,6 +211,9 @@ function createWindowsStore(host: PreferencesHost) {
     },
     async write(current: string, input: Omit<SaveInput, "revision">, signal: AbortSignal): Promise<PreferencesWriteResult> {
       signal.throwIfAborted()
+      // The context file is applied here, never by applyPreferenceChange, which rejects unknown members.
+      const { contextFile, ...change } = input
+      if (contextFile !== undefined && contextFile !== "managed" && contextFile !== "none") throw new Error("Invalid save input.")
       let before: WindowsSnapshot, document: PreferenceDocument
       try {
         before = await inspect(signal)
@@ -112,13 +226,16 @@ function createWindowsStore(host: PreferencesHost) {
       if (revision(before) !== current) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." }
       let bytes: Buffer
       try {
-        const settings = applyPreferenceChange(document.settings, input)
+        const settings = applyPreferenceChange(document.settings, change)
+        if (contextFile === "managed") settings.contextFile = managedContextPath(host).stored
+        if (contextFile === "none") delete settings.contextFile
         bytes = Buffer.from(JSON.stringify({ ...document, settings }, null, 2) + "\n")
         decodePreferences(bytes)
       } catch (error) {
         return { kind: "failed", message: error instanceof Refusal ? error.message : "Prediction preference changes are invalid." }
       }
-      const result = await commitWindowsPreferences(before, systemPaths(), bytes, signal)
+      // The verifier creates or adopts the file inside the directory chain it has pinned, before it replaces the preferences.
+      const result = await io.commitWindowsPreferences(before, systemPaths(), bytes, signal, contextFile === "managed" ? "create" : undefined)
       return result.kind === "written" ? { kind: "written", revision: revision(result.snapshot) } : result
     },
   }
@@ -176,7 +293,11 @@ export function createPreferencesStore(host: PreferencesHost) {
     },
     async write(revision: string, input: Omit<SaveInput, "revision">, signal: AbortSignal): Promise<PreferencesWriteResult> {
       signal.throwIfAborted()
+      // The context file is applied here, never by applyPreferenceChange, which rejects unknown members.
+      const { contextFile, ...change } = input
+      if (contextFile !== undefined && contextFile !== "managed" && contextFile !== "none") throw new Error("Invalid save input.")
       const temporary: string[] = []
+      let contextHold: ContextHold | undefined
       let committed = false, cleanupFailed = false, result: PreferencesWriteResult
       async function transaction(): Promise<PreferencesWriteResult> {
         let before: Awaited<ReturnType<typeof inspect>>
@@ -185,12 +306,15 @@ export function createPreferencesStore(host: PreferencesHost) {
         }
         if (!before.writable) return { kind: "read_only", message: snapshot(before).reason! }
         if (before.revision !== revision) return { kind: "conflict", message: "Prediction preferences changed. Reload settings before saving." }
-        const settings = applyPreferenceChange(before.document.settings, input)
+        const settings = applyPreferenceChange(before.document.settings, change)
+        if (contextFile === "managed") settings.contextFile = managedContextPath(host).stored
+        if (contextFile === "none") delete settings.contextFile
         const text = JSON.stringify({ ...before.document, settings }, null, 2) + "\n"
         decodePreferences(Buffer.from(text))
         await mkdir(before.directory, { recursive: true, mode: 0o700 })
         const parent = await lstat(before.directory)
         await safe(parent, before.directory, true)
+        if (contextFile === "managed") contextHold = await ensureContextFile(before.directory)
         const recheck = async () => {
           const fresh = await inspect(signal), current = await lstat(before.directory)
           if (!fresh.writable || fresh.revision !== revision || fresh.source !== before.source || JSON.stringify(identity(current)) !== JSON.stringify(identity(parent))) fail("Prediction preferences changed. Reload settings before saving.")
@@ -216,6 +340,7 @@ export function createPreferencesStore(host: PreferencesHost) {
         }
         await recheck()
         signal.throwIfAborted()
+        if (contextHold) await confirmContextFile(before.directory, contextHold)
         // Simultaneous writers may both pass this check; atomic replacement does not prevent lost updates.
         await rename(next, before.source)
         committed = true
@@ -224,8 +349,14 @@ export function createPreferencesStore(host: PreferencesHost) {
         return { kind: "written", revision: persisted.revision }
       }
       try { result = await transaction() }
-      catch (error) { result = { kind: "failed", message: committed ? uncertain : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." } }
-      finally { for (const path of temporary) await unlink(path).catch(error => { if (!missing(error)) cleanupFailed = true }) }
+      catch (error) {
+        if (!committed && error instanceof ContextRefusal) result = { kind: "refused_context", message: error.message }
+        else result = { kind: "failed", message: committed ? uncertain : error instanceof Refusal || error instanceof Error && error.message === "Prediction preference changes are invalid." ? error.message : "Prediction preferences were not saved. Reopen settings and try again." }
+      }
+      finally {
+        await contextHold?.handle?.close().catch(() => undefined)
+        for (const path of temporary) await unlink(path).catch(error => { if (!missing(error)) cleanupFailed = true })
+      }
       return cleanupFailed ? { kind: "failed", message: committed ? uncertain : "Save cleanup failed. Reopen settings before trying again." } : result
     },
   }

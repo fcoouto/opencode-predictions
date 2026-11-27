@@ -15,7 +15,7 @@ before(async () => {
 after(async () => { await browser?.close() })
 
 // Mounts the real setup page against a fake host: only host UI components, servers and the main bridge are doubles.
-type Options = { emptyDirectory?: boolean; fields?: object; readOnly?: boolean; mainFails?: boolean; readOnlyReads?: number; noTarget?: boolean; saveKind?: string; catalog?: object[] }
+type Options = { emptyDirectory?: boolean; fields?: object; readOnly?: boolean; mainFails?: boolean; readOnlyReads?: number; noTarget?: boolean; saveKind?: string; catalog?: object[]; remote?: boolean; holdContext?: boolean; contextFile?: unknown; desktop?: false | { os?: string; launchFails?: boolean; revealFalse?: boolean } }
 async function mount(options: Options = {}): Promise<Page> {
   const page = await browser.newPage({ viewport: { width: 900, height: 1200 } })
   page.on("pageerror", error => console.log("PAGEERROR", (error.stack ?? "").split("\n").slice(0, 6).join(" | ")))
@@ -24,7 +24,7 @@ async function mount(options: Options = {}): Promise<Page> {
   await page.addScriptTag({ content: source })
   await page.evaluate(opts => {
     const w = window as any, S = w.Setup
-    const log: any = { mainCalls: 0, saves: [], reads: 0, previews: 0, confirms: [], settings: [], fetches: 0, dialogs: 0, status: 0, predictions: 0, selects: [], alerts: [] }
+    const log: any = { mainCalls: 0, saves: [], reads: 0, previews: 0, confirms: [], settings: [], fetches: 0, dialogs: 0, status: 0, predictions: 0, selects: [], alerts: [], launches: [], reveals: [], contextReads: 0 }
     w.log = log
     w.fetch = () => { log.fetches++; return Promise.reject(new Error("PRIVATE network")) }
     const catalog = opts.catalog ?? [
@@ -44,7 +44,11 @@ async function mount(options: Options = {}): Promise<Page> {
         log.saves.push({ serverID: id, input: JSON.parse(JSON.stringify(input)) })
         if (opts.saveKind === "conflict") return { kind: "conflict", message: "Configuration changed. Reload settings before trying again." }
         if (opts.saveKind === "failed") return { kind: "failed", message: "Settings were not saved. Reopen settings and try again." }
+        // The first Save meets an unsafe file; later Saves find it fixed.
+        if (opts.saveKind === "unsafe_context_once" && log.saves.length === 1) return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "unsafe_context_file", message: "predictions-context.md exists but is not safe to use: it is a link. Fix or remove it, then save again." }] }
         if (opts.saveKind === "invalid_context") return { kind: "invalid", issues: [{ field: "contextFile", severity: "error", code: "invalid_value", message: "Correct contextFile in predictions.json on the server." }] }
+        // The fake server makes the file exist (empty, managed) or gone after a save, as the real one does.
+        if (input.contextFile) w.contextReply = input.contextFile === "managed" ? { set: true, path: "~/predictions-context.md", absolute: "/project-home/predictions-context.md", managed: true, state: "empty", bytes: 0 } : { set: false }
         snapshot.fields = { ...snapshot.fields, ...input.fields }
         if (input.removeModels) delete snapshot.fields.models
         snapshot.overrides = { ...snapshot.overrides, ...input.fields, ...(input.removeModels ? { models: null } : {}) }
@@ -56,9 +60,18 @@ async function mount(options: Options = {}): Promise<Page> {
       },
       previewSettings: async ({ fields }: any) => { log.previews++; return { groups: (fields.models ?? []).map((group: string[]) => ({ selectors: group, candidates: group.filter(entry => !entry.includes("missing")).map((_, index) => ({ providerID: "local", id: "m" + index, name: "m" })) })), issues: group0Issues(fields) } },
       predict: async () => { log.predictions++; return {} },
+      // The reply is per test (w.contextReply); w.holdContext keeps the next read pending until w.releaseContext().
+      contextFileStatus: async () => {
+        log.contextReads++
+        if (w.holdContext) { w.holdContext = false; await new Promise(resolve => { w.releaseContext = resolve }) }
+        const reply = w.contextReply
+        if (reply === "unsupported") throw Object.assign(new Error("method not found"), { type: "rpc.method_not_found" })
+        if (reply === "unavailable") throw new Error("PRIVATE status failed")
+        return structuredClone(reply)
+      },
     }) }
     const group0Issues = (fields: any) => (fields.models ?? []).flatMap((group: string[], g: number) => group.flatMap((entry, e) => entry.includes("missing") ? [{ field: "models", group: g, entry: e, severity: "warning", code: "no_match", message: "No current models match this selector." }] : []))
-    const [serverID, setServerID] = S.createSignal("sidecar")
+    const [serverID, setServerID] = S.createSignal(opts.remote ? "remote-host" : "sidecar")
     const [directory, setDirectory] = S.createSignal(opts.emptyDirectory ? "" : "/project")
     w.switchDirectory = (value: string) => setDirectory(value)
     const servers = { get: (id: string) => ({ id, builtin: id === "sidecar", connected: true, client: client(id), data: { location: { default: () => ({ directory: directory() }) } } }) }
@@ -68,6 +81,8 @@ async function mount(options: Options = {}): Promise<Page> {
     w.disconnect = () => setTarget(false)
     const ctx: any = {
       id: "opencode-predictions",
+      // Desktop-only host abilities; the web host has none (desktop: false).
+      desktop: opts.desktop === false ? undefined : { os: opts.desktop?.os ?? "macos", launch: async (path: string) => { log.launches.push(path); if (opts.desktop?.launchFails) throw new Error("PRIVATE launch failed") }, reveal: async (path: string) => { log.reveals.push(path); return !opts.desktop?.revealFalse } },
       sessions: { current: () => target() ? { id: "ses_1", location: { directory: directory() }, server: servers.get(serverID()) } : undefined },
       servers: { get: (id: string) => target() ? servers.get(id) : undefined },
       main: () => {
@@ -118,6 +133,8 @@ async function mount(options: Options = {}): Promise<Page> {
       },
       Dialog: (p: any) => { const d = el("div", { role: "dialog", "aria-label": p.title }); const h = el("h2"); h.textContent = p.title; const dd = el("p"); dd.textContent = p.description ?? ""; d.append(h, dd); slot(d, () => p.children); slot(d, () => p.footer); return d },
     }
+    w.contextReply = opts.contextFile ?? { set: false }
+    w.holdContext = !!opts.holdContext
     w.status = async () => { log.status++ }
     w.dispose = S.createRoot((dispose: any) => { const stop = S.registerSetupGUI(ctx, async () => { log.status++ }); w.stop = stop; return dispose })
     w.renderPage = (target?: string) => {
@@ -148,7 +165,7 @@ test("page orders Behavior, Models, Advanced with exact labels and Advanced coll
     assert.equal(await page.getByRole("switch", { name: "Include GitHub PR context" }).isChecked(), false, "omitted means off")
     const advanced = await page.evaluate(() => [...document.querySelectorAll('[data-action^="predictions-advanced-"] [data-title]')].map(node => node.textContent))
     assert.deepEqual(advanced, ["Timeout per model", "Recent interactions", "Context file", "Include GitHub PR context", "Debug notices"])
-    assert.match((await row(page, "predictions-advanced-context-file").textContent())!, /predictions\.json on the OpenCode server/)
+    assert.match((await row(page, "predictions-advanced-context-file").textContent())!, /Standing notes about you and your work/)
     const warning = (await row(page, "predictions-advanced-github").textContent())!
     assert.match(warning, /private/i)
     assert.match(warning, /fallback and paid/i)
@@ -633,6 +650,315 @@ test("Save shows the server-only context file repair beside the Save action", as
     await save(page).click()
     await page.waitForFunction(() => /Correct contextFile in predictions\.json on the server/.test(document.body.textContent ?? ""), undefined, { timeout: 1500 })
   } finally { await page.close() }
+})
+
+const contextRow = (page: Page) => row(page, "predictions-advanced-context-file")
+const contextText = (page: Page) => page.evaluate(() => document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? "")
+const contextButton = (page: Page, name: string) => contextRow(page).getByRole("button", { name, exact: true })
+const openAdvanced = async (page: Page) => { await idle(page); await page.getByRole("button", { name: "Show advanced settings" }).click() }
+const setReply = (page: Page, reply: unknown) => page.evaluate(value => { (window as any).contextReply = value }, reply)
+const okFile = { set: true, path: "~/.config/opencode/predictions-context.md", absolute: "/Users/tester/.config/opencode/predictions-context.md", managed: true, state: "ok", bytes: 1204 }
+
+test("the context file row shows a loader and checking copy until the status arrives", async () => {
+  const page = await mount({ holdContext: true })
+  try {
+    await page.getByRole("button", { name: "Show advanced settings" }).click()
+    await page.waitForFunction(() => (window as any).releaseContext)
+    assert.match(await contextText(page), /Checking the context file…/)
+    assert.equal(await contextRow(page).locator('[role="progressbar"]').count(), 1)
+    await page.evaluate(() => (window as any).releaseContext())
+    await page.waitForFunction(() => !document.querySelector('[data-action="predictions-advanced-context-file"] [role="progressbar"]'))
+    assert.match(await contextText(page), /Standing notes about you and your work/)
+  } finally { await page.close() }
+})
+
+test("not set: Use a context file stages the managed file, Undo clears it, and Save sends managed", async () => {
+  const page = await mount()
+  try {
+    await openAdvanced(page)
+    assert.match(await contextText(page), /Standing notes about you and your work, sent to prediction providers with every request\. Up to 8 KB of text\./)
+    await contextButton(page, "Use a context file").click()
+    assert.match(await contextText(page), /Save will use predictions-context\.md\. If it already exists, its current text will be sent with predictions\./)
+    await contextButton(page, "Undo").click()
+    assert.equal(await save(page).isDisabled(), true, "Undo leaves nothing to save")
+    await contextButton(page, "Use a context file").click()
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    const sent = await page.evaluate(() => (window as any).log.saves[0].input)
+    assert.equal(sent.contextFile, "managed")
+    assert.deepEqual(sent.fields, {}, "the context file is the only change")
+    await page.waitForFunction(() => /Empty — nothing is sent until you add text\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.match(await contextText(page), /~\/predictions-context\.md/)
+  } finally { await page.close() }
+})
+
+test("set and ok: shows the path and byte count, Open and Show use the absolute path, and Stop using stages none", async () => {
+  const page = await mount({ contextFile: okFile })
+  try {
+    await openAdvanced(page)
+    assert.match(await contextText(page), /~\/\.config\/opencode\/predictions-context\.md · 1,204 of 8,192 bytes/)
+    assert.equal(await contextButton(page, "Use a context file").count(), 0, "a set file is not offered again")
+    await contextButton(page, "Open file").click()
+    await contextButton(page, "Show in Finder").click()
+    assert.deepEqual(await page.evaluate(() => ({ launches: (window as any).log.launches, reveals: (window as any).log.reveals })), { launches: [okFile.absolute], reveals: [okFile.absolute] })
+    await contextButton(page, "Stop using").click()
+    assert.match(await contextText(page), /The context file will stop being used when you save\. The file stays on disk\./)
+    await contextButton(page, "Undo").waitFor()
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    assert.equal(await page.evaluate(() => (window as any).log.saves[0].input.contextFile), "none")
+  } finally { await page.close() }
+})
+
+test("the reveal button names this computer's file manager: Finder, File Explorer or Folder", async () => {
+  for (const [os, label] of [["windows", "Show in File Explorer"], ["linux", "Show in Folder"]]) {
+    const page = await mount({ contextFile: okFile, desktop: { os } })
+    try {
+      await openAdvanced(page)
+      assert.equal(await contextButton(page, label).count(), 1, label)
+    } finally { await page.close() }
+  }
+})
+
+test("a remote server or the web shows the path and status only, with no Open or Show", async () => {
+  for (const options of [{ remote: true }, { desktop: false as const }]) {
+    const page = await mount({ ...options, contextFile: okFile })
+    try {
+      await openAdvanced(page)
+      assert.match(await contextText(page), /1,204 of 8,192 bytes/)
+      assert.equal(await contextRow(page).getByRole("button", { name: /^(Open file|Show in )/ }).count(), 0)
+      assert.equal(await contextButton(page, "Stop using").count(), 1)
+    } finally { await page.close() }
+  }
+})
+
+test("an empty file says that nothing is sent until text is added", async () => {
+  const page = await mount({ contextFile: { ...okFile, state: "empty", bytes: 0 } })
+  try {
+    await openAdvanced(page)
+    assert.match(await contextText(page), /Empty — nothing is sent until you add text\./)
+  } finally { await page.close() }
+})
+
+test("a file that cannot be used shows its reason with an icon; Open and Show stay unless the file is missing", async () => {
+  const cases = [
+    { state: "too_large", bytes: 9310, copy: "Too large: 9,310 of 8,192 bytes", openable: true },
+    { state: "invalid", copy: "Not UTF-8 text", openable: true },
+    { state: "unreadable", copy: "Cannot be read", openable: true },
+    { state: "missing", copy: "Missing", openable: false },
+  ]
+  for (const item of cases) {
+    const page = await mount({ contextFile: { ...okFile, state: item.state, bytes: item.bytes } })
+    try {
+      await openAdvanced(page)
+      assert.ok((await contextText(page)).includes(item.copy), item.copy)
+      assert.equal(await contextRow(page).locator('[data-icon="outline-hexagonal-warning"]').count(), 1, `${item.state} has an icon`)
+      assert.equal(await contextRow(page).getByRole("button", { name: /^(Open file|Show in )/ }).count(), item.openable ? 2 : 0, item.state)
+    } finally { await page.close() }
+  }
+})
+
+test("a missing managed file offers Create it again, staged and saved as managed", async () => {
+  const page = await mount({ contextFile: { set: true, path: "~/.config/opencode/predictions-context.md", absolute: "/Users/tester/.config/opencode/predictions-context.md", managed: true, state: "missing" } })
+  try {
+    await openAdvanced(page)
+    assert.equal(await contextButton(page, "Use predictions-context.md instead").count(), 0)
+    await contextButton(page, "Create it again").click()
+    assert.match(await contextText(page), /Save will use predictions-context\.md\. If it already exists, its current text will be sent with predictions\./)
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    assert.equal(await page.evaluate(() => (window as any).log.saves[0].input.contextFile), "managed")
+  } finally { await page.close() }
+})
+
+test("a missing hand-set path offers Use predictions-context.md instead, which saves as managed", async () => {
+  const page = await mount({ contextFile: { set: true, path: "~/notes/context.md", absolute: "/Users/tester/notes/context.md", managed: false, state: "missing" } })
+  try {
+    await openAdvanced(page)
+    assert.equal(await contextButton(page, "Create it again").count(), 0)
+    await contextButton(page, "Use predictions-context.md instead").click()
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    assert.equal(await page.evaluate(() => (window as any).log.saves[0].input.contextFile), "managed")
+  } finally { await page.close() }
+})
+
+test("Check again fetches the status again, so a file made outside settings appears", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    const before = await page.evaluate(() => (window as any).log.contextReads)
+    await setReply(page, okFile)
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /1,204 of 8,192 bytes/.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.equal(await page.evaluate(() => (window as any).log.contextReads), before + 1)
+  } finally { await page.close() }
+})
+
+test("unavailable says so and offers only Check again", async () => {
+  const page = await mount({ contextFile: "unavailable" })
+  try {
+    await openAdvanced(page)
+    assert.ok((await contextText(page)).includes("Context file status is unavailable right now."))
+    assert.deepEqual(await contextRow(page).getByRole("button").allTextContents(), ["Check again"])
+  } finally { await page.close() }
+})
+
+test("an old server shows the manual sentence and the update note, with no buttons", async () => {
+  const page = await mount({ contextFile: "unsupported" })
+  try {
+    await openAdvanced(page)
+    const text = await contextText(page)
+    assert.ok(text.includes("Set contextFile in predictions.json on the OpenCode server. Its contents go to prediction providers."), text)
+    assert.ok(text.includes("Update the Predictions plugin on the server to manage the context file here."), text)
+    assert.equal(await contextRow(page).getByRole("button").count(), 0)
+  } finally { await page.close() }
+})
+
+test("Undo still clears a staged file after Check again finds the status unavailable", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unavailable")
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /Context file status is unavailable right now\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    await contextButton(page, "Undo").click()
+    assert.equal(await save(page).isDisabled(), true, "Undo leaves the draft clean")
+    assert.equal(await contextButton(page, "Undo").count(), 0)
+    await setReply(page, { set: false })
+    await contextButton(page, "Check again").click()
+    await contextButton(page, "Use a context file").waitFor()
+  } finally { await page.close() }
+})
+
+test("a staged file while the status is unavailable is not sent; Save says why", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unavailable")
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /Context file status is unavailable right now\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    await save(page).click()
+    await page.waitForFunction(() => /Context file status is unavailable right now\./.test(document.querySelector('[data-footer] [role="status"]')?.textContent ?? ""))
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0, "no save reaches the server")
+  } finally { await page.close() }
+})
+
+test("Check again finding the status unsupported clears the staged file; Save keeps the field edit and sends no contextFile", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await page.getByRole("switch", { name: "Predict After Replies" }).check()
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unsupported")
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => /Update the Predictions plugin on the server to manage the context file here\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.equal(await contextButton(page, "Undo").count(), 0, "nothing is staged any more")
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 1)
+    const sent = await page.evaluate(() => (window as any).log.saves[0].input)
+    assert.equal(Object.hasOwn(sent, "contextFile"), false)
+    assert.deepEqual(sent.fields, { automatic: true })
+  } finally { await page.close() }
+})
+
+test("read-only keeps Open, Show and Check again, and disables every staging action", async () => {
+  let page = await mount({ readOnly: true, contextFile: okFile })
+  try {
+    await openAdvanced(page)
+    assert.equal(await contextButton(page, "Stop using").isDisabled(), true)
+    assert.equal(await contextButton(page, "Open file").isDisabled(), false)
+    assert.equal(await contextButton(page, "Show in Finder").isDisabled(), false)
+    assert.equal(await contextButton(page, "Check again").isDisabled(), false)
+  } finally { await page.close() }
+  page = await mount({ readOnly: true, contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    assert.equal(await contextButton(page, "Use a context file").isDisabled(), true)
+    assert.equal(await contextButton(page, "Check again").isDisabled(), false)
+  } finally { await page.close() }
+})
+
+test("a failed open or reveal explains that the file could not be opened on this computer", async () => {
+  for (const [desktop, label] of [[{ launchFails: true }, "Open file"], [{ revealFalse: true }, "Show in Finder"]] as const) {
+    const page = await mount({ contextFile: okFile, desktop })
+    try {
+      await openAdvanced(page)
+      await contextButton(page, label).click()
+      await page.waitForFunction(() => /Could not open the file on this computer\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    } finally { await page.close() }
+  }
+})
+
+const footerText = (page: Page) => page.evaluate(() => [...document.querySelectorAll('[data-footer] [role="status"]')].map(node => node.textContent).join(" "))
+
+test("an unsafe context file refusal stays visible, and Check again then Save retries it", async () => {
+  const page = await mount({ saveKind: "unsafe_context_once" })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await save(page).click()
+    await page.waitForFunction(() => /is not safe to use: it is a link\. Fix or remove it, then save again\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""), undefined, { timeout: 1500 })
+    assert.match(await footerText(page), /is not safe to use: it is a link/, "the refusal is also beside Save")
+    // The file is fixed on the server, then the row is checked again.
+    await contextButton(page, "Check again").click()
+    await contextButton(page, "Check again").waitFor()
+    assert.match(await contextText(page), /is not safe to use: it is a link/, "checking again does not hide the refusal")
+    assert.equal(await save(page).isDisabled(), false, "Save is the retry the message asks for")
+    await save(page).click()
+    await page.waitForFunction(() => (window as any).log.saves.length === 2, undefined, { timeout: 1500 })
+    assert.equal(await page.evaluate(() => (window as any).log.saves[1].input.contextFile), "managed")
+    await page.waitForFunction(() => /Empty — nothing is sent until you add text\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.doesNotMatch(await contextText(page), /is not safe to use/, "a successful retry clears the refusal")
+  } finally { await page.close() }
+})
+
+test("Save with a staged file sends nothing while Check again is still running, and says it is checking", async () => {
+  const page = await mount({ contextFile: { set: false } })
+  try {
+    await openAdvanced(page)
+    await contextButton(page, "Use a context file").click()
+    await setReply(page, "unsupported")
+    await page.evaluate(() => { (window as any).releaseContext = undefined; (window as any).holdContext = true })
+    await contextButton(page, "Check again").click()
+    await page.waitForFunction(() => (window as any).releaseContext)
+    await save(page).click()
+    await page.waitForTimeout(100)
+    // The fake server logs a save when the call arrives, before it answers.
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0, "nothing is dispatched against a pending check")
+    assert.match(await footerText(page), /Checking the context file…/)
+    await page.evaluate(() => (window as any).releaseContext())
+    await page.waitForFunction(() => /Update the Predictions plugin on the server to manage the context file here\./.test(document.querySelector('[data-action="predictions-advanced-context-file"]')?.textContent ?? ""))
+    assert.equal(await page.evaluate(() => (window as any).log.saves.length), 0, "the old server never receives the file action")
+    assert.doesNotMatch(await footerText(page), /Checking the context file…/, "the message goes when the check ends")
+  } finally { await page.close() }
+})
+
+test("Open file is offered only for the server's own file or a hand-set text file; other paths get the reveal action only", async () => {
+  const handSet = (absolute: string) => ({ set: true, path: absolute, absolute, managed: false, state: "ok", bytes: 12 })
+  const cases: { name: string; file: unknown; open: boolean; reveal: boolean }[] = [
+    { name: "an invalid hand-set path has no target", file: { set: true, path: "relative.md", absolute: "", managed: false, state: "unreadable" }, open: false, reveal: false },
+    { name: "a relative target is not a document path", file: handSet("notes/context.md"), open: false, reveal: false },
+    { name: "the server's own file", file: okFile, open: true, reveal: true },
+    { name: "hand-set .md", file: handSet("/Users/tester/notes/context.md"), open: true, reveal: true },
+    { name: "hand-set .MARKDOWN", file: handSet("/Users/tester/notes/CONTEXT.MARKDOWN"), open: true, reveal: true },
+    { name: "hand-set .Txt on Windows", file: handSet("C:\\Users\\tester\\notes.Txt"), open: true, reveal: true },
+    { name: "hand-set executable", file: handSet("/Users/tester/bin/run.command"), open: false, reveal: true },
+    { name: "hand-set .exe on Windows", file: handSet("C:\\Users\\tester\\tool.exe"), open: false, reveal: true },
+    { name: "hand-set path with no extension", file: handSet("/Users/tester/notes"), open: false, reveal: true },
+    { name: "text name followed by another extension", file: handSet("/Users/tester/notes.md.sh"), open: false, reveal: true },
+  ]
+  for (const item of cases) {
+    const page = await mount({ contextFile: item.file })
+    try {
+      await openAdvanced(page)
+      await contextButton(page, "Stop using").waitFor()
+      assert.equal(await contextButton(page, "Open file").count(), item.open ? 1 : 0, `${item.name}: Open file`)
+      assert.equal(await contextButton(page, "Show in Finder").count(), item.reveal ? 1 : 0, `${item.name}: Show in Finder`)
+    } finally { await page.close() }
+  }
 })
 
 test("with no connected server the page explains instead of editing", async () => {
