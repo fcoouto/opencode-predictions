@@ -1,6 +1,6 @@
-import { test, type TestContext } from "node:test"
+import { after, test, type TestContext } from "node:test"
 import assert from "node:assert/strict"
-import fs, { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import fs, { chmod, chown, link, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { constants } from "node:fs"
 import { syncBuiltinESMExports } from "node:module"
 import { join, resolve } from "node:path"
@@ -11,9 +11,17 @@ import { promisify } from "node:util"
 import { administrativePaths, createPreferencesStore, decodePreferences, expandContextPath, managedContextPath, preferencesPath, sameContextPath, contextFileProblem, type PreferencesHost } from "../src/preferences-store.ts"
 
 const signal = () => new AbortController().signal
-async function fixture() {
+// Temp folders are removed after the file runs: some hold named pipes, which hang any later recursive read of .test-artifacts.
+const temporary: string[] = []
+after(async () => { for (const directory of temporary) await rm(directory, { recursive: true, force: true }) })
+async function temp(prefix: string) {
   await mkdir(".test-artifacts", { recursive: true })
-  const home = await mkdtemp(resolve(".test-artifacts/preferences-"))
+  const directory = await mkdtemp(resolve(".test-artifacts", prefix))
+  temporary.push(directory)
+  return directory
+}
+async function fixture() {
+  const home = await temp("preferences-")
   const host: PreferencesHost = { home, platform: process.platform, env: { XDG_CONFIG_HOME: join(home, "config") }, systemPaths: [join(home, "managed")] }
   const store = createPreferencesStore(host), file = preferencesPath(host)
   async function put(settings: object, extra = {}) {
@@ -343,7 +351,7 @@ test("context file mode is 0600 even under a restrictive umask", async () => {
 
 test("managed context path is absolute when the config root is outside home", async () => {
   const f = await fixture()
-  const outside = await mkdtemp(resolve(".test-artifacts/outside-"))
+  const outside = await temp("outside-")
   f.host.env.XDG_CONFIG_HOME = outside
   const before = await f.store.read(signal())
   assert.equal((await f.store.write(before.revision, { fields: {}, contextFile: "managed" }, signal())).kind, "written")

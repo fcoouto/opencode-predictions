@@ -1,10 +1,10 @@
-import { test } from "node:test"
+import { after, test } from "node:test"
 import assert from "node:assert/strict"
 import { createSetupService } from "../src/setup-service.ts"
 import { createPreferencesRuntime } from "../src/preferences-runtime.ts"
 import { createPreferencesStore, createWindowsStore, managedContextPath, preferencesPath, type PreferenceRead, type PreferencesHost, type PreferencesStore } from "../src/preferences-store.ts"
 import { createWindowsIO } from "../src/preferences-windows.ts"
-import { mkdir, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import type { CatalogModel } from "../src/models.ts"
 import { changedFields, type SaveInput, type SettingsInput } from "../src/setup.ts"
@@ -236,9 +236,13 @@ test("GitHub PR context participates in changed-field detection and saved-not-ac
   assert.equal(result.kind, "saved_not_active", "unchanged effective value means activation is unverified")
 })
 
+// Temp homes are removed after the file runs, so .test-artifacts does not grow on every run.
+const temporary: string[] = []
+after(async () => { for (const directory of temporary) await rm(directory, { recursive: true, force: true }) })
 async function preferencesServiceFixture() {
   await mkdir(".test-artifacts", { recursive: true })
   const home = await mkdtemp(resolve(".test-artifacts/preferences-service-"))
+  temporary.push(home)
   // APPDATA is required on Windows (preferencesPath refuses without it) and ignored elsewhere, so the temp home holds it on every platform.
   const host = { home, platform: process.platform, env: { APPDATA: join(home, "AppData", "Roaming") }, systemPaths: [] }
   const store = createPreferencesStore(host)
